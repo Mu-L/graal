@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,8 @@
  */
 package com.oracle.truffle.sl.test;
 
+import java.math.BigInteger;
+
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -48,12 +50,12 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-public class SLInteropPrimitiveTest {
+public class SLInteropPrimitiveTest extends AbstractSLTest {
     private Context context;
 
     @Before
     public void setUp() {
-        context = Context.create("sl");
+        context = newContextBuilder().build();
     }
 
     @After
@@ -75,5 +77,18 @@ public class SLInteropPrimitiveTest {
         final Value fnc = context.eval(src);
         Assert.assertTrue(fnc.canExecute());
         fnc.execute('a', 'b');
+    }
+
+    @Test
+    public void testNumbers() {
+        final Source src = Source.newBuilder("sl", "function addNum(a,b) {return a + b;} function main() {return addNum;}", "addNum.sl").buildLiteral();
+        final Value fnc = context.eval(src);
+        Assert.assertTrue(fnc.canExecute());
+        Assert.assertEquals(42, fnc.execute(20, 22).asInt());
+        Assert.assertEquals(new BigInteger("18446744073709551614"), fnc.execute(Long.MAX_VALUE, Long.MAX_VALUE).asBigInteger());
+        Assert.assertEquals(new BigInteger("18446744073709551616"), fnc.execute(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.TWO), Long.MAX_VALUE).asBigInteger());
+        Assert.assertEquals(new BigInteger("18446744073709551616"), fnc.execute(BigInteger.valueOf(Long.MAX_VALUE), BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.TWO)).asBigInteger());
+        Assert.assertEquals(new BigInteger("18446744073709551618"),
+                        fnc.execute(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.TWO), BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.TWO)).asBigInteger());
     }
 }

@@ -29,6 +29,9 @@ import java.util.Collections;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
+import com.oracle.svm.core.option.SubstrateOptionsParser;
+
+import jdk.graal.compiler.options.OptionKey;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -48,12 +51,21 @@ public class UserError {
         static final long serialVersionUID = 75431290632980L;
         private final Iterable<String> messages;
 
-        protected UserException(String msg) {
+        public UserException(String msg) {
             this(Collections.singletonList(msg));
         }
 
         protected UserException(Iterable<String> messages) {
             super(String.join(System.lineSeparator(), messages));
+            this.messages = messages;
+        }
+
+        public UserException(String msg, Throwable throwable) {
+            this(Collections.singletonList(msg), throwable);
+        }
+
+        protected UserException(Iterable<String> messages, Throwable throwable) {
+            super(String.join(System.lineSeparator(), messages), throwable);
             this.messages = messages;
         }
 
@@ -65,7 +77,7 @@ public class UserError {
     /**
      * Stop compilation immediately and report the message to the user.
      *
-     * @param format format string
+     * @param format format string (must not start with a lowercase letter)
      * @param args arguments for the format string that are {@link #formatArguments(Object...)
      *            preprocessed} before being sent to {@link String#format(String, Object...)}
      */
@@ -77,7 +89,7 @@ public class UserError {
      * Stop compilation immediately and report the message to the user.
      *
      * @param cause the exception that caused the abort.
-     * @param format format string
+     * @param format format string (must not start with a lowercase letter)
      * @param args arguments for the format string that are {@link #formatArguments(Object...)
      *            preprocessed} before being sent to {@link String#format(String, Object...)}
      */
@@ -88,7 +100,7 @@ public class UserError {
     /**
      * Concisely reports user errors.
      *
-     * @param format format string
+     * @param format format string (must not start with a lowercase letter)
      * @param args arguments for the format string that are {@link #formatArguments(Object...)
      *            preprocessed} before being sent to {@link String#format(String, Object...)}
      */
@@ -113,21 +125,8 @@ public class UserError {
      * @param args arguments to process
      * @return a copy of {@code args} with certain values converted to strings as described above
      */
-    public static Object[] formatArguments(Object... args) {
-        Object[] newArgs = new Object[args.length];
-        for (int i = 0; i < args.length; i++) {
-            Object arg = args[i];
-            if (arg instanceof ResolvedJavaType) {
-                newArgs[i] = ((ResolvedJavaType) arg).toJavaName(true);
-            } else if (arg instanceof ResolvedJavaMethod) {
-                newArgs[i] = ((ResolvedJavaMethod) arg).format("%H.%n(%p)");
-            } else if (arg instanceof ResolvedJavaField) {
-                newArgs[i] = ((ResolvedJavaField) arg).format("%H.%n");
-            } else {
-                newArgs[i] = arg;
-            }
-        }
-        return newArgs;
+    static Object[] formatArguments(Object... args) {
+        return VMError.formatArguments(args);
     }
 
     /**
@@ -137,5 +136,31 @@ public class UserError {
      */
     public static UserException abort(Iterable<String> messages) {
         throw new UserException(messages);
+    }
+
+    /**
+     * Stop compilation immediately and report the invalid use of an option to the user.
+     *
+     * @param option the option incorrectly used.
+     * @param value the value passed to the option, possibly invalid.
+     * @param reason the reason why the option-value pair is rejected that can be understood by the
+     *            user.
+     */
+    public static UserException invalidOptionValue(OptionKey<?> option, String value, String reason) {
+        return abort("Invalid option '%s'. %s.", SubstrateOptionsParser.commandArgument(option, value), reason);
+    }
+
+    /**
+     * @see #invalidOptionValue(OptionKey, String, String)
+     */
+    public static UserException invalidOptionValue(OptionKey<?> option, Boolean value, String reason) {
+        return invalidOptionValue(option, value ? "+" : "-", reason);
+    }
+
+    /**
+     * @see #invalidOptionValue(OptionKey, String, String)
+     */
+    public static UserException invalidOptionValue(OptionKey<?> option, Number value, String reason) {
+        return invalidOptionValue(option, String.valueOf(value), reason);
     }
 }

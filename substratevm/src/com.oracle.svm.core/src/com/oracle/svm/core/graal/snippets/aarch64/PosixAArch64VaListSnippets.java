@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,17 +26,18 @@ package com.oracle.svm.core.graal.snippets.aarch64;
 
 import java.util.Map;
 
-import org.graalvm.compiler.api.replacements.Snippet;
-import org.graalvm.compiler.graph.Node;
-import org.graalvm.compiler.nodes.spi.LoweringTool;
-import org.graalvm.compiler.options.OptionValues;
-import org.graalvm.compiler.phases.util.Providers;
-import org.graalvm.compiler.replacements.SnippetTemplate;
-import org.graalvm.compiler.replacements.SnippetTemplate.Arguments;
-import org.graalvm.compiler.replacements.SnippetTemplate.SnippetInfo;
-import org.graalvm.compiler.replacements.Snippets;
+import jdk.graal.compiler.api.replacements.Snippet;
+import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.nodes.spi.LoweringTool;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.phases.util.Providers;
+import jdk.graal.compiler.replacements.SnippetTemplate;
+import jdk.graal.compiler.replacements.SnippetTemplate.Arguments;
+import jdk.graal.compiler.replacements.SnippetTemplate.SnippetInfo;
+import jdk.graal.compiler.replacements.Snippets;
 import org.graalvm.word.Pointer;
 
+import com.oracle.svm.core.graal.nodes.VaListInitializationNode;
 import com.oracle.svm.core.graal.nodes.VaListNextArgNode;
 import com.oracle.svm.core.graal.snippets.NodeLoweringProvider;
 import com.oracle.svm.core.graal.snippets.SubstrateTemplates;
@@ -99,6 +100,11 @@ final class PosixAArch64VaListSnippets extends SubstrateTemplates implements Sni
     private static final int GP_TOP_LOCATION = 8;
     private static final int FP_TOP_LOCATION = 16;
 
+    @Snippet
+    protected static Pointer vaListInitializationSnippet(Pointer vaList) {
+        return vaList;
+    }
+
     @Snippet(allowMissingProbabilities = true)
     protected static double vaArgDoubleSnippet(Pointer vaList) {
         int fpOffset = vaList.readInt(FP_OFFSET_LOCATION);
@@ -147,6 +153,8 @@ final class PosixAArch64VaListSnippets extends SubstrateTemplates implements Sni
         new PosixAArch64VaListSnippets(options, providers, lowerings);
     }
 
+    private final SnippetInfo vaListInitialization;
+
     private final SnippetInfo vaArgDouble;
     private final SnippetInfo vaArgFloat;
     private final SnippetInfo vaArgLong;
@@ -154,12 +162,24 @@ final class PosixAArch64VaListSnippets extends SubstrateTemplates implements Sni
 
     private PosixAArch64VaListSnippets(OptionValues options, Providers providers, Map<Class<? extends Node>, NodeLoweringProvider<?>> lowerings) {
         super(options, providers);
+        lowerings.put(VaListInitializationNode.class, new VaListInitializationSnippetsLowering());
         lowerings.put(VaListNextArgNode.class, new VaListSnippetsLowering());
+
+        this.vaListInitialization = snippet(providers, PosixAArch64VaListSnippets.class, "vaListInitializationSnippet");
 
         this.vaArgDouble = snippet(providers, PosixAArch64VaListSnippets.class, "vaArgDoubleSnippet");
         this.vaArgFloat = snippet(providers, PosixAArch64VaListSnippets.class, "vaArgFloatSnippet");
         this.vaArgLong = snippet(providers, PosixAArch64VaListSnippets.class, "vaArgLongSnippet");
         this.vaArgInt = snippet(providers, PosixAArch64VaListSnippets.class, "vaArgIntSnippet");
+    }
+
+    protected class VaListInitializationSnippetsLowering implements NodeLoweringProvider<VaListInitializationNode> {
+        @Override
+        public void lower(VaListInitializationNode node, LoweringTool tool) {
+            Arguments args = new Arguments(vaListInitialization, node.graph().getGuardsStage(), tool.getLoweringStage());
+            args.add("vaList", node.getVaList());
+            template(tool, node, args).instantiate(tool.getMetaAccess(), node, SnippetTemplate.DEFAULT_REPLACER, args);
+        }
     }
 
     protected class VaListSnippetsLowering implements NodeLoweringProvider<VaListNextArgNode> {
@@ -182,7 +202,7 @@ final class PosixAArch64VaListSnippets extends SubstrateTemplates implements Sni
                     break;
                 default:
                     // getStackKind() should be at least int
-                    throw VMError.shouldNotReachHere();
+                    throw VMError.shouldNotReachHereUnexpectedInput(node.getStackKind()); // ExcludeFromJacocoGeneratedReport
             }
             Arguments args = new Arguments(snippet, node.graph().getGuardsStage(), tool.getLoweringStage());
             args.add("vaList", node.getVaList());

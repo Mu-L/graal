@@ -24,11 +24,6 @@
  */
 package com.oracle.svm.core.log;
 
-import com.oracle.svm.core.heap.RestrictHeapAccess;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.c.CGlobalData;
-import com.oracle.svm.core.c.CGlobalDataFactory;
-import com.oracle.svm.core.headers.LibC;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.LogHandler;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
@@ -38,6 +33,12 @@ import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.UnsignedWord;
+
+import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.c.CGlobalData;
+import com.oracle.svm.core.c.CGlobalDataFactory;
+import com.oracle.svm.core.headers.LibC;
+import com.oracle.svm.core.heap.RestrictHeapAccess;
 
 /**
  * A {@link LogHandler} that can use provided function pointers for each operation. If a function
@@ -122,10 +123,6 @@ public class FunctionPointerLogHandler implements LogHandlerExtension {
         }
     }
 
-    public CFunctionPointer getFatalErrorFunctionPointer() {
-        return fatalErrorFunctionPointer;
-    }
-
     interface LogFunctionPointer extends CFunctionPointer {
         @InvokeCFunctionPointer
         void invoke(CCharPointer bytes, UnsignedWord length);
@@ -136,12 +133,7 @@ public class FunctionPointerLogHandler implements LogHandlerExtension {
         void invoke();
     }
 
-    interface FatalContextFunctionPointer extends CFunctionPointer {
-        @InvokeCFunctionPointer
-        boolean invoke(CodePointer callerIP, String msg, Throwable ex);
-    }
-
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean isJniVMOption(CCharPointer optionString) {
         return LibC.strcmp(optionString, LOG_OPTION.get()) == 0 ||
                         LibC.strcmp(optionString, FATAL_LOG_OPTION.get()) == 0 ||

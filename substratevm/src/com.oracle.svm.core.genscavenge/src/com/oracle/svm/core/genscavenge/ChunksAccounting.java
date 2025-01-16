@@ -24,13 +24,12 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.log.Log;
 
 /**
  * Accounting for a {@link Space} or {@link Generation}. For the eden space, the values are
@@ -54,12 +53,14 @@ final class ChunksAccounting {
         reset();
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public void reset() {
         alignedCount = 0L;
         unalignedCount = 0L;
-        unalignedChunkBytes = WordFactory.zero();
+        unalignedChunkBytes = Word.zero();
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public UnsignedWord getChunkBytes() {
         return getAlignedChunkBytes().add(getUnalignedChunkBytes());
     }
@@ -70,7 +71,7 @@ final class ChunksAccounting {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public UnsignedWord getAlignedChunkBytes() {
-        return WordFactory.unsigned(alignedCount).multiply(HeapParameters.getAlignedHeapChunkSize());
+        return Word.unsigned(alignedCount).multiply(HeapParameters.getAlignedHeapChunkSize());
     }
 
     public long getUnalignedChunkCount() {
@@ -82,12 +83,6 @@ final class ChunksAccounting {
         return unalignedChunkBytes;
     }
 
-    void report(Log reportLog) {
-        reportLog.string("aligned: ").unsigned(getAlignedChunkBytes()).string("/").unsigned(alignedCount);
-        reportLog.string(" ");
-        reportLog.string("unaligned: ").unsigned(unalignedChunkBytes).string("/").unsigned(unalignedCount);
-    }
-
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     void noteAlignedHeapChunk() {
         alignedCount++;
@@ -96,6 +91,7 @@ final class ChunksAccounting {
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     void unnoteAlignedHeapChunk() {
         alignedCount--;
         if (parent != null) {
@@ -117,10 +113,12 @@ final class ChunksAccounting {
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     void unnoteUnalignedHeapChunk(UnalignedHeapChunk.UnalignedHeader chunk) {
         unnoteUnaligned(UnalignedHeapChunk.getCommittedObjectMemory(chunk));
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private void unnoteUnaligned(UnsignedWord size) {
         unalignedCount--;
         unalignedChunkBytes = unalignedChunkBytes.subtract(size);

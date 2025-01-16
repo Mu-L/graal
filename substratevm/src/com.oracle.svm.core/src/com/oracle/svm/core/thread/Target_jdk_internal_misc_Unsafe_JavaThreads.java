@@ -53,20 +53,8 @@ final class Target_jdk_internal_misc_Unsafe_JavaThreads {
         Thread t = Thread.currentThread();
         Object parkBlocker = LockSupport.getBlocker(t);
 
-        /* Decide what kind of park I am doing. */
-        if (!isAbsolute && time == 0L) {
-            /* Park without deadline. */
-            PlatformThreads.parkCurrentPlatformOrCarrierThread();
-            ThreadParkEvent.emit(startTicks, parkBlocker, Long.MIN_VALUE, Long.MIN_VALUE);
-        } else {
-            /* Park with deadline. */
-            PlatformThreads.parkCurrentPlatformOrCarrierThread(isAbsolute, time);
-            if (isAbsolute) {
-                ThreadParkEvent.emit(startTicks, parkBlocker, Long.MIN_VALUE, time);
-            } else {
-                ThreadParkEvent.emit(startTicks, parkBlocker, time, Long.MIN_VALUE);
-            }
-        }
+        PlatformThreads.parkCurrentPlatformOrCarrierThread(isAbsolute, time);
+        ThreadParkEvent.emit(startTicks, parkBlocker, isAbsolute, time);
         /*
          * Unsafe.park does not distinguish between timing out, being unparked, and being
          * interrupted, but the thread's interrupt status must be preserved.
@@ -89,10 +77,7 @@ final class Target_jdk_internal_misc_Unsafe_JavaThreads {
             if (!(threadObj instanceof Thread)) {
                 throw new IllegalArgumentException("Unsafe.unpark(!(thread instanceof Thread))");
             }
-            Thread thread = (Thread) threadObj;
-            if (!VirtualThreads.isSupported() || !VirtualThreads.singleton().isVirtual(thread)) {
-                PlatformThreads.unpark(thread);
-            }
+            PlatformThreads.unpark((Thread) threadObj);
         }
     }
 }

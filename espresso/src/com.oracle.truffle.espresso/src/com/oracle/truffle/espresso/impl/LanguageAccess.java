@@ -24,10 +24,10 @@ package com.oracle.truffle.espresso.impl;
 
 import com.oracle.truffle.espresso.EspressoLanguage;
 import com.oracle.truffle.espresso.EspressoOptions;
-import com.oracle.truffle.espresso.descriptors.Names;
-import com.oracle.truffle.espresso.descriptors.Signatures;
-import com.oracle.truffle.espresso.descriptors.Types;
-import com.oracle.truffle.espresso.runtime.JavaVersion;
+import com.oracle.truffle.espresso.classfile.JavaVersion;
+import com.oracle.truffle.espresso.classfile.descriptors.Names;
+import com.oracle.truffle.espresso.classfile.descriptors.Signatures;
+import com.oracle.truffle.espresso.classfile.descriptors.Types;
 
 public interface LanguageAccess {
     EspressoLanguage getLanguage();
@@ -46,6 +46,10 @@ public interface LanguageAccess {
 
     default JavaVersion getJavaVersion() {
         return getLanguage().getJavaVersion();
+    }
+
+    default boolean isPreviewEnabled() {
+        return getLanguage().isPreviewEnabled();
     }
 
     default EspressoOptions.SpecComplianceMode getSpecComplianceMode() {

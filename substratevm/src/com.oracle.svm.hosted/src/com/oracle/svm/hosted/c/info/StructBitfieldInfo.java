@@ -38,12 +38,13 @@ public class StructBitfieldInfo extends ElementInfo {
     private final PropertyInfo<Integer> endBit;
     private final PropertyInfo<SignednessValue> signednessInfo;
 
+    @SuppressWarnings("this-escape")
     public StructBitfieldInfo(String name) {
         super(name);
-        this.byteOffset = adoptChild(new PropertyInfo<Integer>("byteOffset"));
-        this.startBit = adoptChild(new PropertyInfo<Integer>("startBit"));
-        this.endBit = adoptChild(new PropertyInfo<Integer>("endBit"));
-        this.signednessInfo = adoptChild(new PropertyInfo<SignednessValue>("signedness"));
+        this.byteOffset = adoptChild(new PropertyInfo<>("byteOffset"));
+        this.startBit = adoptChild(new PropertyInfo<>("startBit"));
+        this.endBit = adoptChild(new PropertyInfo<>("endBit"));
+        this.signednessInfo = adoptChild(new PropertyInfo<>("signedness"));
     }
 
     public PropertyInfo<Integer> getByteOffsetInfo() {

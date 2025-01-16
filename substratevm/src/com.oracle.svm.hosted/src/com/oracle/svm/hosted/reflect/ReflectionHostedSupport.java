@@ -26,19 +26,22 @@ package com.oracle.svm.hosted.reflect;
 
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
+import java.lang.reflect.RecordComponent;
 import java.util.Map;
 import java.util.Set;
 
 import com.oracle.graal.pointsto.ObjectScanner.ScanReason;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.core.configure.ConditionalRuntimeValue;
 
 public interface ReflectionHostedSupport {
     Map<Class<?>, Set<Class<?>>> getReflectionInnerClasses();
 
-    Map<AnalysisField, Field> getReflectionFields();
+    Map<AnalysisType, Map<AnalysisField, ConditionalRuntimeValue<Field>>> getReflectionFields();
 
-    Map<AnalysisMethod, Executable> getReflectionExecutables();
+    Map<AnalysisType, Map<AnalysisMethod, ConditionalRuntimeValue<Executable>>> getReflectionExecutables();
 
     Object getAccessor(AnalysisMethod method);
 
@@ -54,7 +57,7 @@ public interface ReflectionHostedSupport {
      */
     Set<?> getHidingReflectionMethods();
 
-    Object[] getRecordComponents(Class<?> type);
+    RecordComponent[] getRecordComponents(Class<?> type);
 
     void registerHeapDynamicHub(Object hub, ScanReason reason);
 
@@ -67,6 +70,20 @@ public interface ReflectionHostedSupport {
     Map<AnalysisField, Field> getHeapReflectionFields();
 
     Map<AnalysisMethod, Executable> getHeapReflectionExecutables();
+
+    Map<AnalysisType, Set<String>> getNegativeFieldQueries();
+
+    Map<AnalysisType, Set<AnalysisMethod.Signature>> getNegativeMethodQueries();
+
+    Map<AnalysisType, Set<AnalysisType[]>> getNegativeConstructorQueries();
+
+    Map<Class<?>, Throwable> getClassLookupErrors();
+
+    Map<Class<?>, Throwable> getFieldLookupErrors();
+
+    Map<Class<?>, Throwable> getMethodLookupErrors();
+
+    Map<Class<?>, Throwable> getConstructorLookupErrors();
 
     int getReflectionMethodsCount();
 

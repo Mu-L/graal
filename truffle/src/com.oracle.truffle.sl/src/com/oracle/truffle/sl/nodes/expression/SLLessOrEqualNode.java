@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,33 +40,54 @@
  */
 package com.oracle.truffle.sl.nodes.expression;
 
+import static com.oracle.truffle.api.CompilerDirectives.shouldNotReachHere;
+
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.bytecode.OperationProxy;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.interop.InteropLibrary;
+import com.oracle.truffle.api.interop.UnsupportedMessageException;
+import com.oracle.truffle.api.library.CachedLibrary;
+import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeInfo;
 import com.oracle.truffle.sl.SLException;
 import com.oracle.truffle.sl.nodes.SLBinaryNode;
-import com.oracle.truffle.sl.runtime.SLBigNumber;
+import com.oracle.truffle.sl.runtime.SLBigInteger;
 
 /**
  * This class is similar to the {@link SLLessThanNode}.
  */
 @NodeInfo(shortName = "<=")
+@OperationProxy.Proxyable(allowUncached = true)
 public abstract class SLLessOrEqualNode extends SLBinaryNode {
 
     @Specialization
-    protected boolean lessOrEqual(long left, long right) {
+    public static boolean doLong(long left, long right) {
         return left <= right;
     }
 
     @Specialization
     @TruffleBoundary
-    protected boolean lessOrEqual(SLBigNumber left, SLBigNumber right) {
+    public static boolean doSLBigInteger(SLBigInteger left, SLBigInteger right) {
         return left.compareTo(right) <= 0;
     }
 
+    @Specialization(replaces = "doSLBigInteger", guards = {"leftLibrary.fitsInBigInteger(left)", "rightLibrary.fitsInBigInteger(right)"}, limit = "3")
+    @TruffleBoundary
+    public static boolean doInteropBigInteger(Object left, Object right,
+                    @CachedLibrary("left") InteropLibrary leftLibrary,
+                    @CachedLibrary("right") InteropLibrary rightLibrary) {
+        try {
+            return leftLibrary.asBigInteger(left).compareTo(rightLibrary.asBigInteger(right)) <= 0;
+        } catch (UnsupportedMessageException e) {
+            throw shouldNotReachHere(e);
+        }
+    }
+
     @Fallback
-    protected Object typeError(Object left, Object right) {
-        throw SLException.typeError(this, left, right);
+    public static Object typeError(Object left, Object right, @Bind Node node) {
+        throw SLException.typeError(node, "<=", left, right);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,17 +23,20 @@
 package com.oracle.truffle.espresso.meta;
 
 import static com.oracle.truffle.espresso.EspressoOptions.SpecComplianceMode.HOTSPOT;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.ALL;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.VERSION_16_OR_HIGHER;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.VERSION_17_OR_HIGHER;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.VERSION_19_OR_HIGHER;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.VERSION_8_OR_LOWER;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.VERSION_9_OR_HIGHER;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.higher;
-import static com.oracle.truffle.espresso.runtime.JavaVersion.VersionRange.lower;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.ALL;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.VERSION_16_OR_HIGHER;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.VERSION_17_OR_HIGHER;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.VERSION_19_OR_HIGHER;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.VERSION_8_OR_LOWER;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.VERSION_9_OR_HIGHER;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.higher;
+import static com.oracle.truffle.espresso.classfile.JavaVersion.VersionRange.lower;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
@@ -42,22 +45,27 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.HostCompilerDirectives;
 import com.oracle.truffle.espresso.EspressoOptions;
 import com.oracle.truffle.espresso.EspressoOptions.SpecComplianceMode;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Name;
-import com.oracle.truffle.espresso.descriptors.Symbol.Signature;
-import com.oracle.truffle.espresso.descriptors.Symbol.Type;
-import com.oracle.truffle.espresso.descriptors.Types;
+import com.oracle.truffle.espresso.classfile.JavaKind;
+import com.oracle.truffle.espresso.classfile.descriptors.ByteSequence;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Name;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Signature;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Type;
+import com.oracle.truffle.espresso.classfile.descriptors.Types;
 import com.oracle.truffle.espresso.impl.ArrayKlass;
 import com.oracle.truffle.espresso.impl.ContextAccessImpl;
 import com.oracle.truffle.espresso.impl.EspressoClassLoadingException;
 import com.oracle.truffle.espresso.impl.Field;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
+import com.oracle.truffle.espresso.impl.ModuleTable;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
 import com.oracle.truffle.espresso.impl.PrimitiveKlass;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.EspressoException;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
+import com.oracle.truffle.espresso.shared.meta.KnownTypes;
+import com.oracle.truffle.espresso.substitutions.JImageExtensions;
 import com.oracle.truffle.espresso.substitutions.JavaType;
 import com.oracle.truffle.espresso.vm.InterpreterToVM;
 
@@ -65,7 +73,8 @@ import com.oracle.truffle.espresso.vm.InterpreterToVM;
  * Introspection API to access the guest world from the host. Provides seamless conversions from
  * host to guest classes for a well known subset (e.g. common types and exceptions).
  */
-public final class Meta extends ContextAccessImpl {
+public final class Meta extends ContextAccessImpl
+                implements KnownTypes<Klass, Method, Field> {
 
     private final ExceptionDispatch dispatch;
     private final StringConversion stringConversion;
@@ -128,8 +137,14 @@ public final class Meta extends ContextAccessImpl {
         java_lang_Class_getTypeName = java_lang_Class.requireDeclaredMethod(Name.getTypeName, Signature.String);
         java_lang_Class_forName_String = java_lang_Class.requireDeclaredMethod(Name.forName, Signature.Class_String);
         java_lang_Class_forName_String_boolean_ClassLoader = java_lang_Class.requireDeclaredMethod(Name.forName, Signature.Class_String_boolean_ClassLoader);
+        if (getLanguage().isJVMCIEnabled()) {
+            HIDDEN_JVMCIINDY = java_lang_Class.requireHiddenField(Name.HIDDEN_JVMCIINDY);
+        } else {
+            HIDDEN_JVMCIINDY = null;
+        }
 
         java_lang_String = knownKlass(Type.java_lang_String);
+        java_lang_String_array = java_lang_String.array();
         java_lang_CharSequence = knownKlass(Type.java_lang_CharSequence);
 
         // Primitives.
@@ -187,6 +202,8 @@ public final class Meta extends ContextAccessImpl {
                         java_lang_Void
         };
 
+        java_lang_Number = knownKlass(Type.java_lang_Number);
+
         java_lang_Boolean_valueOf = java_lang_Boolean.requireDeclaredMethod(Name.valueOf, Signature.Boolean_boolean);
         java_lang_Byte_valueOf = java_lang_Byte.requireDeclaredMethod(Name.valueOf, Signature.Byte_byte);
         java_lang_Character_valueOf = java_lang_Character.requireDeclaredMethod(Name.valueOf, Signature.Character_char);
@@ -223,11 +240,17 @@ public final class Meta extends ContextAccessImpl {
             java_lang_String_COMPACT_STRINGS = null;
         }
 
+        java_lang_CharSequence_toString = java_lang_CharSequence.requireDeclaredMethod(Name.toString, Signature.String);
+
         java_lang_Throwable = knownKlass(Type.java_lang_Throwable);
         java_lang_Throwable_getStackTrace = java_lang_Throwable.requireDeclaredMethod(Name.getStackTrace, Signature.StackTraceElement_array);
+        java_lang_Throwable_getMessage = java_lang_Throwable.requireDeclaredMethod(Name.getMessage, Signature.String);
+        java_lang_Throwable_getCause = java_lang_Throwable.requireDeclaredMethod(Name.getCause, Signature.Throwable);
+        java_lang_Throwable_printStackTrace = java_lang_Throwable.requireDeclaredMethod(Name.printStackTrace, Signature._void);
         HIDDEN_FRAMES = java_lang_Throwable.requireHiddenField(Name.HIDDEN_FRAMES);
         HIDDEN_EXCEPTION_WRAPPER = java_lang_Throwable.requireHiddenField(Name.HIDDEN_EXCEPTION_WRAPPER);
         java_lang_Throwable_backtrace = java_lang_Throwable.requireDeclaredField(Name.backtrace, Type.java_lang_Object);
+        java_lang_Throwable_stackTrace = java_lang_Throwable.requireDeclaredField(Name.stackTrace, Type.java_lang_StackTraceElement_array);
         java_lang_Throwable_detailMessage = java_lang_Throwable.requireDeclaredField(Name.detailMessage, Type.java_lang_String);
         java_lang_Throwable_cause = java_lang_Throwable.requireDeclaredField(Name.cause, Type.java_lang_Throwable);
         if (getJavaVersion().java9OrLater()) {
@@ -260,6 +283,11 @@ public final class Meta extends ContextAccessImpl {
         java_lang_IllegalArgumentException = knownKlass(Type.java_lang_IllegalArgumentException);
         java_lang_IllegalStateException = knownKlass(Type.java_lang_IllegalStateException);
         java_lang_NullPointerException = knownKlass(Type.java_lang_NullPointerException);
+        if (getJavaVersion().java14OrLater()) {
+            java_lang_NullPointerException_extendedMessageState = java_lang_NullPointerException.requireDeclaredField(Name.extendedMessageState, Type._int);
+        } else {
+            java_lang_NullPointerException_extendedMessageState = null;
+        }
         java_lang_ClassNotFoundException = knownKlass(Type.java_lang_ClassNotFoundException);
         java_lang_NoClassDefFoundError = knownKlass(Type.java_lang_NoClassDefFoundError);
         java_lang_InterruptedException = knownKlass(Type.java_lang_InterruptedException);
@@ -281,6 +309,8 @@ public final class Meta extends ContextAccessImpl {
         java_lang_NoSuchFieldException = knownKlass(Type.java_lang_NoSuchFieldException);
         java_lang_NoSuchMethodException = knownKlass(Type.java_lang_NoSuchMethodException);
         java_lang_UnsupportedOperationException = knownKlass(Type.java_lang_UnsupportedOperationException);
+        java_util_NoSuchElementException = knownKlass(Type.java_util_NoSuchElementException);
+        java_lang_NumberFormatException = knownKlass(Type.java_lang_NumberFormatException);
 
         java_lang_StackOverflowError = knownKlass(Type.java_lang_StackOverflowError);
         java_lang_OutOfMemoryError = knownKlass(Type.java_lang_OutOfMemoryError);
@@ -320,9 +350,27 @@ public final class Meta extends ContextAccessImpl {
         if (getJavaVersion().java9OrLater()) {
             java_lang_ClassLoader_unnamedModule = java_lang_ClassLoader.requireDeclaredField(Name.unnamedModule, Type.java_lang_Module);
             java_lang_ClassLoader_name = java_lang_ClassLoader.requireDeclaredField(Name.name, Type.java_lang_String);
+            java_lang_ClassLoader_nameAndId = java_lang_ClassLoader.requireDeclaredField(Name.nameAndId, Type.java_lang_String);
         } else {
             java_lang_ClassLoader_unnamedModule = null;
             java_lang_ClassLoader_name = null;
+            java_lang_ClassLoader_nameAndId = null;
+        }
+
+        if (getJavaVersion().java19OrLater()) {
+            jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl = knownKlass(Type.jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl);
+            jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl_handle = jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl.requireDeclaredField(Name.handle, Type._long);
+        } else {
+            jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl = null;
+            jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl_handle = null;
+        }
+
+        if (getJavaVersion().java9OrLater()) {
+            jdk_internal_util_ArraysSupport = knownKlass(Type.jdk_internal_util_ArraysSupport);
+            jdk_internal_util_ArraysSupport_vectorizedMismatch = jdk_internal_util_ArraysSupport.requireDeclaredMethod(Name.vectorizedMismatch, Signature._int_Object_long_Object_long_int_int);
+        } else {
+            jdk_internal_util_ArraysSupport = null;
+            jdk_internal_util_ArraysSupport_vectorizedMismatch = null;
         }
 
         java_net_URL = knownKlass(Type.java_net_URL);
@@ -338,6 +386,18 @@ public final class Meta extends ContextAccessImpl {
         java_nio_file_Paths = knownKlass(Type.java_nio_file_Paths);
         java_nio_file_Paths_get = java_nio_file_Paths.requireDeclaredMethod(Name.get, Signature.Path_String_String_array);
 
+        ObjectKlass nioNativeThreadKlass = knownKlass(Type.sun_nio_ch_NativeThread);
+        sun_nio_ch_NativeThread_init = nioNativeThreadKlass.lookupDeclaredMethod(Name.init, Signature._void);
+        if (getJavaVersion().java21OrLater()) {
+            sun_nio_ch_NativeThread_isNativeThread = nioNativeThreadKlass.requireDeclaredMethod(Name.isNativeThread, Signature._boolean_long);
+            sun_nio_ch_NativeThread_current0 = nioNativeThreadKlass.lookupDeclaredMethod(Name.current0, Signature._long);
+            sun_nio_ch_NativeThread_signal = null;
+        } else {
+            sun_nio_ch_NativeThread_isNativeThread = null;
+            sun_nio_ch_NativeThread_current0 = null;
+            sun_nio_ch_NativeThread_signal = nioNativeThreadKlass.requireDeclaredMethod(Name.signal, Signature._void_long);
+        }
+
         sun_launcher_LauncherHelper = knownKlass(Type.sun_launcher_LauncherHelper);
         sun_launcher_LauncherHelper_printHelpMessage = sun_launcher_LauncherHelper.requireDeclaredMethod(Name.printHelpMessage, Signature._void_boolean);
         sun_launcher_LauncherHelper_ostream = sun_launcher_LauncherHelper.requireDeclaredField(Name.ostream, Type.java_io_PrintStream);
@@ -345,6 +405,8 @@ public final class Meta extends ContextAccessImpl {
         // Guest reflection.
         java_lang_reflect_Executable = knownKlass(Type.java_lang_reflect_Executable);
         java_lang_reflect_Constructor = knownKlass(Type.java_lang_reflect_Constructor);
+        java_lang_reflect_Constructor_init = java_lang_reflect_Constructor.requireDeclaredMethod(Name._init_, Signature.java_lang_reflect_Constructor_init_signature);
+
         HIDDEN_CONSTRUCTOR_KEY = java_lang_reflect_Constructor.requireHiddenField(Name.HIDDEN_CONSTRUCTOR_KEY);
         HIDDEN_CONSTRUCTOR_RUNTIME_VISIBLE_TYPE_ANNOTATIONS = java_lang_reflect_Constructor.requireHiddenField(Name.HIDDEN_CONSTRUCTOR_RUNTIME_VISIBLE_TYPE_ANNOTATIONS);
         java_lang_reflect_Constructor_clazz = java_lang_reflect_Constructor.requireDeclaredField(Name.clazz, Type.java_lang_Class);
@@ -361,6 +423,8 @@ public final class Meta extends ContextAccessImpl {
         java_lang_reflect_Method_parameterTypes = java_lang_reflect_Method.requireDeclaredField(Name.parameterTypes, Type.java_lang_Class_array);
 
         java_lang_reflect_Parameter = knownKlass(Type.java_lang_reflect_Parameter);
+        java_lang_reflect_ParameterizedType = knownKlass(Type.java_lang_reflect_ParameterizedType);
+        java_lang_reflect_ParameterizedType_getRawType = java_lang_reflect_ParameterizedType.requireDeclaredMethod(Name.getRawType, Signature.Java_lang_reflect_Type);
 
         java_lang_reflect_Field = knownKlass(Type.java_lang_reflect_Field);
         HIDDEN_FIELD_KEY = java_lang_reflect_Field.requireHiddenField(Name.HIDDEN_FIELD_KEY);
@@ -370,6 +434,11 @@ public final class Meta extends ContextAccessImpl {
         java_lang_reflect_Field_name = java_lang_reflect_Field.requireDeclaredField(Name.name, Type.java_lang_String);
         java_lang_reflect_Field_type = java_lang_reflect_Field.requireDeclaredField(Name.type, Type.java_lang_Class);
 
+        java_lang_reflect_Field_init = diff() //
+                        .method(lower(14), Name._init_, Signature.java_lang_reflect_Field_init_signature) //
+                        .method(higher(15), Name._init_, Signature.java_lang_reflect_Field_init_signature_15) //
+                        .method(java_lang_reflect_Field);
+
         java_lang_Shutdown = knownKlass(Type.java_lang_Shutdown);
         java_lang_Shutdown_shutdown = java_lang_Shutdown.requireDeclaredMethod(Name.shutdown, Signature._void);
 
@@ -377,16 +446,41 @@ public final class Meta extends ContextAccessImpl {
         sun_nio_ch_DirectBuffer = knownKlass(Type.sun_nio_ch_DirectBuffer);
         java_nio_Buffer_address = java_nio_Buffer.requireDeclaredField(Name.address, Type._long);
         java_nio_Buffer_capacity = java_nio_Buffer.requireDeclaredField(Name.capacity, Type._int);
+        java_nio_Buffer_limit = java_nio_Buffer.requireDeclaredMethod(Name.limit, Signature._int);
+        java_nio_Buffer_isReadOnly = java_nio_Buffer.requireDeclaredMethod(Name.isReadOnly, Signature._boolean);
 
         java_nio_ByteBuffer = knownKlass(Type.java_nio_ByteBuffer);
         java_nio_ByteBuffer_wrap = java_nio_ByteBuffer.requireDeclaredMethod(Name.wrap, Signature.ByteBuffer_byte_array);
+        if (getJavaVersion().java13OrLater()) {
+            java_nio_ByteBuffer_get = java_nio_ByteBuffer.requireDeclaredMethod(Name.get, Signature.ByteBuffer_int_byte_array_int_int);
+        } else {
+            java_nio_ByteBuffer_get = null;
+        }
+        java_nio_ByteBuffer_getByte = java_nio_ByteBuffer.requireDeclaredMethod(Name.get, Signature._byte_int);
+        java_nio_ByteBuffer_getShort = java_nio_ByteBuffer.requireDeclaredMethod(Name.getShort, Signature._short_int);
+        java_nio_ByteBuffer_getInt = java_nio_ByteBuffer.requireDeclaredMethod(Name.getInt, Signature._int_int);
+        java_nio_ByteBuffer_getLong = java_nio_ByteBuffer.requireDeclaredMethod(Name.getLong, Signature._long_int);
+        java_nio_ByteBuffer_getFloat = java_nio_ByteBuffer.requireDeclaredMethod(Name.getFloat, Signature._float_int);
+        java_nio_ByteBuffer_getDouble = java_nio_ByteBuffer.requireDeclaredMethod(Name.getDouble, Signature._double_int);
+        java_nio_ByteBuffer_putByte = java_nio_ByteBuffer.requireDeclaredMethod(Name.put, Signature.ByteBuffer_int_byte);
+        java_nio_ByteBuffer_putShort = java_nio_ByteBuffer.requireDeclaredMethod(Name.putShort, Signature.ByteBuffer_int_short);
+        java_nio_ByteBuffer_putInt = java_nio_ByteBuffer.requireDeclaredMethod(Name.putInt, Signature.ByteBuffer_int_int);
+        java_nio_ByteBuffer_putLong = java_nio_ByteBuffer.requireDeclaredMethod(Name.putLong, Signature.ByteBuffer_int_long);
+        java_nio_ByteBuffer_putFloat = java_nio_ByteBuffer.requireDeclaredMethod(Name.putFloat, Signature.ByteBuffer_int_float);
+        java_nio_ByteBuffer_putDouble = java_nio_ByteBuffer.requireDeclaredMethod(Name.putDouble, Signature.ByteBuffer_int_double);
+        java_nio_ByteBuffer_order = java_nio_ByteBuffer.requireDeclaredMethod(Name.order, Signature.ByteOrder);
+        java_nio_ByteBuffer_setOrder = java_nio_ByteBuffer.requireDeclaredMethod(Name.order, Signature.ByteBuffer_ByteOrder);
+
         java_nio_DirectByteBuffer = knownKlass(Type.java_nio_DirectByteBuffer);
-        java_nio_DirectByteBuffer_init_long_int = java_nio_DirectByteBuffer.requireDeclaredMethod(Name._init_, Signature._void_long_int);
+        java_nio_DirectByteBuffer_init_long_int = diff() //
+                        .method(lower(20), Name._init_, Signature._void_long_int) //
+                        .method(higher(21), Name._init_, Signature._void_long_long) //
+                        .method(java_nio_DirectByteBuffer);
         java_nio_ByteOrder = knownKlass(Type.java_nio_ByteOrder);
         java_nio_ByteOrder_LITTLE_ENDIAN = java_nio_ByteOrder.requireDeclaredField(Name.LITTLE_ENDIAN, Type.java_nio_ByteOrder);
+        java_nio_ByteOrder_BIG_ENDIAN = java_nio_ByteOrder.requireDeclaredField(Name.BIG_ENDIAN, Type.java_nio_ByteOrder);
 
         java_lang_Thread = knownKlass(Type.java_lang_Thread);
-        java_lang_Thread$FieldHolder = getJavaVersion().java19OrLater() ? knownKlass(Type.java_lang_Thread_FieldHolder) : null;
         // The interrupted field is no longer hidden as of JDK14+
         HIDDEN_INTERRUPTED = diff() //
                         .field(lower(13), Name.HIDDEN_INTERRUPTED, Type._boolean)//
@@ -397,17 +491,41 @@ public final class Meta extends ContextAccessImpl {
         HIDDEN_DEPRECATION_SUPPORT = java_lang_Thread.requireHiddenField(Name.HIDDEN_DEPRECATION_SUPPORT);
         HIDDEN_THREAD_UNPARK_SIGNALS = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_UNPARK_SIGNALS);
         HIDDEN_THREAD_PARK_LOCK = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_PARK_LOCK);
-
-        if (context.getEspressoEnv().EnableManagement) {
-            HIDDEN_THREAD_BLOCKED_OBJECT = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_BLOCKED_OBJECT);
-            HIDDEN_THREAD_BLOCKED_COUNT = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_BLOCKED_COUNT);
-            HIDDEN_THREAD_WAITED_COUNT = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_WAITED_COUNT);
+        if (getJavaVersion().java19OrLater()) {
+            HIDDEN_THREAD_SCOPED_VALUE_CACHE = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_SCOPED_VALUE_CACHE);
         } else {
-            HIDDEN_THREAD_BLOCKED_OBJECT = null;
-            HIDDEN_THREAD_BLOCKED_COUNT = null;
-            HIDDEN_THREAD_WAITED_COUNT = null;
+            HIDDEN_THREAD_SCOPED_VALUE_CACHE = null;
         }
 
+        if (context.getEspressoEnv().EnableManagement) {
+            HIDDEN_THREAD_PENDING_MONITOR = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_PENDING_MONITOR);
+            HIDDEN_THREAD_WAITING_MONITOR = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_WAITING_MONITOR);
+            HIDDEN_THREAD_BLOCKED_COUNT = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_BLOCKED_COUNT);
+            HIDDEN_THREAD_WAITED_COUNT = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_WAITED_COUNT);
+            HIDDEN_THREAD_DEPTH_FIRST_NUMBER = java_lang_Thread.requireHiddenField(Name.HIDDEN_THREAD_DEPTH_FIRST_NUMBER);
+        } else {
+            HIDDEN_THREAD_PENDING_MONITOR = null;
+            HIDDEN_THREAD_WAITING_MONITOR = null;
+            HIDDEN_THREAD_BLOCKED_COUNT = null;
+            HIDDEN_THREAD_WAITED_COUNT = null;
+            HIDDEN_THREAD_DEPTH_FIRST_NUMBER = null;
+        }
+
+        if (getJavaVersion().java19OrLater()) {
+            java_lang_BaseVirtualThread = knownKlass(Type.java_lang_BaseVirtualThread);
+            java_lang_Thread_threadGroup = null;
+            java_lang_Thread$FieldHolder = knownKlass(Type.java_lang_Thread_FieldHolder);
+            java_lang_Thread$Constants = knownKlass(Type.java_lang_Thread_Constants);
+            java_lang_Thread$FieldHolder_group = java_lang_Thread$FieldHolder.requireDeclaredField(Name.group, Type.java_lang_ThreadGroup);
+            java_lang_Thread$Constants_VTHREAD_GROUP = java_lang_Thread$Constants.requireDeclaredField(Name.VTHREAD_GROUP, Type.java_lang_ThreadGroup);
+        } else {
+            java_lang_BaseVirtualThread = null;
+            java_lang_Thread$FieldHolder = null;
+            java_lang_Thread$Constants = null;
+            java_lang_Thread_threadGroup = java_lang_Thread.requireDeclaredField(Name.group, Type.java_lang_ThreadGroup);
+            java_lang_Thread$FieldHolder_group = null;
+            java_lang_Thread$Constants_VTHREAD_GROUP = null;
+        }
         java_lang_ThreadGroup = knownKlass(Type.java_lang_ThreadGroup);
         if (getJavaVersion().java17OrEarlier()) {
             java_lang_ThreadGroup_add = java_lang_ThreadGroup.requireDeclaredMethod(Name.add, Signature._void_Thread);
@@ -420,14 +538,12 @@ public final class Meta extends ContextAccessImpl {
         java_lang_Thread_interrupt = java_lang_Thread.requireDeclaredMethod(Name.interrupt, Signature._void);
         java_lang_Thread_exit = java_lang_Thread.requireDeclaredMethod(Name.exit, Signature._void);
         java_lang_Thread_run = java_lang_Thread.requireDeclaredMethod(Name.run, Signature._void);
+        java_lang_Thread_getThreadGroup = java_lang_Thread.requireDeclaredMethod(Name.getThreadGroup, Signature.ThreadGroup);
         if (getJavaVersion().java17OrEarlier()) {
             java_lang_Thread_holder = null;
 
             java_lang_Thread_threadStatus = java_lang_Thread.requireDeclaredField(Name.threadStatus, Type._int);
             java_lang_Thread$FieldHolder_threadStatus = null;
-
-            java_lang_Thread_group = java_lang_Thread.requireDeclaredField(Name.group, java_lang_ThreadGroup.getType());
-            java_lang_Thread$FieldHolder_group = null;
 
             java_lang_Thread_priority = java_lang_Thread.requireDeclaredField(Name.priority, _int.getType());
             java_lang_Thread$FieldHolder_priority = null;
@@ -440,9 +556,6 @@ public final class Meta extends ContextAccessImpl {
             java_lang_Thread_threadStatus = null;
             java_lang_Thread$FieldHolder_threadStatus = java_lang_Thread$FieldHolder.requireDeclaredField(Name.threadStatus, Type._int);
 
-            java_lang_Thread_group = null;
-            java_lang_Thread$FieldHolder_group = java_lang_Thread$FieldHolder.requireDeclaredField(Name.group, java_lang_ThreadGroup.getType());
-
             java_lang_Thread_priority = null;
             java_lang_Thread$FieldHolder_priority = java_lang_Thread$FieldHolder.requireDeclaredField(Name.priority, _int.getType());
 
@@ -450,6 +563,7 @@ public final class Meta extends ContextAccessImpl {
             java_lang_Thread$FieldHolder_daemon = java_lang_Thread$FieldHolder.requireDeclaredField(Name.daemon, Type._boolean);
         }
         java_lang_Thread_tid = java_lang_Thread.requireDeclaredField(Name.tid, Type._long);
+        java_lang_Thread_eetop = java_lang_Thread.requireDeclaredField(Name.eetop, Type._long);
         java_lang_Thread_contextClassLoader = java_lang_Thread.requireDeclaredField(Name.contextClassLoader, Type.java_lang_ClassLoader);
 
         java_lang_Thread_name = java_lang_Thread.requireDeclaredField(Name.name, java_lang_String.getType());
@@ -485,13 +599,12 @@ public final class Meta extends ContextAccessImpl {
         java_security_AccessController = knownKlass(Type.java_security_AccessController);
 
         java_lang_invoke_MethodType = knownKlass(Type.java_lang_invoke_MethodType);
-        java_lang_invoke_MethodType_toMethodDescriptorString = java_lang_invoke_MethodType.requireDeclaredMethod(Name.toMethodDescriptorString, Signature.String);
-        java_lang_invoke_MethodType_fromMethodDescriptorString = java_lang_invoke_MethodType.requireDeclaredMethod(Name.fromMethodDescriptorString, Signature.MethodType_String_ClassLoader);
+        java_lang_invoke_MethodType_ptypes = java_lang_invoke_MethodType.requireDeclaredField(Name.ptypes, Type.java_lang_Class_array);
+        java_lang_invoke_MethodType_rtype = java_lang_invoke_MethodType.requireDeclaredField(Name.rtype, Type.java_lang_Class);
 
         java_lang_invoke_MemberName = knownKlass(Type.java_lang_invoke_MemberName);
         HIDDEN_VMINDEX = java_lang_invoke_MemberName.requireHiddenField(Name.HIDDEN_VMINDEX);
         HIDDEN_VMTARGET = java_lang_invoke_MemberName.requireHiddenField(Name.HIDDEN_VMTARGET);
-        java_lang_invoke_MemberName_getSignature = java_lang_invoke_MemberName.requireDeclaredMethod(Name.getSignature, Signature.String);
         java_lang_invoke_MemberName_clazz = java_lang_invoke_MemberName.requireDeclaredField(Name.clazz, Type.java_lang_Class);
         java_lang_invoke_MemberName_name = java_lang_invoke_MemberName.requireDeclaredField(Name.name, Type.java_lang_String);
         java_lang_invoke_MemberName_type = java_lang_invoke_MemberName.requireDeclaredField(Name.type, Type.java_lang_Object);
@@ -506,11 +619,15 @@ public final class Meta extends ContextAccessImpl {
         java_lang_invoke_MethodHandle_linkToSpecial = java_lang_invoke_MethodHandle.requireDeclaredMethod(Name.linkToSpecial, Signature.Object_Object_array);
         java_lang_invoke_MethodHandle_linkToStatic = java_lang_invoke_MethodHandle.requireDeclaredMethod(Name.linkToStatic, Signature.Object_Object_array);
         java_lang_invoke_MethodHandle_linkToVirtual = java_lang_invoke_MethodHandle.requireDeclaredMethod(Name.linkToVirtual, Signature.Object_Object_array);
+        java_lang_invoke_MethodHandle_asFixedArity = java_lang_invoke_MethodHandle.requireDeclaredMethod(Name.asFixedArity, Signature.MethodHandle);
         java_lang_invoke_MethodHandle_type = java_lang_invoke_MethodHandle.requireDeclaredField(Name.type, Type.java_lang_invoke_MethodType);
         java_lang_invoke_MethodHandle_form = java_lang_invoke_MethodHandle.requireDeclaredField(Name.form, Type.java_lang_invoke_LambdaForm);
 
         java_lang_invoke_MethodHandles = knownKlass(Type.java_lang_invoke_MethodHandles);
         java_lang_invoke_MethodHandles_lookup = java_lang_invoke_MethodHandles.requireDeclaredMethod(Name.lookup, Signature.MethodHandles$Lookup);
+
+        java_lang_invoke_DirectMethodHandle = knownKlass(Type.java_lang_invoke_DirectMethodHandle);
+        java_lang_invoke_DirectMethodHandle_member = java_lang_invoke_DirectMethodHandle.requireDeclaredField(Name.member, Type.java_lang_invoke_MemberName);
 
         // j.l.i.VarHandles is there in JDK9+, but we only need it to be known for 14+
         java_lang_invoke_VarHandles = diff() //
@@ -526,6 +643,10 @@ public final class Meta extends ContextAccessImpl {
         java_lang_invoke_LambdaForm = knownKlass(Type.java_lang_invoke_LambdaForm);
         java_lang_invoke_LambdaForm_vmentry = java_lang_invoke_LambdaForm.requireDeclaredField(Name.vmentry, Type.java_lang_invoke_MemberName);
         java_lang_invoke_LambdaForm_isCompiled = java_lang_invoke_LambdaForm.requireDeclaredField(Name.isCompiled, Type._boolean);
+        java_lang_invoke_LambdaForm_compileToBytecode = diff() //
+                        .method(VERSION_8_OR_LOWER, Name.compileToBytecode, Signature.MemberName) //
+                        .method(VERSION_9_OR_HIGHER, Name.compileToBytecode, Signature._void) //
+                        .method(java_lang_invoke_LambdaForm);
 
         java_lang_invoke_MethodHandleNatives = knownKlass(Type.java_lang_invoke_MethodHandleNatives);
         java_lang_invoke_MethodHandleNatives_linkMethod = java_lang_invoke_MethodHandleNatives.requireDeclaredMethod(Name.linkMethod, Signature.MemberName_Class_int_Class_String_Object_Object_array);
@@ -583,8 +704,9 @@ public final class Meta extends ContextAccessImpl {
             jdk_internal_loader_ClassLoaders_platformClassLoader = jdk_internal_loader_ClassLoaders.requireDeclaredMethod(Name.platformClassLoader, Signature.ClassLoader);
             jdk_internal_loader_ClassLoaders$PlatformClassLoader = knownKlass(Type.jdk_internal_loader_ClassLoaders$PlatformClassLoader);
             java_lang_StackWalker = knownKlass(Type.java_lang_StackWalker);
-            java_lang_AbstractStackWalker = knownKlass(Type.java_lang_AbstractStackWalker);
-            java_lang_AbstractStackWalker_doStackWalk = java_lang_AbstractStackWalker.requireDeclaredMethod(Name.doStackWalk, Signature.Object_long_int_int_int_int);
+            java_lang_StackStreamFactory_AbstractStackWalker = knownKlass(Type.java_lang_StackStreamFactory_AbstractStackWalker);
+            java_lang_StackStreamFactory_AbstractStackWalker_doStackWalk = java_lang_StackStreamFactory_AbstractStackWalker.requireDeclaredMethod(Name.doStackWalk,
+                            Signature.Object_long_int_int_int_int);
 
             java_lang_StackStreamFactory = knownKlass(Type.java_lang_StackStreamFactory);
 
@@ -601,8 +723,8 @@ public final class Meta extends ContextAccessImpl {
             jdk_internal_loader_ClassLoaders_platformClassLoader = null;
             jdk_internal_loader_ClassLoaders$PlatformClassLoader = null;
             java_lang_StackWalker = null;
-            java_lang_AbstractStackWalker = null;
-            java_lang_AbstractStackWalker_doStackWalk = null;
+            java_lang_StackStreamFactory_AbstractStackWalker = null;
+            java_lang_StackStreamFactory_AbstractStackWalker_doStackWalk = null;
 
             java_lang_StackStreamFactory = null;
 
@@ -615,16 +737,27 @@ public final class Meta extends ContextAccessImpl {
             java_lang_System_initPhase3 = null;
         }
 
+        jdk_internal_loader_ClassLoaders$AppClassLoader = diff() //
+                        .klass(VERSION_8_OR_LOWER, Type.sun_misc_Launcher$AppClassLoader) //
+                        .klass(VERSION_9_OR_HIGHER, Type.jdk_internal_loader_ClassLoaders$AppClassLoader) //
+                        .klass();
+
         if (getJavaVersion().modulesEnabled()) {
             java_lang_Module = knownKlass(Type.java_lang_Module);
             java_lang_Module_name = java_lang_Module.requireDeclaredField(Name.name, Type.java_lang_String);
             java_lang_Module_loader = java_lang_Module.requireDeclaredField(Name.loader, Type.java_lang_ClassLoader);
+            java_lang_Module_descriptor = java_lang_Module.requireDeclaredField(Name.descriptor, Type.java_lang_module_ModuleDescriptor);
             HIDDEN_MODULE_ENTRY = java_lang_Module.requireHiddenField(Name.HIDDEN_MODULE_ENTRY);
+            java_lang_module_ModuleDescriptor = knownKlass(Type.java_lang_module_ModuleDescriptor);
+            java_lang_module_ModuleDescriptor_packages = java_lang_module_ModuleDescriptor.requireDeclaredField(Name.packages, Type.java_util_Set);
         } else {
             java_lang_Module = null;
             java_lang_Module_name = null;
             java_lang_Module_loader = null;
+            java_lang_Module_descriptor = null;
             HIDDEN_MODULE_ENTRY = null;
+            java_lang_module_ModuleDescriptor = null;
+            java_lang_module_ModuleDescriptor_packages = null;
         }
 
         java_lang_Record = diff() //
@@ -672,12 +805,6 @@ public final class Meta extends ContextAccessImpl {
                         .klass(VERSION_8_OR_LOWER, Type.sun_reflect_ConstructorAccessorImpl) //
                         .klass(VERSION_9_OR_HIGHER, Type.jdk_internal_reflect_ConstructorAccessorImpl) //
                         .klass();
-
-        sun_misc_VM = diff() //
-                        .klass(VERSION_8_OR_LOWER, Type.sun_misc_VM) //
-                        .klass(VERSION_9_OR_HIGHER, Type.jdk_internal_misc_VM) //
-                        .klass();
-        sun_misc_VM_toThreadState = sun_misc_VM.requireDeclaredMethod(Name.toThreadState, Signature.Thread$State_int);
 
         sun_misc_Signal = diff() //
                         .klass(VERSION_8_OR_LOWER, Type.sun_misc_Signal) //
@@ -746,6 +873,10 @@ public final class Meta extends ContextAccessImpl {
             java_lang_invoke_MethodHandleNatives_linkDynamicConstant = null;
         }
 
+        ObjectKlass lambdaMetafactory = knownKlass(Type.java_lang_invoke_LambdaMetafactory);
+        java_lang_invoke_LambdaMetafactory_metafactory = lambdaMetafactory.requireDeclaredMethod(Name.metafactory, Signature.CallSite_Lookup_String_MethodType_MethodType_MethodHandle_MethodType);
+        java_lang_invoke_LambdaMetafactory_altMetafactory = lambdaMetafactory.requireDeclaredMethod(Name.altMetafactory, Signature.CallSite_Lookup_String_MethodType_Object_array);
+
         // Interop
         java_time_Duration = knownKlass(Type.java_time_Duration);
         java_time_Duration_seconds = java_time_Duration.requireDeclaredField(Name.seconds, Type._long);
@@ -756,17 +887,20 @@ public final class Meta extends ContextAccessImpl {
         java_time_Instant_nanos = java_time_Instant.requireDeclaredField(Name.nanos, Type._int);
         java_time_Instant_atZone = java_time_Instant.requireDeclaredMethod(Name.atZone, Signature.ZonedDateTime_ZoneId);
         assert java_time_Instant_atZone.isFinalFlagSet() || java_time_Instant.isFinalFlagSet();
+        java_time_Instant_ofEpochSecond = java_time_Instant.requireDeclaredMethod(Name.ofEpochSecond, Signature.Instant_long_long);
 
         java_time_LocalTime = knownKlass(Type.java_time_LocalTime);
         java_time_LocalTime_hour = java_time_LocalTime.requireDeclaredField(Name.hour, Type._byte);
         java_time_LocalTime_minute = java_time_LocalTime.requireDeclaredField(Name.minute, Type._byte);
         java_time_LocalTime_second = java_time_LocalTime.requireDeclaredField(Name.second, Type._byte);
         java_time_LocalTime_nano = java_time_LocalTime.requireDeclaredField(Name.nano, Type._int);
+        java_time_LocalTime_of = java_time_LocalTime.requireDeclaredMethod(Name.of, Signature.LocalTime_int_int_int_int);
 
         java_time_LocalDateTime = knownKlass(Type.java_time_LocalDateTime);
         java_time_LocalDateTime_toLocalDate = java_time_LocalDateTime.requireDeclaredMethod(Name.toLocalDate, Signature.LocalDate);
         java_time_LocalDateTime_toLocalTime = java_time_LocalDateTime.requireDeclaredMethod(Name.toLocalTime, Signature.LocalTime);
         assert java_time_LocalDateTime_toLocalTime.isFinalFlagSet() || java_time_LocalDateTime.isFinalFlagSet();
+        java_time_LocalDateTime_of = java_time_LocalDateTime.requireDeclaredMethod(Name.of, Signature.LocalDateTime_LocalDate_LocalTime);
 
         java_time_LocalDate = knownKlass(Type.java_time_LocalDate);
         java_time_LocalDate_year = java_time_LocalDate.requireDeclaredField(Name.year, Type._int);
@@ -775,6 +909,7 @@ public final class Meta extends ContextAccessImpl {
         assert java_time_LocalDate_month.getKind() == JavaKind.Short;
         java_time_LocalDate_day = java_time_LocalDate.requireDeclaredField(Name.day, Type._short);
         assert java_time_LocalDate_day.getKind() == JavaKind.Short;
+        java_time_LocalDate_of = java_time_LocalDate.requireDeclaredMethod(Name.of, Signature.LocalDate_int_int_int);
 
         java_time_ZonedDateTime = knownKlass(Type.java_time_ZonedDateTime);
         java_time_ZonedDateTime_toLocalTime = java_time_ZonedDateTime.requireDeclaredMethod(Name.toLocalTime, Signature.LocalTime);
@@ -787,9 +922,11 @@ public final class Meta extends ContextAccessImpl {
         assert java_time_ZonedDateTime_getZone.isFinalFlagSet() || java_time_ZonedDateTime.isFinalFlagSet();
         java_time_ZonedDateTime_toInstant = java_time_ZonedDateTime.requireMethod(Name.toInstant, Signature.Instant); // default
         assert java_time_ZonedDateTime_toInstant.isFinalFlagSet() || java_time_ZonedDateTime.isFinalFlagSet();
+        java_time_ZonedDateTime_ofInstant = java_time_ZonedDateTime.requireDeclaredMethod(Name.ofInstant, Signature.ZonedDateTime_Instant_ZoneId);
 
         java_util_Date = knownKlass(Type.java_util_Date);
         java_util_Date_toInstant = java_util_Date.requireDeclaredMethod(Name.toInstant, Signature.Instant);
+        java_util_Date_from = java_util_Date.requireDeclaredMethod(Name.from, Signature.Date_Instant);
         java_time_ZoneId = knownKlass(Type.java_time_ZoneId);
         java_time_ZoneId_getId = java_time_ZoneId.requireDeclaredMethod(Name.getId, Signature.String);
         java_time_ZoneId_of = java_time_ZoneId.requireDeclaredMethod(Name.of, Signature.ZoneId_String);
@@ -804,6 +941,10 @@ public final class Meta extends ContextAccessImpl {
         java_util_Map_entrySet = java_util_Map.requireDeclaredMethod(Name.entrySet, Signature.java_util_Set);
         assert java_util_Map.isInterface();
 
+        java_util_HashMap = knownKlass(Type.java_util_HashMap);
+        java_util_HashMap_init = java_util_HashMap.requireDeclaredMethod(Name._init_, Signature._void_int);
+        java_util_HashMap_put = java_util_HashMap.requireDeclaredMethod(Name.put, Signature.Object_Object_Object);
+
         java_util_Map_Entry = knownKlass(Type.java_util_Map_Entry);
         java_util_Map_Entry_getKey = java_util_Map_Entry.requireDeclaredMethod(Name.getKey, Signature.Object);
         java_util_Map_Entry_getValue = java_util_Map_Entry.requireDeclaredMethod(Name.getValue, Signature.Object);
@@ -813,11 +954,18 @@ public final class Meta extends ContextAccessImpl {
         java_util_List_get = java_util_List.requireDeclaredMethod(Name.get, Signature.Object_int);
         java_util_List_set = java_util_List.requireDeclaredMethod(Name.set, Signature.Object_int_Object);
         java_util_List_size = java_util_List.requireDeclaredMethod(Name.size, Signature._int);
+        java_util_List_add = java_util_List.requireDeclaredMethod(Name.add, Signature._boolean_Object);
+        java_util_List_remove = java_util_List.requireDeclaredMethod(Name.remove, Signature.Object_int);
         assert java_util_List.isInterface();
 
         java_util_Set = knownKlass(Type.java_util_Set);
         java_util_Set_add = java_util_Set.requireDeclaredMethod(Name.add, Signature._boolean_Object);
         assert java_util_Set.isInterface();
+        if (getJavaVersion().java9OrLater()) {
+            java_util_Set_of = java_util_Set.requireDeclaredMethod(Name.of, Signature.Set_Object_array);
+        } else {
+            java_util_Set_of = null;
+        }
 
         java_lang_Iterable = knownKlass(Type.java_lang_Iterable);
         java_lang_Iterable_iterator = java_lang_Iterable.requireDeclaredMethod(Name.iterator, Signature.java_util_Iterator);
@@ -829,7 +977,139 @@ public final class Meta extends ContextAccessImpl {
         java_util_Iterator_remove = java_util_Iterator.requireDeclaredMethod(Name.remove, Signature._void);
         assert java_util_Iterator.isInterface();
 
-        java_util_NoSuchElementException = knownKlass(Type.java_util_NoSuchElementException);
+        java_util_Collection = knownKlass(Type.java_util_Collection);
+        java_util_Collection_size = java_util_Collection.requireDeclaredMethod(Name.size, Signature._int);
+        java_util_Collection_toArray = java_util_Collection.requireDeclaredMethod(Name.toArray, Signature.Object_array_Object_array);
+
+        java_util_Optional = knownKlass(Type.java_util_Optional);
+        java_util_Optional_EMPTY = java_util_Optional.requireDeclaredField(Name.EMPTY, Type.java_util_Optional);
+        java_util_Optional_value = java_util_Optional.requireDeclaredField(Name.value, Type.java_lang_Object);
+
+        java_util_regex_Pattern = knownKlass(Type.java_util_regex_Pattern);
+        java_util_regex_Pattern_init = java_util_regex_Pattern.requireMethod(Name._init_, Signature._void_String_int);
+        java_util_regex_Pattern_compile = java_util_regex_Pattern.requireDeclaredMethod(Name.compile, Signature._void);
+
+        if (context.getJavaVersion().java20OrLater()) {
+            java_util_regex_Pattern_namedGroups = java_util_regex_Pattern.requireMethod(Name.namedGroups, Signature.Map);
+        } else {
+            java_util_regex_Pattern_namedGroups = null;
+        }
+
+        if (context.regexSubstitutionsEnabled()) {
+            java_util_regex_Pattern_HIDDEN_tregexMatch = java_util_regex_Pattern.requireHiddenField(Name.HIDDEN_TREGEX_MATCH);
+            java_util_regex_Pattern_HIDDEN_tregexFullmatch = java_util_regex_Pattern.requireHiddenField(Name.HIDDEN_TREGEX_FULLMATCH);
+            java_util_regex_Pattern_HIDDEN_tregexSearch = java_util_regex_Pattern.requireHiddenField(Name.HIDDEN_TREGEX_SEARCH);
+            java_util_regex_Pattern_HIDDEN_unsupported = java_util_regex_Pattern.requireHiddenField(Name.HIDDEN_TREGEX_UNSUPPORTED);
+        } else {
+            java_util_regex_Pattern_HIDDEN_tregexMatch = null;
+            java_util_regex_Pattern_HIDDEN_tregexFullmatch = null;
+            java_util_regex_Pattern_HIDDEN_tregexSearch = null;
+            java_util_regex_Pattern_HIDDEN_unsupported = null;
+        }
+
+        if (context.getJavaVersion().java21OrLater()) {
+            java_util_regex_Pattern_pattern = java_util_regex_Pattern.requireDeclaredField(Name.pattern, Type.java_lang_String);
+            java_util_regex_Pattern_flags = java_util_regex_Pattern.requireDeclaredField(Name.flags, Type._int);
+            java_util_regex_Pattern_flags0 = java_util_regex_Pattern.requireDeclaredField(Name.flags0, Type._int);
+            java_util_regex_Pattern_compiled = java_util_regex_Pattern.requireDeclaredField(Name.compiled, Type._boolean);
+            java_util_regex_Pattern_namedGroups_field = java_util_regex_Pattern.requireDeclaredField(Name.namedGroups, Type.java_util_Map);
+            java_util_regex_Pattern_capturingGroupCount = java_util_regex_Pattern.requireDeclaredField(Name.capturingGroupCount, Type._int);
+            java_util_regex_Pattern_root = java_util_regex_Pattern.requireDeclaredField(Name.root, Type.java_util_regex_Pattern_Node);
+            java_util_regex_Pattern_localCount = java_util_regex_Pattern.requireDeclaredField(Name.localCount, Type._int);
+            java_util_regex_Pattern_localTCNCount = java_util_regex_Pattern.requireDeclaredField(Name.localTCNCount, Type._int);
+        } else {
+            java_util_regex_Pattern_pattern = null;
+            java_util_regex_Pattern_flags = null;
+            java_util_regex_Pattern_flags0 = null;
+            java_util_regex_Pattern_compiled = null;
+            java_util_regex_Pattern_namedGroups_field = null;
+            java_util_regex_Pattern_capturingGroupCount = null;
+            java_util_regex_Pattern_root = null;
+            java_util_regex_Pattern_localCount = null;
+            java_util_regex_Pattern_localTCNCount = null;
+        }
+
+        java_util_regex_Matcher = knownKlass(Type.java_util_regex_Matcher);
+        java_util_regex_Matcher_init = java_util_regex_Matcher.requireMethod(Name._init_, Signature._void_CharSequence_Pattern);
+        java_util_regex_Matcher_reset = java_util_regex_Matcher.requireMethod(Name.reset, Signature.Matcher_CharSequence);
+        java_util_regex_Matcher_match = java_util_regex_Matcher.requireMethod(Name.match, Signature._boolean_int_int);
+        java_util_regex_Matcher_search = java_util_regex_Matcher.requireMethod(Name.search, Signature._boolean_int);
+        java_util_regex_Matcher_groupCount = java_util_regex_Matcher.requireDeclaredMethod(Name.groupCount, Signature._int);
+        java_util_regex_Matcher_hitEnd = java_util_regex_Matcher.requireDeclaredField(Name.hitEnd, Type._boolean);
+        java_util_regex_Matcher_requireEnd = java_util_regex_Matcher.requireDeclaredField(Name.requireEnd, Type._boolean);
+
+        if (context.regexSubstitutionsEnabled()) {
+            java_util_regex_Matcher_HIDDEN_tstring = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_TSTRING);
+            java_util_regex_Matcher_HIDDEN_oldLastBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_OLD_LAST_BACKUP);
+            java_util_regex_Matcher_HIDDEN_modCountBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_MOD_COUNT_BACKUP);
+            java_util_regex_Matcher_HIDDEN_transparentBoundsBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_TRANSPARENT_BOUNDS_BACKUP);
+            java_util_regex_Matcher_HIDDEN_anchoringBoundsBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_ANCHORING_BOUNDS_BACKUP);
+            java_util_regex_Matcher_HIDDEN_fromBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_FROM_BACKUP);
+            java_util_regex_Matcher_HIDDEN_toBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_TO_BACKUP);
+            java_util_regex_Matcher_HIDDEN_matchingModeBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_MATCHING_MODE_BACKUP);
+            java_util_regex_Matcher_HIDDEN_searchFromBackup = java_util_regex_Matcher.requireHiddenField(Name.HIDDEN_TREGEX_SEARCH_FROM_BACKUP);
+        } else {
+            java_util_regex_Matcher_HIDDEN_tstring = null;
+            java_util_regex_Matcher_HIDDEN_oldLastBackup = null;
+            java_util_regex_Matcher_HIDDEN_modCountBackup = null;
+            java_util_regex_Matcher_HIDDEN_transparentBoundsBackup = null;
+            java_util_regex_Matcher_HIDDEN_anchoringBoundsBackup = null;
+            java_util_regex_Matcher_HIDDEN_fromBackup = null;
+            java_util_regex_Matcher_HIDDEN_toBackup = null;
+            java_util_regex_Matcher_HIDDEN_matchingModeBackup = null;
+            java_util_regex_Matcher_HIDDEN_searchFromBackup = null;
+        }
+
+        if (context.getJavaVersion().java21OrLater()) {
+            java_util_regex_Matcher_parentPattern = java_util_regex_Matcher.requireDeclaredField(Name.parentPattern, Type.java_util_regex_Pattern);
+            java_util_regex_Matcher_groups = java_util_regex_Matcher.requireDeclaredField(Name.groups, Type._int_array);
+            java_util_regex_Matcher_first = java_util_regex_Matcher.requireDeclaredField(Name.first, Type._int);
+            java_util_regex_Matcher_last = java_util_regex_Matcher.requireDeclaredField(Name.last, Type._int);
+            java_util_regex_Matcher_oldLast = java_util_regex_Matcher.requireDeclaredField(Name.oldLast, Type._int);
+            java_util_regex_Matcher_from = java_util_regex_Matcher.requireDeclaredField(Name.from, Type._int);
+            java_util_regex_Matcher_to = java_util_regex_Matcher.requireDeclaredField(Name.to, Type._int);
+            java_util_regex_Matcher_modCount = java_util_regex_Matcher.requireDeclaredField(Name.modCount, Type._int);
+            java_util_regex_Matcher_transparentBounds = java_util_regex_Matcher.requireDeclaredField(Name.transparentBounds, Type._boolean);
+            java_util_regex_Matcher_anchoringBounds = java_util_regex_Matcher.requireDeclaredField(Name.anchoringBounds, Type._boolean);
+            java_util_regex_Matcher_locals = java_util_regex_Matcher.requireDeclaredField(Name.locals, Type._int_array);
+            java_util_regex_Matcher_localsPos = java_util_regex_Matcher.requireDeclaredField(Name.localsPos, Type.java_util_regex_IntHashSet_array);
+
+        } else {
+            java_util_regex_Matcher_parentPattern = null;
+            java_util_regex_Matcher_groups = null;
+            java_util_regex_Matcher_first = null;
+            java_util_regex_Matcher_last = null;
+            java_util_regex_Matcher_oldLast = null;
+            java_util_regex_Matcher_from = null;
+            java_util_regex_Matcher_to = null;
+            java_util_regex_Matcher_modCount = null;
+            java_util_regex_Matcher_transparentBounds = null;
+            java_util_regex_Matcher_anchoringBounds = null;
+            java_util_regex_Matcher_locals = null;
+            java_util_regex_Matcher_localsPos = null;
+        }
+
+        if (context.getJavaVersion().java21OrLater()) {
+            java_util_regex_IntHashSet = knownKlass(Type.java_util_regex_IntHashSet);
+        } else {
+            java_util_regex_IntHashSet = null;
+        }
+
+        java_util_concurrent_locks_AbstractOwnableSynchronizer = knownKlass(Type.java_util_concurrent_locks_AbstractOwnableSynchronizer);
+        java_util_concurrent_locks_AbstractOwnableSynchronizer_exclusiveOwnerThread = java_util_concurrent_locks_AbstractOwnableSynchronizer.requireDeclaredField(Name.exclusiveOwnerThread,
+                        Type.java_lang_Thread);
+        java_util_concurrent_locks_ReentrantLock_Sync = knownKlass(Type.java_util_concurrent_locks_ReentrantLock_Sync);
+        java_util_concurrent_locks_ReentrantReadWriteLock_Sync = knownKlass(Type.java_util_concurrent_locks_ReentrantReadWriteLock_Sync);
+
+        java_math_BigInteger = knownKlass(Type.java_math_BigInteger);
+        java_math_BigInteger_init = java_math_BigInteger.requireDeclaredMethod(Name._init_, Signature._void_byte_array);
+        java_math_BigInteger_toByteArray = java_math_BigInteger.requireDeclaredMethod(Name.toByteArray, Signature._byte_array);
+
+        java_math_BigDecimal = knownKlass(Type.java_math_BigDecimal);
+        java_math_BigDecimal_init = java_math_BigDecimal.requireDeclaredMethod(Name._init_, Signature._void_BigInteger_int_MathContext);
+
+        java_math_MathContext = knownKlass(Type.java_math_MathContext);
+        java_math_MathContext_init = java_math_MathContext.requireDeclaredMethod(Name._init_, Signature._void_int);
 
         jdk_internal_misc_UnsafeConstants = diff() //
                         .klass(higher(13), Type.jdk_internal_misc_UnsafeConstants) //
@@ -851,6 +1131,7 @@ public final class Meta extends ContextAccessImpl {
         if (getJavaVersion().java9OrLater()) {
             jdk_internal_module_ModuleLoaderMap = knownKlass(Type.jdk_internal_module_ModuleLoaderMap);
             jdk_internal_module_ModuleLoaderMap_bootModules = jdk_internal_module_ModuleLoaderMap.requireDeclaredMethod(Name.bootModules, Signature.java_util_Set);
+            jdk_internal_module_ModuleLoaderMap_platformModules = jdk_internal_module_ModuleLoaderMap.requireDeclaredMethod(Name.platformModules, Signature.java_util_Set);
             jdk_internal_module_SystemModuleFinders = knownKlass(Type.jdk_internal_module_SystemModuleFinders);
             jdk_internal_module_SystemModuleFinders_of = jdk_internal_module_SystemModuleFinders.requireDeclaredMethod(Name.of, Signature.ModuleFinder_SystemModules);
             jdk_internal_module_SystemModuleFinders_ofSystem = jdk_internal_module_SystemModuleFinders.requireDeclaredMethod(Name.ofSystem, Signature.ModuleFinder);
@@ -858,9 +1139,12 @@ public final class Meta extends ContextAccessImpl {
             jdk_internal_module_ModulePath_of = jdk_internal_module_ModulePath.requireDeclaredMethod(Name.of, Signature.ModuleFinder_Path_array);
             java_lang_module_ModuleFinder = knownKlass(Type.java_lang_module_ModuleFinder);
             java_lang_module_ModuleFinder_compose = java_lang_module_ModuleFinder.requireDeclaredMethod(Name.compose, Signature.ModuleFinder_ModuleFinder_array);
+            jdk_internal_module_Modules = knownKlass(Type.jdk_internal_module_Modules);
+            jdk_internal_module_Modules_defineModule = jdk_internal_module_Modules.requireDeclaredMethod(Name.defineModule, Signature.Module_ClassLoader_ModuleDescriptor_URI);
         } else {
             jdk_internal_module_ModuleLoaderMap = null;
             jdk_internal_module_ModuleLoaderMap_bootModules = null;
+            jdk_internal_module_ModuleLoaderMap_platformModules = null;
             jdk_internal_module_SystemModuleFinders = null;
             jdk_internal_module_SystemModuleFinders_of = null;
             jdk_internal_module_SystemModuleFinders_ofSystem = null;
@@ -868,6 +1152,31 @@ public final class Meta extends ContextAccessImpl {
             jdk_internal_module_ModulePath_of = null;
             java_lang_module_ModuleFinder = null;
             java_lang_module_ModuleFinder_compose = null;
+            jdk_internal_module_Modules = null;
+            jdk_internal_module_Modules_defineModule = null;
+        }
+
+        if (getJavaVersion().java20OrLater()) {
+            jdk_internal_foreign_abi_VMStorage = knownKlass(Type.jdk_internal_foreign_abi_VMStorage);
+            jdk_internal_foreign_abi_VMStorage_type = jdk_internal_foreign_abi_VMStorage.requireDeclaredField(Name.type, Type._byte);
+            jdk_internal_foreign_abi_VMStorage_segmentMaskOrSize = jdk_internal_foreign_abi_VMStorage.requireDeclaredField(Name.segmentMaskOrSize, Type._short);
+            jdk_internal_foreign_abi_VMStorage_indexOrOffset = jdk_internal_foreign_abi_VMStorage.requireDeclaredField(Name.indexOrOffset, Type._int);
+            jdk_internal_foreign_abi_NativeEntryPoint = knownKlass(Type.jdk_internal_foreign_abi_NativeEntryPoint);
+            jdk_internal_foreign_abi_NativeEntryPoint_downcallStubAddress = jdk_internal_foreign_abi_NativeEntryPoint.requireDeclaredField(Name.downcallStubAddress, Type._long);
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs = knownKlass(Type.jdk_internal_foreign_abi_UpcallLinker_CallRegs);
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs_argRegs = jdk_internal_foreign_abi_UpcallLinker_CallRegs.requireDeclaredField(Name.argRegs, Type.jdk_internal_foreign_abi_VMStorage_array);
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs_retRegs = jdk_internal_foreign_abi_UpcallLinker_CallRegs.requireDeclaredField(Name.retRegs, Type.jdk_internal_foreign_abi_VMStorage_array);
+        } else {
+            // also exists in a different shape in 19 but we don't support that
+            jdk_internal_foreign_abi_VMStorage = null;
+            jdk_internal_foreign_abi_VMStorage_type = null;
+            jdk_internal_foreign_abi_VMStorage_segmentMaskOrSize = null;
+            jdk_internal_foreign_abi_VMStorage_indexOrOffset = null;
+            jdk_internal_foreign_abi_NativeEntryPoint = null;
+            jdk_internal_foreign_abi_NativeEntryPoint_downcallStubAddress = null;
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs = null;
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs_argRegs = null;
+            jdk_internal_foreign_abi_UpcallLinker_CallRegs_retRegs = null;
         }
 
         jdk_internal_module_ModuleLoaderMap_Modules = diff() //
@@ -897,7 +1206,7 @@ public final class Meta extends ContextAccessImpl {
      * <p>
      * Espresso's Polyglot API (polyglot.jar) is injected on the boot CP, must be loaded after
      * modules initialization.
-     *
+     * <p>
      * The classes in module java.management become known after modules initialization.
      */
     public void postSystemInit() {
@@ -957,8 +1266,54 @@ public final class Meta extends ContextAccessImpl {
         }
 
         // Load Espresso's Polyglot API.
-        boolean polyglotSupport = getContext().getEnv().getOptions().get(EspressoOptions.Polyglot);
+        boolean polyglotSupport = getContext().getEspressoEnv().Polyglot;
         this.polyglot = polyglotSupport ? new PolyglotSupport() : null;
+
+        // Load Espresso's JVMCI implementation.
+        if (getLanguage().isInternalJVMCIEnabled()) {
+            this.jvmci = new JVMCISupport();
+        } else {
+            this.jvmci = null;
+        }
+
+        JImageExtensions jImageExtensions = getLanguage().getJImageExtensions();
+        if (jImageExtensions != null && getJavaVersion().java9OrLater()) {
+            for (Map.Entry<String, Set<String>> entry : jImageExtensions.getExtensions().entrySet()) {
+                Symbol<Name> name = getNames().lookup(entry.getKey());
+                if (name == null) {
+                    continue;
+                }
+                ModuleTable.ModuleEntry moduleEntry = getRegistries().findUniqueModule(name);
+                if (moduleEntry != null) {
+                    extendModulePackages(moduleEntry, entry.getValue());
+                }
+            }
+        }
+
+        // Continuations
+        boolean continuumSupport = getContext().getEspressoEnv().Continuum;
+        this.continuum = continuumSupport ? new ContinuumSupport() : null;
+    }
+
+    private void extendModulePackages(ModuleTable.ModuleEntry moduleEntry, Set<String> extraPackages) {
+        StaticObject moduleDescriptor = java_lang_Module_descriptor.getObject(moduleEntry.module());
+        StaticObject origPackages = java_lang_module_ModuleDescriptor_packages.getObject(moduleDescriptor);
+        StaticObject newPackages = extendedStringSet(origPackages, extraPackages);
+        java_lang_module_ModuleDescriptor_packages.setObject(moduleDescriptor, newPackages);
+    }
+
+    public @JavaType(Set.class) StaticObject extendedStringSet(@JavaType(Set.class) StaticObject original, Collection<String> extraStrings) {
+        int origSize = (int) java_util_Collection_size.invokeDirectInterface(original);
+        StaticObject stringArray = java_lang_String.allocateReferenceArray(origSize + extraStrings.size());
+        StaticObject toArrayResult = (StaticObject) java_util_Collection_toArray.invokeDirectInterface(original, stringArray);
+        assert toArrayResult == stringArray;
+        StaticObject[] unwrappedStringArray = stringArray.unwrap(getLanguage());
+        int idx = origSize;
+        for (String extraPackage : extraStrings) {
+            assert StaticObject.isNull(unwrappedStringArray[idx]);
+            unwrappedStringArray[idx++] = toGuestString(extraPackage);
+        }
+        return (StaticObject) java_util_Set_of.invokeDirectStatic(stringArray);
     }
 
     private DiffVersionLoadHelper diff() {
@@ -971,6 +1326,7 @@ public final class Meta extends ContextAccessImpl {
     public final ArrayKlass java_lang_Object_array;
 
     public final ObjectKlass java_lang_String;
+    public final ArrayKlass java_lang_String_array;
     public final ObjectKlass java_lang_Class;
     public final ObjectKlass java_lang_CharSequence;
     public final Field HIDDEN_MIRROR_KLASS;
@@ -1021,6 +1377,8 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_Long;
     public final ObjectKlass java_lang_Void;
 
+    public final ObjectKlass java_lang_Number;
+
     // Boxing conversions.
     public final Method java_lang_Boolean_valueOf;
     public final Method java_lang_Byte_valueOf;
@@ -1051,10 +1409,14 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_lang_String_indexOf;
     public final Method java_lang_String_init_char_array;
 
+    // Charsequence
+    public final Method java_lang_CharSequence_toString;
+
     public final ObjectKlass java_lang_ClassLoader;
     public final Field java_lang_ClassLoader_parent;
     public final Field java_lang_ClassLoader_unnamedModule;
     public final Field java_lang_ClassLoader_name;
+    public final Field java_lang_ClassLoader_nameAndId;
     public final ObjectKlass java_lang_ClassLoader$NativeLibrary;
     public final Method java_lang_ClassLoader_checkPackageAccess;
     public final Method java_lang_ClassLoader$NativeLibrary_getFromClass;
@@ -1064,6 +1426,11 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_lang_ClassLoader_getResourceAsStream;
     public final Method java_lang_ClassLoader_loadClass;
 
+    public final ObjectKlass jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl;
+    public final Field jdk_internal_loader_RawNativeLibraries$RawNativeLibraryImpl_handle;
+
+    public final ObjectKlass jdk_internal_util_ArraysSupport;
+    public final Method jdk_internal_util_ArraysSupport_vectorizedMismatch;
     public final ObjectKlass java_net_URL;
 
     public final ObjectKlass sun_launcher_LauncherHelper;
@@ -1073,11 +1440,15 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass jdk_internal_loader_ClassLoaders;
     public final Method jdk_internal_loader_ClassLoaders_platformClassLoader;
     public final ObjectKlass jdk_internal_loader_ClassLoaders$PlatformClassLoader;
+    public final ObjectKlass jdk_internal_loader_ClassLoaders$AppClassLoader;
 
     public final ObjectKlass java_lang_Module;
     public final Field java_lang_Module_name;
     public final Field java_lang_Module_loader;
+    public final Field java_lang_Module_descriptor;
     public final Field HIDDEN_MODULE_ENTRY;
+    public final ObjectKlass java_lang_module_ModuleDescriptor;
+    public final Field java_lang_module_ModuleDescriptor_packages;
 
     public final ObjectKlass java_lang_Record;
     public final ObjectKlass java_lang_reflect_RecordComponent;
@@ -1099,6 +1470,7 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_reflect_Executable;
 
     public final ObjectKlass java_lang_reflect_Constructor;
+    public final Method java_lang_reflect_Constructor_init;
     public final Field HIDDEN_CONSTRUCTOR_RUNTIME_VISIBLE_TYPE_ANNOTATIONS;
     public final Field HIDDEN_CONSTRUCTOR_KEY;
     public final Field java_lang_reflect_Constructor_clazz;
@@ -1121,8 +1493,11 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass sun_reflect_ConstructorAccessorImpl;
 
     public final ObjectKlass java_lang_reflect_Parameter;
+    public final ObjectKlass java_lang_reflect_ParameterizedType;
+    public final Method java_lang_reflect_ParameterizedType_getRawType;
 
     public final ObjectKlass java_lang_reflect_Field;
+    public final Method java_lang_reflect_Field_init;
     public final Field HIDDEN_FIELD_RUNTIME_VISIBLE_TYPE_ANNOTATIONS;
     public final Field HIDDEN_FIELD_KEY;
     public final Field java_lang_reflect_Field_root;
@@ -1140,6 +1515,7 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_IllegalMonitorStateException;
     public final ObjectKlass java_lang_IllegalStateException;
     public final ObjectKlass java_lang_NullPointerException;
+    public final Field java_lang_NullPointerException_extendedMessageState;
     public final ObjectKlass java_lang_ClassNotFoundException;
     public final ObjectKlass java_lang_NoClassDefFoundError;
     public final ObjectKlass java_lang_InterruptedException;
@@ -1169,12 +1545,18 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_NoSuchFieldException;
     public final ObjectKlass java_lang_NoSuchMethodException;
     public final ObjectKlass java_lang_UnsupportedOperationException;
+    public final ObjectKlass java_util_NoSuchElementException;
+    public final ObjectKlass java_lang_NumberFormatException;
 
     public final ObjectKlass java_lang_Throwable;
     public final Method java_lang_Throwable_getStackTrace;
+    public final Method java_lang_Throwable_getMessage;
+    public final Method java_lang_Throwable_getCause;
+    public final Method java_lang_Throwable_printStackTrace;
     public final Field HIDDEN_FRAMES;
     public final Field HIDDEN_EXCEPTION_WRAPPER;
     public final Field java_lang_Throwable_backtrace;
+    public final Field java_lang_Throwable_stackTrace;
     public final Field java_lang_Throwable_detailMessage;
     public final Field java_lang_Throwable_cause;
     public final Field java_lang_Throwable_depth;
@@ -1211,22 +1593,46 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_nio_file_Paths;
     public final Method java_nio_file_Paths_get;
 
+    public final Method sun_nio_ch_NativeThread_isNativeThread;
+    public final Method sun_nio_ch_NativeThread_current0;
+    public final Method sun_nio_ch_NativeThread_signal;
+    public final Method sun_nio_ch_NativeThread_init;
+
     // Array support.
     public final ObjectKlass java_lang_Cloneable;
     public final ObjectKlass java_io_Serializable;
 
     public final ObjectKlass sun_nio_ch_DirectBuffer;
     public final ObjectKlass java_nio_Buffer;
+    public final Method java_nio_Buffer_isReadOnly;
     public final Field java_nio_Buffer_address;
     public final Field java_nio_Buffer_capacity;
+    public final Method java_nio_Buffer_limit;
 
     public final ObjectKlass java_nio_ByteBuffer;
     public final Method java_nio_ByteBuffer_wrap;
+    public final Method java_nio_ByteBuffer_get;
+    public final Method java_nio_ByteBuffer_getByte;
+    public final Method java_nio_ByteBuffer_getShort;
+    public final Method java_nio_ByteBuffer_getInt;
+    public final Method java_nio_ByteBuffer_getLong;
+    public final Method java_nio_ByteBuffer_getFloat;
+    public final Method java_nio_ByteBuffer_getDouble;
+    public final Method java_nio_ByteBuffer_putByte;
+    public final Method java_nio_ByteBuffer_putShort;
+    public final Method java_nio_ByteBuffer_putInt;
+    public final Method java_nio_ByteBuffer_putLong;
+    public final Method java_nio_ByteBuffer_putFloat;
+    public final Method java_nio_ByteBuffer_putDouble;
+    public final Method java_nio_ByteBuffer_order;
+    public final Method java_nio_ByteBuffer_setOrder;
     public final ObjectKlass java_nio_DirectByteBuffer;
     public final Method java_nio_DirectByteBuffer_init_long_int;
     public final ObjectKlass java_nio_ByteOrder;
     public final Field java_nio_ByteOrder_LITTLE_ENDIAN;
+    public final Field java_nio_ByteOrder_BIG_ENDIAN;
 
+    public final ObjectKlass java_lang_BaseVirtualThread;
     public final ObjectKlass java_lang_ThreadGroup;
     public final Method java_lang_ThreadGroup_add;
     public final Method java_lang_Thread_dispatchUncaughtException;
@@ -1236,7 +1642,12 @@ public final class Meta extends ContextAccessImpl {
     public final Field java_lang_Thread_holder;
     public final Field java_lang_Thread_threadStatus;
     public final Field java_lang_Thread$FieldHolder_threadStatus;
+    public final Field java_lang_Thread_threadGroup;
+    public final Field java_lang_Thread$FieldHolder_group;
     public final Field java_lang_Thread_tid;
+    public final Field java_lang_Thread_eetop;
+    public final ObjectKlass java_lang_Thread$Constants;
+    public final Field java_lang_Thread$Constants_VTHREAD_GROUP;
     public final Field java_lang_Thread_contextClassLoader;
     public final Method java_lang_Thread_init_ThreadGroup_Runnable;
     public final Method java_lang_Thread_init_ThreadGroup_String;
@@ -1245,18 +1656,20 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_lang_Thread_run;
     public final Method java_lang_Thread_checkAccess;
     public final Method java_lang_Thread_stop;
+    public final Method java_lang_Thread_getThreadGroup;
     public final Field HIDDEN_HOST_THREAD;
     public final Field HIDDEN_ESPRESSO_MANAGED;
     public final Field HIDDEN_INTERRUPTED;
     public final Field HIDDEN_THREAD_UNPARK_SIGNALS;
     public final Field HIDDEN_THREAD_PARK_LOCK;
     public final Field HIDDEN_DEPRECATION_SUPPORT;
-    public final Field HIDDEN_THREAD_BLOCKED_OBJECT;
+    public final Field HIDDEN_THREAD_PENDING_MONITOR;
+    public final Field HIDDEN_THREAD_WAITING_MONITOR;
     public final Field HIDDEN_THREAD_BLOCKED_COUNT;
     public final Field HIDDEN_THREAD_WAITED_COUNT;
+    public final Field HIDDEN_THREAD_DEPTH_FIRST_NUMBER;
+    public final Field HIDDEN_THREAD_SCOPED_VALUE_CACHE;
 
-    public final Field java_lang_Thread_group;
-    public final Field java_lang_Thread$FieldHolder_group;
     public final Field java_lang_Thread_name;
     public final Field java_lang_Thread_priority;
     public final Field java_lang_Thread$FieldHolder_priority;
@@ -1268,8 +1681,6 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_ref_Reference$ReferenceHandler;
     public final ObjectKlass misc_InnocuousThread;
 
-    public final ObjectKlass sun_misc_VM;
-    public final Method sun_misc_VM_toThreadState;
     public final ObjectKlass sun_reflect_ConstantPool;
 
     public final ObjectKlass sun_misc_Signal;
@@ -1302,11 +1713,10 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_security_AccessController;
 
     public final ObjectKlass java_lang_invoke_MethodType;
-    public final Method java_lang_invoke_MethodType_toMethodDescriptorString;
-    public final Method java_lang_invoke_MethodType_fromMethodDescriptorString;
+    public final Field java_lang_invoke_MethodType_ptypes;
+    public final Field java_lang_invoke_MethodType_rtype;
 
     public final ObjectKlass java_lang_invoke_MemberName;
-    public final Method java_lang_invoke_MemberName_getSignature;
 
     public final Field HIDDEN_VMTARGET;
     public final Field HIDDEN_VMINDEX;
@@ -1324,8 +1734,12 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_lang_invoke_MethodHandle_linkToSpecial;
     public final Method java_lang_invoke_MethodHandle_linkToStatic;
     public final Method java_lang_invoke_MethodHandle_linkToVirtual;
+    public final Method java_lang_invoke_MethodHandle_asFixedArity;
     public final Field java_lang_invoke_MethodHandle_type;
     public final Field java_lang_invoke_MethodHandle_form;
+
+    public final ObjectKlass java_lang_invoke_DirectMethodHandle;
+    public final Field java_lang_invoke_DirectMethodHandle_member;
 
     public final ObjectKlass java_lang_invoke_MethodHandles;
     public final Method java_lang_invoke_MethodHandles_lookup;
@@ -1339,6 +1753,7 @@ public final class Meta extends ContextAccessImpl {
     public final ObjectKlass java_lang_invoke_LambdaForm;
     public final Field java_lang_invoke_LambdaForm_vmentry;
     public final Field java_lang_invoke_LambdaForm_isCompiled;
+    public final Method java_lang_invoke_LambdaForm_compileToBytecode;
 
     public final ObjectKlass java_lang_invoke_MethodHandleNatives;
     public final Method java_lang_invoke_MethodHandleNatives_linkMethod;
@@ -1346,6 +1761,9 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_lang_invoke_MethodHandleNatives_findMethodHandleType;
     public final Method java_lang_invoke_MethodHandleNatives_linkCallSite;
     public final Method java_lang_invoke_MethodHandleNatives_linkDynamicConstant;
+
+    public final Method java_lang_invoke_LambdaMetafactory_metafactory;
+    public final Method java_lang_invoke_LambdaMetafactory_altMetafactory;
 
     public final Method java_lang_Object_wait;
     public final Method java_lang_Object_toString;
@@ -1377,9 +1795,9 @@ public final class Meta extends ContextAccessImpl {
     public final Method sun_reflect_Reflection_getCallerClass;
 
     public final ObjectKlass java_lang_StackWalker;
-    public final ObjectKlass java_lang_AbstractStackWalker;
+    public final ObjectKlass java_lang_StackStreamFactory_AbstractStackWalker;
     public final ObjectKlass java_lang_StackStreamFactory;
-    public final Method java_lang_AbstractStackWalker_doStackWalk;
+    public final Method java_lang_StackStreamFactory_AbstractStackWalker_doStackWalk;
 
     public final ObjectKlass java_lang_StackFrameInfo;
     public final Field java_lang_StackFrameInfo_memberName;
@@ -1388,6 +1806,7 @@ public final class Meta extends ContextAccessImpl {
     // Module system
     public final ObjectKlass jdk_internal_module_ModuleLoaderMap;
     public final Method jdk_internal_module_ModuleLoaderMap_bootModules;
+    public final Method jdk_internal_module_ModuleLoaderMap_platformModules;
     public final ObjectKlass jdk_internal_module_ModuleLoaderMap_Modules;
     public final Method jdk_internal_module_ModuleLoaderMap_Modules_clinit;
     public final ObjectKlass jdk_internal_module_SystemModuleFinders;
@@ -1397,6 +1816,8 @@ public final class Meta extends ContextAccessImpl {
     public final Method jdk_internal_module_ModulePath_of;
     public final ObjectKlass java_lang_module_ModuleFinder;
     public final Method java_lang_module_ModuleFinder_compose;
+    public final ObjectKlass jdk_internal_module_Modules;
+    public final Method jdk_internal_module_Modules_defineModule;
 
     // Interop conversions.
     public final ObjectKlass java_time_Duration;
@@ -1407,29 +1828,35 @@ public final class Meta extends ContextAccessImpl {
     public final Field java_time_Instant_seconds;
     public final Field java_time_Instant_nanos;
     public final Method java_time_Instant_atZone;
+    public final Method java_time_Instant_ofEpochSecond;
 
     public final ObjectKlass java_time_LocalTime;
     public final Field java_time_LocalTime_hour;
     public final Field java_time_LocalTime_minute;
     public final Field java_time_LocalTime_second;
     public final Field java_time_LocalTime_nano;
+    public final Method java_time_LocalTime_of;
 
     public final ObjectKlass java_time_LocalDate;
     public final Field java_time_LocalDate_year;
     public final Field java_time_LocalDate_month;
     public final Field java_time_LocalDate_day;
+    public final Method java_time_LocalDate_of;
 
     public final ObjectKlass java_time_LocalDateTime;
     public final Method java_time_LocalDateTime_toLocalTime;
     public final Method java_time_LocalDateTime_toLocalDate;
+    public final Method java_time_LocalDateTime_of;
     public final ObjectKlass java_time_ZonedDateTime;
     public final Method java_time_ZonedDateTime_toLocalTime;
     public final Method java_time_ZonedDateTime_toLocalDate;
     public final Method java_time_ZonedDateTime_getZone;
     public final Method java_time_ZonedDateTime_toInstant;
+    public final Method java_time_ZonedDateTime_ofInstant;
 
     public final ObjectKlass java_util_Date;
     public final Method java_util_Date_toInstant;
+    public final Method java_util_Date_from;
     public final ObjectKlass java_time_ZoneId;
     public final Method java_time_ZoneId_getId;
     public final Method java_time_ZoneId_of;
@@ -1441,7 +1868,9 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_util_Map_remove;
     public final Method java_util_Map_containsKey;
     public final Method java_util_Map_entrySet;
-
+    public final ObjectKlass java_util_HashMap;
+    public final Method java_util_HashMap_init;
+    public final Method java_util_HashMap_put;
     public final ObjectKlass java_util_Map_Entry;
     public final Method java_util_Map_Entry_getKey;
     public final Method java_util_Map_Entry_getValue;
@@ -1451,9 +1880,12 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_util_List_get;
     public final Method java_util_List_set;
     public final Method java_util_List_size;
+    public final Method java_util_List_add;
+    public final Method java_util_List_remove;
 
     public final ObjectKlass java_util_Set;
     public final Method java_util_Set_add;
+    public final Method java_util_Set_of;
 
     public final ObjectKlass java_lang_Iterable;
     public final Method java_lang_Iterable_iterator;
@@ -1463,7 +1895,76 @@ public final class Meta extends ContextAccessImpl {
     public final Method java_util_Iterator_hasNext;
     public final Method java_util_Iterator_remove;
 
-    public final ObjectKlass java_util_NoSuchElementException;
+    public final ObjectKlass java_util_Collection;
+    public final Method java_util_Collection_size;
+    public final Method java_util_Collection_toArray;
+
+    public final ObjectKlass java_util_Optional;
+    public final Field java_util_Optional_value;
+    public final Field java_util_Optional_EMPTY;
+
+    public final ObjectKlass java_util_regex_Pattern;
+    public final Field java_util_regex_Pattern_HIDDEN_tregexMatch;
+    public final Field java_util_regex_Pattern_HIDDEN_tregexFullmatch;
+    public final Field java_util_regex_Pattern_HIDDEN_tregexSearch;
+    public final Field java_util_regex_Pattern_HIDDEN_unsupported;
+    public final Field java_util_regex_Pattern_pattern;
+    public final Field java_util_regex_Pattern_flags;
+    public final Field java_util_regex_Pattern_flags0;
+    public final Field java_util_regex_Pattern_compiled;
+    public final Method java_util_regex_Pattern_init;
+    public final Method java_util_regex_Pattern_namedGroups;
+    public final Field java_util_regex_Pattern_namedGroups_field;
+    public final Field java_util_regex_Pattern_capturingGroupCount;
+    public final Field java_util_regex_Pattern_root;
+    public final Method java_util_regex_Pattern_compile;
+    public final Field java_util_regex_Pattern_localCount;
+    public final Field java_util_regex_Pattern_localTCNCount;
+    public final ObjectKlass java_util_regex_IntHashSet;
+    public final ObjectKlass java_util_regex_Matcher;
+    public final Method java_util_regex_Matcher_init;
+    public final Method java_util_regex_Matcher_reset;
+    public final Field java_util_regex_Matcher_HIDDEN_tstring;
+    public final Field java_util_regex_Matcher_HIDDEN_oldLastBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_modCountBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_transparentBoundsBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_anchoringBoundsBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_fromBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_toBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_matchingModeBackup;
+    public final Field java_util_regex_Matcher_HIDDEN_searchFromBackup;
+    public final Field java_util_regex_Matcher_modCount;
+    public final Field java_util_regex_Matcher_parentPattern;
+    public final Field java_util_regex_Matcher_groups;
+    public final Field java_util_regex_Matcher_first;
+    public final Field java_util_regex_Matcher_last;
+    public final Field java_util_regex_Matcher_oldLast;
+    public final Field java_util_regex_Matcher_from;
+    public final Field java_util_regex_Matcher_to;
+    public final Method java_util_regex_Matcher_match;
+    public final Method java_util_regex_Matcher_search;
+    public final Field java_util_regex_Matcher_transparentBounds;
+    public final Field java_util_regex_Matcher_anchoringBounds;
+    public final Field java_util_regex_Matcher_locals;
+    public final Field java_util_regex_Matcher_localsPos;
+    public final Field java_util_regex_Matcher_hitEnd;
+    public final Field java_util_regex_Matcher_requireEnd;
+    public final Method java_util_regex_Matcher_groupCount;
+
+    public final ObjectKlass java_util_concurrent_locks_AbstractOwnableSynchronizer;
+    public final Field java_util_concurrent_locks_AbstractOwnableSynchronizer_exclusiveOwnerThread;
+    public final ObjectKlass java_util_concurrent_locks_ReentrantLock_Sync;
+    public final ObjectKlass java_util_concurrent_locks_ReentrantReadWriteLock_Sync;
+
+    public final ObjectKlass java_math_BigInteger;
+    public final Method java_math_BigInteger_init;
+    public final Method java_math_BigInteger_toByteArray;
+
+    public final ObjectKlass java_math_BigDecimal;
+    public final Method java_math_BigDecimal_init;
+
+    public final ObjectKlass java_math_MathContext;
+    public final Method java_math_MathContext_init;
 
     public final ObjectKlass jdk_internal_misc_UnsafeConstants;
     public final Field jdk_internal_misc_UnsafeConstants_ADDRESS_SIZE0;
@@ -1471,6 +1972,17 @@ public final class Meta extends ContextAccessImpl {
     public final Field jdk_internal_misc_UnsafeConstants_BIG_ENDIAN;
     public final Field jdk_internal_misc_UnsafeConstants_UNALIGNED_ACCESS;
     public final Field jdk_internal_misc_UnsafeConstants_DATA_CACHE_LINE_FLUSH_SIZE;
+
+    // Foreign
+    public final Klass jdk_internal_foreign_abi_VMStorage;
+    public final Field jdk_internal_foreign_abi_VMStorage_type;
+    public final Field jdk_internal_foreign_abi_VMStorage_segmentMaskOrSize;
+    public final Field jdk_internal_foreign_abi_VMStorage_indexOrOffset;
+    public final Klass jdk_internal_foreign_abi_NativeEntryPoint;
+    public final Field jdk_internal_foreign_abi_NativeEntryPoint_downcallStubAddress;
+    public final Klass jdk_internal_foreign_abi_UpcallLinker_CallRegs;
+    public final Field jdk_internal_foreign_abi_UpcallLinker_CallRegs_argRegs;
+    public final Field jdk_internal_foreign_abi_UpcallLinker_CallRegs_retRegs;
 
     @CompilationFinal public ObjectKlass java_lang_management_MemoryUsage;
     @CompilationFinal public ObjectKlass sun_management_ManagementFactory;
@@ -1491,6 +2003,48 @@ public final class Meta extends ContextAccessImpl {
     @CompilationFinal public Method java_beans_ThreadGroupContext_removeBeanInfo;
     @CompilationFinal public ObjectKlass java_beans_Introspector;
     @CompilationFinal public Method java_beans_Introspector_flushFromCaches;
+
+    public final class ContinuumSupport {
+        public final Method org_graalvm_continuations_ContinuationImpl_run;
+        public final Method org_graalvm_continuations_ContinuationImpl_suspend;
+        public final Field org_graalvm_continuations_ContinuationImpl_stackFrameHead;
+        public final Field HIDDEN_CONTINUATION_FRAME_RECORD;
+        public final ObjectKlass org_graalvm_continuations_ContinuationImpl_FrameRecord;
+        public final Field org_graalvm_continuations_ContinuationImpl_FrameRecord_pointers;
+        public final Field org_graalvm_continuations_ContinuationImpl_FrameRecord_primitives;
+        public final Field org_graalvm_continuations_ContinuationImpl_FrameRecord_method;
+        public final Field org_graalvm_continuations_ContinuationImpl_FrameRecord_next;
+        public final Field org_graalvm_continuations_ContinuationImpl_FrameRecord_bci;
+        public final ObjectKlass org_graalvm_continuations_IllegalMaterializedRecordException;
+        public final ObjectKlass org_graalvm_continuations_IllegalContinuationStateException;
+
+        private ContinuumSupport() {
+            ObjectKlass org_graalvm_continuations_ContinuationImpl = knownKlass(Type.org_graalvm_continuations_ContinuationImpl);
+            org_graalvm_continuations_ContinuationImpl_run = org_graalvm_continuations_ContinuationImpl.requireDeclaredMethod(Name.run, Signature._void);
+            org_graalvm_continuations_ContinuationImpl_suspend = org_graalvm_continuations_ContinuationImpl.requireDeclaredMethod(Name.suspend, Signature._void);
+            org_graalvm_continuations_ContinuationImpl_stackFrameHead = org_graalvm_continuations_ContinuationImpl.requireDeclaredField(Name.stackFrameHead,
+                            Type.org_graalvm_continuations_ContinuationImpl_FrameRecord);
+            HIDDEN_CONTINUATION_FRAME_RECORD = org_graalvm_continuations_ContinuationImpl.requireHiddenField(Name.HIDDEN_CONTINUATION_FRAME_RECORD);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord = knownKlass(Type.org_graalvm_continuations_ContinuationImpl_FrameRecord);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord_pointers = org_graalvm_continuations_ContinuationImpl_FrameRecord.requireDeclaredField(
+                            Name.pointers, Type.java_lang_Object_array);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord_primitives = org_graalvm_continuations_ContinuationImpl_FrameRecord.requireDeclaredField(
+                            Name.primitives, Type._long_array);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord_method = org_graalvm_continuations_ContinuationImpl_FrameRecord.requireDeclaredField(
+                            Name.method, Type.java_lang_reflect_Method);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord_next = org_graalvm_continuations_ContinuationImpl_FrameRecord.requireDeclaredField(
+                            Name.next, Type.org_graalvm_continuations_ContinuationImpl_FrameRecord);
+            org_graalvm_continuations_ContinuationImpl_FrameRecord_bci = org_graalvm_continuations_ContinuationImpl_FrameRecord.requireDeclaredField(
+                            Name.bci, Type._int);
+            org_graalvm_continuations_IllegalMaterializedRecordException = knownKlass(
+                            Type.org_graalvm_continuations_IllegalMaterializedRecordException);
+            org_graalvm_continuations_IllegalContinuationStateException = knownKlass(
+                            Type.org_graalvm_continuations_IllegalContinuationStateException);
+        }
+    }
+
+    @CompilationFinal //
+    public ContinuumSupport continuum;
 
     public final class PolyglotSupport {
         public final ObjectKlass UnknownIdentifierException;
@@ -1531,6 +2085,22 @@ public final class Meta extends ContextAccessImpl {
         public final Field ExceptionType_INTERRUPT;
         public final Field ExceptionType_RUNTIME_ERROR;
         public final Field ExceptionType_PARSE_ERROR;
+
+        public final ObjectKlass VMHelper;
+        public final Method VMHelper_getDynamicModuleDescriptor;
+
+        public final ObjectKlass TypeLiteral;
+        public final Field TypeLiteral_rawType;
+        public final Field HIDDEN_TypeLiteral_internalType;
+        public final ObjectKlass TypeLiteral$InternalTypeLiteral;
+        public final ObjectKlass EspressoForeignList;
+        public final ObjectKlass EspressoForeignCollection;
+        public final ObjectKlass EspressoForeignIterable;
+        public final ObjectKlass EspressoForeignIterator;
+        public final ObjectKlass EspressoForeignMap;
+        public final ObjectKlass EspressoForeignSet;
+
+        public final ObjectKlass EspressoForeignNumber;
 
         private PolyglotSupport() {
             boolean polyglotSupport = getContext().getEnv().getOptions().get(EspressoOptions.Polyglot);
@@ -1589,11 +2159,212 @@ public final class Meta extends ContextAccessImpl {
                             Type.com_oracle_truffle_espresso_polyglot_ExceptionType);
             ExceptionType_PARSE_ERROR = ExceptionType.requireDeclaredField(Name.PARSE_ERROR,
                             Type.com_oracle_truffle_espresso_polyglot_ExceptionType);
+
+            TypeLiteral = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_TypeLiteral);
+            TypeLiteral_rawType = TypeLiteral.requireDeclaredField(Name.rawType, Type.java_lang_Class);
+            HIDDEN_TypeLiteral_internalType = TypeLiteral.requireHiddenField(Name.HIDDEN_INTERNAL_TYPE);
+            TypeLiteral$InternalTypeLiteral = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_TypeLiteral$InternalTypeLiteral);
+
+            VMHelper = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_VMHelper);
+            VMHelper_getDynamicModuleDescriptor = VMHelper.requireDeclaredMethod(Name.getDynamicModuleDescriptor, Signature.ModuleDescriptor_String_String);
+
+            EspressoForeignList = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignList);
+            EspressoForeignCollection = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignCollection);
+            EspressoForeignIterable = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignIterable);
+            EspressoForeignIterator = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignIterator);
+            EspressoForeignMap = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignMap);
+            EspressoForeignSet = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_collections_EspressoForeignSet);
+
+            EspressoForeignNumber = knownPlatformKlass(Type.com_oracle_truffle_espresso_polyglot_impl_EspressoForeignNumber);
         }
     }
 
     @CompilationFinal //
     public PolyglotSupport polyglot;
+
+    // needed for external and internal JVMCI support
+    public final Field HIDDEN_JVMCIINDY;
+
+    // needed for internal JVMCI support only
+    public final class JVMCISupport {
+        public final ObjectKlass EspressoJVMCIRuntime;
+        public final Method EspressoJVMCIRuntime_runtime;
+
+        public final ObjectKlass DummyEspressoGraalJVMCICompiler;
+        public final Method DummyEspressoGraalJVMCICompiler_create;
+
+        public final ObjectKlass GraalJVMCICompiler;
+
+        public final ObjectKlass EspressoResolvedInstanceType;
+        public final Method EspressoResolvedInstanceType_init;
+        public final Field HIDDEN_OBJECTKLASS_MIRROR;
+
+        public final ObjectKlass EspressoResolvedJavaField;
+        public final Method EspressoResolvedJavaField_init;
+        public final Field HIDDEN_FIELD_MIRROR;
+
+        public final ObjectKlass EspressoResolvedJavaMethod;
+        public final Method EspressoResolvedJavaMethod_init;
+        public final Field EspressoResolvedJavaMethod_holder;
+        public final Field HIDDEN_METHOD_MIRROR;
+
+        public final ObjectKlass EspressoResolvedArrayType;
+        public final Method EspressoResolvedArrayType_init;
+
+        public final ObjectKlass EspressoResolvedPrimitiveType;
+        public final Method EspressoResolvedPrimitiveType_forBasicType;
+
+        public final ObjectKlass EspressoConstantPool;
+        public final Field EspressoConstantPool_holder;
+
+        public final ObjectKlass EspressoObjectConstant;
+        public final Method EspressoObjectConstant_init;
+        public final Field HIDDEN_OBJECT_CONSTANT;
+
+        public final ObjectKlass EspressoBootstrapMethodInvocation;
+        public final Method EspressoBootstrapMethodInvocation_init;
+
+        public final ObjectKlass Services;
+        public final Method Services_openJVMCITo;
+
+        public final ObjectKlass UnresolvedJavaType;
+        public final Method UnresolvedJavaType_init;
+        public final Field UnresolvedJavaType_name;
+
+        public final ObjectKlass UnresolvedJavaField;
+        public final Method UnresolvedJavaField_init;
+
+        public final ObjectKlass LineNumberTable;
+        public final Method LineNumberTable_init;
+
+        public final ObjectKlass LocalVariableTable;
+        public final Method LocalVariableTable_init;
+
+        public final ObjectKlass Local;
+        public final Method Local_init;
+
+        public final ObjectKlass ExceptionHandler;
+        public final Method ExceptionHandler_init;
+
+        public final ObjectKlass JavaConstant;
+        public final Field JavaConstant_NULL_POINTER;
+        public final Field JavaConstant_ILLEGAL;
+        public final Method JavaConstant_forInt;
+        public final Method JavaConstant_forLong;
+        public final Method JavaConstant_forFloat;
+        public final Method JavaConstant_forDouble;
+        public final Method JavaConstant_forPrimitive;
+
+        public final StaticObject IntrinsicMethod_INVOKE_BASIC;
+        public final StaticObject IntrinsicMethod_LINK_TO_VIRTUAL;
+        public final StaticObject IntrinsicMethod_LINK_TO_STATIC;
+        public final StaticObject IntrinsicMethod_LINK_TO_SPECIAL;
+        public final StaticObject IntrinsicMethod_LINK_TO_INTERFACE;
+        public final StaticObject IntrinsicMethod_LINK_TO_NATIVE;
+
+        private JVMCISupport() {
+            // JVMCI
+            EspressoJVMCIRuntime = knownKlass(Type.com_oracle_truffle_espresso_jvmci_EspressoJVMCIRuntime);
+            EspressoJVMCIRuntime_runtime = EspressoJVMCIRuntime.requireDeclaredMethod(Name.runtime, Signature.EspressoJVMCIRuntime);
+
+            EspressoResolvedInstanceType = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedInstanceType);
+            EspressoResolvedInstanceType_init = EspressoResolvedInstanceType.requireDeclaredMethod(Name._init_, Signature._void);
+            HIDDEN_OBJECTKLASS_MIRROR = EspressoResolvedInstanceType.requireHiddenField(Name.HIDDEN_OBJECTKLASS_MIRROR);
+
+            EspressoResolvedJavaField = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaField);
+            EspressoResolvedJavaField_init = EspressoResolvedJavaField.requireDeclaredMethod(Name._init_, Signature._void_EspressoResolvedInstanceType);
+            HIDDEN_FIELD_MIRROR = EspressoResolvedJavaField.requireHiddenField(Name.HIDDEN_FIELD_MIRROR);
+
+            EspressoResolvedJavaMethod = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaMethod);
+            EspressoResolvedJavaMethod_init = EspressoResolvedJavaMethod.requireDeclaredMethod(Name._init_, Signature._void_EspressoResolvedInstanceType);
+            HIDDEN_METHOD_MIRROR = EspressoResolvedJavaMethod.requireHiddenField(Name.HIDDEN_METHOD_MIRROR);
+            EspressoResolvedJavaMethod_holder = EspressoResolvedJavaMethod.requireDeclaredField(Name.holder, Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedInstanceType);
+
+            EspressoResolvedArrayType = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedArrayType);
+            EspressoResolvedArrayType_init = EspressoResolvedArrayType.requireDeclaredMethod(Name._init_, Signature._void_EspressoResolvedJavaType_int_Class);
+
+            EspressoResolvedPrimitiveType = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedPrimitiveType);
+            EspressoResolvedPrimitiveType_forBasicType = EspressoResolvedPrimitiveType.requireDeclaredMethod(Name.forBasicType, Signature.EspressoResolvedPrimitiveType_int);
+
+            EspressoConstantPool = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoConstantPool);
+            EspressoConstantPool_holder = EspressoConstantPool.requireDeclaredField(Name.holder, Type.com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedInstanceType);
+
+            EspressoObjectConstant = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoObjectConstant);
+            EspressoObjectConstant_init = EspressoObjectConstant.requireDeclaredMethod(Name._init_, Signature._void);
+            HIDDEN_OBJECT_CONSTANT = EspressoObjectConstant.requireHiddenField(Name.HIDDEN_OBJECT_CONSTANT);
+
+            EspressoBootstrapMethodInvocation = knownKlass(Type.com_oracle_truffle_espresso_jvmci_meta_EspressoBootstrapMethodInvocation);
+            EspressoBootstrapMethodInvocation_init = EspressoBootstrapMethodInvocation.requireDeclaredMethod(Name._init_,
+                            Signature._void_boolean_EspressoResolvedJavaMethod_String_JavaConstant_JavaConstant_array);
+
+            Services = knownKlass(Type.jdk_vm_ci_services_Services);
+            Services_openJVMCITo = Services.requireDeclaredMethod(Name.openJVMCITo, Signature._void_Module);
+
+            UnresolvedJavaType = knownKlass(Type.jdk_vm_ci_meta_UnresolvedJavaType);
+            UnresolvedJavaType_init = UnresolvedJavaType.requireDeclaredMethod(Name._init_, Signature._void_String);
+            UnresolvedJavaType_name = UnresolvedJavaType.requireDeclaredField(Name.name, Type.java_lang_String);
+
+            UnresolvedJavaField = knownKlass(Type.jdk_vm_ci_meta_UnresolvedJavaField);
+            UnresolvedJavaField_init = UnresolvedJavaField.requireDeclaredMethod(Name._init_, Signature._void_JavaType_String_JavaType);
+
+            LineNumberTable = knownKlass(Type.jdk_vm_ci_meta_LineNumberTable);
+            LineNumberTable_init = LineNumberTable.requireDeclaredMethod(Name._init_, Signature._void_int_array_int_array);
+
+            LocalVariableTable = knownKlass(Type.jdk_vm_ci_meta_LocalVariableTable);
+            LocalVariableTable_init = LocalVariableTable.requireDeclaredMethod(Name._init_, Signature._void_Local_array);
+
+            Local = knownKlass(Type.jdk_vm_ci_meta_Local);
+            Local_init = Local.requireDeclaredMethod(Name._init_, Signature._void_String_JavaType_int_int_int);
+
+            ExceptionHandler = knownKlass(Type.jdk_vm_ci_meta_ExceptionHandler);
+            ExceptionHandler_init = ExceptionHandler.requireDeclaredMethod(Name._init_, Signature._void_int_int_int_int_JavaType);
+
+            JavaConstant = knownKlass(Type.jdk_vm_ci_meta_JavaConstant);
+            JavaConstant_NULL_POINTER = JavaConstant.requireDeclaredField(Name.NULL_POINTER, Type.jdk_vm_ci_meta_JavaConstant);
+            JavaConstant_ILLEGAL = JavaConstant.requireDeclaredField(Name.ILLEGAL, Type.jdk_vm_ci_meta_PrimitiveConstant);
+            JavaConstant_forInt = JavaConstant.requireDeclaredMethod(Name.forInt, Signature.PrimitiveConstant_int);
+            JavaConstant_forLong = JavaConstant.requireDeclaredMethod(Name.forLong, Signature.PrimitiveConstant_long);
+            JavaConstant_forFloat = JavaConstant.requireDeclaredMethod(Name.forFloat, Signature.PrimitiveConstant_float);
+            JavaConstant_forDouble = JavaConstant.requireDeclaredMethod(Name.forDouble, Signature.PrimitiveConstant_double);
+            JavaConstant_forPrimitive = JavaConstant.requireDeclaredMethod(Name.forPrimitive, Signature.PrimitiveConstant_char_long);
+
+            ObjectKlass IntrinsicMethod = knownKlass(Type.jdk_vm_ci_meta_MethodHandleAccessProvider$IntrinsicMethod);
+            IntrinsicMethod_INVOKE_BASIC = IntrinsicMethod.requireEnumConstant(Name.INVOKE_BASIC);
+            IntrinsicMethod_LINK_TO_VIRTUAL = IntrinsicMethod.requireEnumConstant(Name.LINK_TO_VIRTUAL);
+            IntrinsicMethod_LINK_TO_STATIC = IntrinsicMethod.requireEnumConstant(Name.LINK_TO_STATIC);
+            IntrinsicMethod_LINK_TO_SPECIAL = IntrinsicMethod.requireEnumConstant(Name.LINK_TO_SPECIAL);
+            IntrinsicMethod_LINK_TO_INTERFACE = IntrinsicMethod.requireEnumConstant(Name.LINK_TO_INTERFACE);
+            IntrinsicMethod_LINK_TO_NATIVE = IntrinsicMethod.lookupEnumConstant(Name.LINK_TO_NATIVE);
+
+            // Compiler
+            DummyEspressoGraalJVMCICompiler = loadPlatformKlassOrNull(Type.jdk_graal_compiler_espresso_DummyEspressoGraalJVMCICompiler);
+            if (DummyEspressoGraalJVMCICompiler != null) {
+                DummyEspressoGraalJVMCICompiler_create = DummyEspressoGraalJVMCICompiler.requireDeclaredMethod(Name.create, Signature.DummyEspressoGraalJVMCICompiler_JVMCIRuntime);
+            } else {
+                DummyEspressoGraalJVMCICompiler_create = null;
+            }
+
+            GraalJVMCICompiler = loadPlatformKlassOrNull(Type.jdk_graal_compiler_api_runtime_GraalJVMCICompiler);
+        }
+
+        public StaticObject boxInt(int value) {
+            return (StaticObject) JavaConstant_forInt.invokeDirectStatic(value);
+        }
+
+        public StaticObject boxLong(long value) {
+            return (StaticObject) JavaConstant_forLong.invokeDirectStatic(value);
+        }
+
+        public StaticObject boxFloat(float value) {
+            return (StaticObject) JavaConstant_forFloat.invokeDirectStatic(value);
+        }
+
+        public StaticObject boxDouble(double value) {
+            return (StaticObject) JavaConstant_forDouble.invokeDirectStatic(value);
+        }
+    }
+
+    @CompilationFinal public JVMCISupport jvmci;
 
     @CompilationFinal(dimensions = 1) //
     public final ObjectKlass[] ARRAY_SUPERINTERFACES;
@@ -1800,6 +2571,31 @@ public final class Meta extends ContextAccessImpl {
         throw throwException(java_lang_NullPointerException);
     }
 
+    @TruffleBoundary
+    public EspressoException throwNullPointerExceptionBoundary() {
+        throw throwNullPointerException();
+    }
+
+    @TruffleBoundary
+    public EspressoException throwIllegalArgumentExceptionBoundary() {
+        throw throwException(java_lang_IllegalArgumentException);
+    }
+
+    @TruffleBoundary
+    public EspressoException throwIllegalArgumentExceptionBoundary(String message) {
+        throw throwExceptionWithMessage(java_lang_IllegalArgumentException, message);
+    }
+
+    @TruffleBoundary
+    public EspressoException throwNoClassDefFoundErrorBoundary(String message) {
+        throw throwExceptionWithMessage(java_lang_NoClassDefFoundError, message);
+    }
+
+    @TruffleBoundary
+    public void throwIndexOutOfBoundsExceptionBoundary(String message, int index, int length) {
+        throw throwExceptionWithMessage(java_lang_IndexOutOfBoundsException, message + ": index=" + index + " length=" + length);
+    }
+
     // endregion Guest exception handling (throw)
 
     ObjectKlass knownKlass(Symbol<Type> type) {
@@ -1816,11 +2612,38 @@ public final class Meta extends ContextAccessImpl {
         CompilerAsserts.neverPartOfCompilation();
         assert !Types.isArray(type);
         assert !Types.isPrimitive(type);
-        ObjectKlass k = loadKlassOrNull(type, classLoader);
-        if (k == null) {
-            throw EspressoError.shouldNotReachHere("Failed loading known class: " + type + ", discovered java version: " + getJavaVersion());
+        try {
+            ObjectKlass k = loadKlassOrNull(type, classLoader);
+            if (k == null) {
+                throw EspressoError.shouldNotReachHere("Failed loading known class: " + type + ", discovered java version: " + getJavaVersion());
+            }
+            return k;
+        } catch (EspressoException e) {
+            if (e.getGuestException().getKlass() == java_lang_ClassNotFoundException) {
+                throw EspressoError.shouldNotReachHere("Failed loading known class: " + type + " (CNFE), discovered java version: " + getJavaVersion());
+            }
+            throw e;
         }
-        return k;
+    }
+
+    private ObjectKlass loadPlatformKlassOrNull(Symbol<Type> type) {
+        // platform classes are loaded by the platform loader on JDK 11 and
+        // by the boot classloader on JDK 8
+        Klass result;
+        StaticObject classLoader = getJavaVersion().java8OrEarlier() ? StaticObject.NULL : getPlatformClassLoader();
+        try {
+            result = getRegistries().loadKlass(type, classLoader, StaticObject.NULL);
+        } catch (EspressoClassLoadingException.ClassDefNotFoundError e) {
+            return null;
+        } catch (EspressoClassLoadingException e) {
+            throw e.asGuestException(this);
+        } catch (EspressoException e) {
+            if (e.getGuestException().getKlass() == java_lang_NoClassDefFoundError || e.getGuestException().getKlass() == java_lang_ClassNotFoundException) {
+                return null;
+            }
+            throw e;
+        }
+        return (ObjectKlass) result;
     }
 
     public Class<?> resolveDispatch(Klass k) {
@@ -1832,7 +2655,7 @@ public final class Meta extends ContextAccessImpl {
      * asks the given class loader to perform the load, even for internal primitive types. This is
      * the method to use when loading symbols that are not directly taken from a constant pool, for
      * example, when loading a class whose name is given by a guest string.
-     *
+     * <p>
      * This method is designed to fail if given the type symbol for primitives (eg: 'Z' for
      * booleans).
      *
@@ -1850,7 +2673,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Same as {@link #loadKlassOrFail(Symbol, StaticObject, StaticObject)}, except this method
-     * returns null instead of throwing if class is not found. Note that this mthod can still throw
+     * returns null instead of throwing if class is not found. Note that this method can still throw
      * due to other errors (class file malformed, etc...)
      *
      * @see #loadKlassOrFail(Symbol, StaticObject, StaticObject)
@@ -1876,7 +2699,7 @@ public final class Meta extends ContextAccessImpl {
 
     private StaticObject getPlatformClassLoader() {
         if (cachedPlatformClassLoader == null) {
-            cachedPlatformClassLoader = (StaticObject) jdk_internal_loader_ClassLoaders_platformClassLoader.invokeDirect(StaticObject.NULL);
+            cachedPlatformClassLoader = (StaticObject) jdk_internal_loader_ClassLoaders_platformClassLoader.invokeDirectStatic();
         }
         return cachedPlatformClassLoader;
     }
@@ -1964,21 +2787,27 @@ public final class Meta extends ContextAccessImpl {
      * Resolves the symbol using {@link #resolveSymbolOrFail(Symbol, StaticObject, StaticObject)},
      * and applies access checking, possibly throwing {@link IllegalAccessError}.
      */
-    public Klass resolveSymbolAndAccessCheck(Symbol<Type> type, Klass accessingKlass) {
+    public Klass resolveSymbolAndAccessCheck(Symbol<Type> type, ObjectKlass accessingKlass) {
         assert accessingKlass != null;
         Klass klass = resolveSymbolOrFail(type, accessingKlass.getDefiningClassLoader(), java_lang_NoClassDefFoundError, accessingKlass.protectionDomain());
-        if (!Klass.checkAccess(klass.getElementalType(), accessingKlass)) {
+        if (!Klass.checkAccess(klass.getElementalType(), accessingKlass, false)) {
             throw throwException(java_lang_IllegalAccessError);
         }
         return klass;
     }
 
-    @TruffleBoundary
     public String toHostString(StaticObject str) {
         if (StaticObject.isNull(str)) {
             return null;
         }
         return stringConversion.toHost(str, getLanguage(), this);
+    }
+
+    public StaticObject toGuestString(String hostString) {
+        if (hostString == null) {
+            return StaticObject.NULL;
+        }
+        return stringConversion.toGuest(hostString, this);
     }
 
     @TruffleBoundary
@@ -1989,25 +2818,23 @@ public final class Meta extends ContextAccessImpl {
         return str.getKlass().getMeta().toHostString(str);
     }
 
-    @TruffleBoundary
-    public StaticObject toGuestString(Symbol<?> hostString) {
-        if (hostString == null) {
-            return StaticObject.NULL;
+    public ByteSequence toByteSequence(@JavaType(String.class) StaticObject str) {
+        if (StaticObject.isNull(str)) {
+            return null;
         }
-        return toGuestString(hostString.toString());
+        return ByteSequence.create(toHostString(str));
     }
 
     @TruffleBoundary
-    public StaticObject toGuestString(String hostString) {
-        if (hostString == null) {
+    public StaticObject toGuestString(ByteSequence byteSequence) {
+        if (byteSequence == null) {
             return StaticObject.NULL;
         }
-        return stringConversion.toGuest(hostString, this);
+        return toGuestString(byteSequence.toString());
     }
 
     public static boolean isString(Object string) {
-        if (string instanceof StaticObject) {
-            StaticObject staticObject = (StaticObject) string;
+        if (string instanceof StaticObject staticObject) {
             return staticObject.isString();
         }
         return false;
@@ -2043,8 +2870,7 @@ public final class Meta extends ContextAccessImpl {
 
     public Object toHostBoxed(Object object) {
         assert object != null;
-        if (object instanceof StaticObject) {
-            StaticObject guestObject = (StaticObject) object;
+        if (object instanceof StaticObject guestObject) {
             if (StaticObject.isNull(guestObject)) {
                 return null;
             }
@@ -2057,6 +2883,10 @@ public final class Meta extends ContextAccessImpl {
             return unboxGuest((StaticObject) object);
         }
         return object;
+    }
+
+    public static boolean isSignaturePolymorphicHolderType(Symbol<Type> type) {
+        return type == Type.java_lang_invoke_MethodHandle || type == Type.java_lang_invoke_VarHandle;
     }
 
     // region Guest Unboxing
@@ -2154,61 +2984,61 @@ public final class Meta extends ContextAccessImpl {
     // region Guest boxing
 
     public @JavaType(Boolean.class) StaticObject boxBoolean(boolean value) {
-        return (StaticObject) java_lang_Boolean_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Boolean_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Byte.class) StaticObject boxByte(byte value) {
-        return (StaticObject) java_lang_Byte_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Byte_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Character.class) StaticObject boxCharacter(char value) {
-        return (StaticObject) java_lang_Character_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Character_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Short.class) StaticObject boxShort(short value) {
-        return (StaticObject) java_lang_Short_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Short_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Float.class) StaticObject boxFloat(float value) {
-        return (StaticObject) java_lang_Float_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Float_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Integer.class) StaticObject boxInteger(int value) {
-        return (StaticObject) java_lang_Integer_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Integer_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Double.class) StaticObject boxDouble(double value) {
-        return (StaticObject) java_lang_Double_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Double_valueOf.invokeDirectStatic(value);
     }
 
     public @JavaType(Long.class) StaticObject boxLong(long value) {
-        return (StaticObject) java_lang_Long_valueOf.invokeDirect(null, value);
+        return (StaticObject) java_lang_Long_valueOf.invokeDirectStatic(value);
     }
 
     public StaticObject boxPrimitive(Object hostPrimitive) {
         if (hostPrimitive instanceof Integer) {
-            return (StaticObject) getMeta().java_lang_Integer_valueOf.invokeDirect(null, (int) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Integer_valueOf.invokeDirectStatic((int) hostPrimitive);
         }
         if (hostPrimitive instanceof Boolean) {
-            return (StaticObject) getMeta().java_lang_Boolean_valueOf.invokeDirect(null, (boolean) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Boolean_valueOf.invokeDirectStatic((boolean) hostPrimitive);
         }
         if (hostPrimitive instanceof Byte) {
-            return (StaticObject) getMeta().java_lang_Byte_valueOf.invokeDirect(null, (byte) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Byte_valueOf.invokeDirectStatic((byte) hostPrimitive);
         }
         if (hostPrimitive instanceof Character) {
-            return (StaticObject) getMeta().java_lang_Character_valueOf.invokeDirect(null, (char) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Character_valueOf.invokeDirectStatic((char) hostPrimitive);
         }
         if (hostPrimitive instanceof Short) {
-            return (StaticObject) getMeta().java_lang_Short_valueOf.invokeDirect(null, (short) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Short_valueOf.invokeDirectStatic((short) hostPrimitive);
         }
         if (hostPrimitive instanceof Float) {
-            return (StaticObject) getMeta().java_lang_Float_valueOf.invokeDirect(null, (float) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Float_valueOf.invokeDirectStatic((float) hostPrimitive);
         }
         if (hostPrimitive instanceof Double) {
-            return (StaticObject) getMeta().java_lang_Double_valueOf.invokeDirect(null, (double) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Double_valueOf.invokeDirectStatic((double) hostPrimitive);
         }
         if (hostPrimitive instanceof Long) {
-            return (StaticObject) getMeta().java_lang_Long_valueOf.invokeDirect(null, (long) hostPrimitive);
+            return (StaticObject) getMeta().java_lang_Long_valueOf.invokeDirectStatic((long) hostPrimitive);
         }
 
         throw EspressoError.shouldNotReachHere("Not a boxed type " + hostPrimitive);
@@ -2220,7 +3050,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a boolean.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2237,7 +3067,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a byte.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2254,7 +3084,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a short.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2271,7 +3101,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a char.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2288,7 +3118,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to an int.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2305,7 +3135,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a float.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2322,7 +3152,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a double.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2339,7 +3169,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a boxed value to a long.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will take the lower bits that fit in the primitive type or fill upper bits with 0. If the
      * conversion is not possible, throws {@link EspressoError}.
@@ -2356,7 +3186,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Converts a Object value to a StaticObject.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will return StaticObject.NULL when the Object value is not a StaticObject. If the conversion
      * is not possible, throws {@link EspressoError}.
@@ -2370,7 +3200,7 @@ public final class Meta extends ContextAccessImpl {
 
     /**
      * Bitwise conversion from a boxed value to a long.
-     *
+     * <p>
      * In {@link SpecComplianceMode#HOTSPOT HotSpot} compatibility-mode, the conversion is lax and
      * will fill the upper bits with 0. If the conversion is not possible, throws
      * {@link EspressoError}.
@@ -2412,4 +3242,38 @@ public final class Meta extends ContextAccessImpl {
     }
 
     // endregion Type conversions
+
+    // region KnownTypes impl
+
+    @Override
+    public Klass java_lang_Object() {
+        return java_lang_Object;
+    }
+
+    @Override
+    public Klass java_lang_Throwable() {
+        return java_lang_Throwable;
+    }
+
+    @Override
+    public Klass java_lang_Class() {
+        return java_lang_Class;
+    }
+
+    @Override
+    public Klass java_lang_String() {
+        return java_lang_String;
+    }
+
+    @Override
+    public Klass java_lang_invoke_MethodType() {
+        return java_lang_invoke_MethodType;
+    }
+
+    @Override
+    public Klass java_lang_invoke_MethodHandle() {
+        return java_lang_invoke_MethodHandle;
+    }
+
+    // endregion KnownTypes impl
 }

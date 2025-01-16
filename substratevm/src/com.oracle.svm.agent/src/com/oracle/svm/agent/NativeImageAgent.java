@@ -38,7 +38,6 @@ import java.nio.file.attribute.FileTime;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.ConcurrentModificationException;
 import java.util.Date;
 import java.util.List;
@@ -48,7 +47,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.ProcessProperties;
@@ -76,12 +74,11 @@ import com.oracle.svm.configure.filters.FilterConfigurationParser;
 import com.oracle.svm.configure.filters.HierarchyFilterNode;
 import com.oracle.svm.configure.trace.AccessAdvisor;
 import com.oracle.svm.configure.trace.TraceProcessor;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.configure.ConfigurationFile;
+import com.oracle.svm.core.configure.PredefinedClassesConfigurationParser;
 import com.oracle.svm.core.jni.headers.JNIEnvironment;
 import com.oracle.svm.core.jni.headers.JNIJavaVM;
 import com.oracle.svm.core.jni.headers.JNIObjectHandle;
-import com.oracle.svm.driver.NativeImage;
 import com.oracle.svm.driver.metainf.NativeImageMetaInfWalker;
 import com.oracle.svm.jvmtiagentbase.JNIHandleSet;
 import com.oracle.svm.jvmtiagentbase.JvmtiAgentBase;
@@ -89,6 +86,8 @@ import com.oracle.svm.jvmtiagentbase.Support;
 import com.oracle.svm.jvmtiagentbase.jvmti.JvmtiEnv;
 import com.oracle.svm.jvmtiagentbase.jvmti.JvmtiEventCallbacks;
 import com.oracle.svm.jvmtiagentbase.jvmti.JvmtiInterface;
+
+import jdk.graal.compiler.phases.common.LazyValue;
 
 public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHandleSet> {
     private static final String AGENT_NAME = "native-image-agent";
@@ -143,7 +142,6 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
         boolean experimentalClassDefineSupport = false;
         boolean experimentalUnsafeAllocationSupport = false;
         boolean experimentalOmitClasspathConfig = false;
-        boolean build = false;
         boolean configurationWithOrigins = false;
         List<String> conditionalConfigUserPackageFilterFiles = new ArrayList<>();
         List<String> conditionalConfigClassNameFilterFiles = new ArrayList<>();
@@ -206,8 +204,6 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
                 if (configWritePeriodInitialDelay < 0) {
                     return usage(1, "config-write-initial-delay-secs must be an integer greater or equal to 0");
                 }
-            } else if (isBooleanOption(token, "build")) {
-                build = getBooleanTokenValue(token);
             } else if (isBooleanOption(token, "experimental-configuration-with-origins")) {
                 configurationWithOrigins = getBooleanTokenValue(token);
             } else if (token.startsWith("experimental-conditional-config-filter-file=")) {
@@ -223,9 +219,9 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
             }
         }
 
-        if (traceOutputFile == null && configOutputDir == null && !build) {
+        if (traceOutputFile == null && configOutputDir == null) {
             configOutputDir = transformPath(AGENT_NAME + "_config-pid{pid}-{datetime}/");
-            inform("no output/build options provided, tracking dynamic accesses and writing configuration to directory: " + configOutputDir);
+            inform("no output options provided, tracking dynamic accesses and writing configuration to directory: " + configOutputDir);
         }
 
         if (configurationWithOrigins && !conditionalConfigUserPackageFilterFiles.isEmpty()) {
@@ -345,7 +341,7 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
                         tracingResultWriter = new ConfigurationWithOriginsWriter(configWithOriginsTracer);
                     }
                 } else {
-                    Path[] predefinedClassDestDirs = {Files.createDirectories(configOutputDirPath.resolve(ConfigurationFile.PREDEFINED_CLASSES_AGENT_EXTRACTED_SUBDIR))};
+                    List<LazyValue<Path>> predefinedClassDestDirs = List.of(PredefinedClassesConfigurationParser.directorySupplier(configOutputDirPath));
                     Function<IOException, Exception> handler = e -> {
                         if (e instanceof NoSuchFileException) {
                             warn("file " + ((NoSuchFileException) e).getFile() + " for merging could not be found, skipping");
@@ -377,12 +373,8 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
             }
         }
 
-        if (build) {
-            int status = buildImage(jvmti);
-            if (status == 0) {
-                System.exit(status);
-            }
-            return status;
+        if (tracer != null) {
+            tracer.traceTrackReflectionMetadata(trackReflectionMetadata);
         }
 
         try {
@@ -406,7 +398,9 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
     }
 
     private static void warn(String message) {
+        // Checkstyle: Allow raw info or warning printing - begin
         inform("Warning: " + message);
+        // Checkstyle: Allow raw info or warning printing - end
     }
 
     private static <T> T error(T result, String message) {
@@ -499,49 +493,6 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
         }
     }
 
-    private static final Pattern propertyBlacklist = Pattern.compile("(java\\..*)|(sun\\..*)|(jvmci\\..*)");
-    private static final Pattern propertyWhitelist = Pattern.compile("(java\\.library\\.path)|(java\\.io\\.tmpdir)");
-
-    private static int buildImage(JvmtiEnv jvmti) {
-        System.out.println("Building native image ...");
-        String classpath = Support.getSystemProperty(jvmti, "java.class.path");
-        if (classpath == null) {
-            return usage(1, "Build mode could not determine classpath.");
-        }
-        String javaCommand = Support.getSystemProperty(jvmti, "sun.java.command");
-        String mainClassMissing = "Build mode could not determine main class.";
-        if (javaCommand == null) {
-            return usage(1, mainClassMissing);
-        }
-        String mainClass = SubstrateUtil.split(javaCommand, " ")[0];
-        if (mainClass.isEmpty()) {
-            return usage(1, mainClassMissing);
-        }
-        List<String> buildArgs = new ArrayList<>();
-        // buildArgs.add("--verbose");
-        String[] keys = Support.getSystemProperties(jvmti);
-        for (String key : keys) {
-            boolean whitelisted = propertyWhitelist.matcher(key).matches();
-            boolean blacklisted = !whitelisted && propertyBlacklist.matcher(key).matches();
-            if (blacklisted) {
-                continue;
-            }
-            buildArgs.add("-D" + key + "=" + Support.getSystemProperty(jvmti, key));
-        }
-        if (mainClass.toLowerCase().endsWith(".jar")) {
-            buildArgs.add("-jar");
-        } else {
-            buildArgs.addAll(Arrays.asList("-cp", classpath));
-        }
-        buildArgs.add(mainClass);
-        buildArgs.add(AGENT_NAME + ".build");
-        // System.out.println(String.join("\n", buildArgs));
-        Path javaHome = Paths.get(Support.getSystemProperty(jvmti, "java.home"));
-        String userDirStr = Support.getSystemProperty(jvmti, "user.dir");
-        NativeImage.agentBuild(javaHome, userDirStr == null ? null : Paths.get(userDirStr), buildArgs);
-        return 0;
-    }
-
     private static String transformPath(String path) {
         String result = path;
         if (result.contains("{pid}")) {
@@ -595,9 +546,11 @@ public final class NativeImageAgent extends JvmtiAgentBase<NativeImageAgentJNIHa
                 throw unexpectedlyModified(configOutputLockFilePath);
             }
             expectUnmodified(configOutputLockFilePath);
-            if (!mostRecent.equals(expectedConfigModifiedBefore)) {
-                throw unexpectedlyModified(configOutputDirPath);
-            }
+            /*
+             * Checking for the modification of the whole configuration directory is not possible
+             * since predefined classes configuration outputs folders and files during the agent
+             * run.
+             */
 
             Path[] targetFilePaths = new Path[tempFilePaths.size()];
             for (int i = 0; i < tempFilePaths.size(); i++) {

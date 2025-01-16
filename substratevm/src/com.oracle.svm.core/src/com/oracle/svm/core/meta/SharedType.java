@@ -45,13 +45,15 @@ public interface SharedType extends ResolvedJavaType {
      */
     JavaKind getStorageKind();
 
+    int getTypeID();
+
     @Override
     default ResolvedJavaMethod resolveMethod(ResolvedJavaMethod method, ResolvedJavaType callerType) {
         /*
          * Not needed on Substrate VM for now, and we do not have the necessary information
          * available to implement it. method.getImplementations() does not contain abstract methods.
          */
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override

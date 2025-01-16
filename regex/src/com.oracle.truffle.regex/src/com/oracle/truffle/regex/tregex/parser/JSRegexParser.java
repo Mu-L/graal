@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,15 @@
  */
 package com.oracle.truffle.regex.tregex.parser;
 
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
+
+import com.oracle.truffle.regex.RegexSyntaxException.ErrorCode;
+import org.graalvm.collections.EconomicMap;
+import org.graalvm.collections.Equivalence;
+
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.regex.AbstractRegexObject;
 import com.oracle.truffle.regex.RegexFlags;
@@ -47,52 +56,54 @@ import com.oracle.truffle.regex.RegexLanguage;
 import com.oracle.truffle.regex.RegexOptions;
 import com.oracle.truffle.regex.RegexSource;
 import com.oracle.truffle.regex.RegexSyntaxException;
-import com.oracle.truffle.regex.errors.ErrorMessages;
+import com.oracle.truffle.regex.charset.CodePointSet;
+import com.oracle.truffle.regex.charset.CodePointSetAccumulator;
+import com.oracle.truffle.regex.errors.JsErrorMessages;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
 import com.oracle.truffle.regex.tregex.parser.ast.Group;
 import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
 import com.oracle.truffle.regex.tregex.parser.ast.RegexASTRootNode;
 import com.oracle.truffle.regex.tregex.parser.ast.RegexASTSubtreeRootNode;
+import com.oracle.truffle.regex.tregex.parser.ast.Sequence;
 import com.oracle.truffle.regex.tregex.parser.ast.Term;
 import com.oracle.truffle.regex.tregex.string.Encodings;
 
 public final class JSRegexParser implements RegexParser {
 
+    private static final EnumSet<Token.Kind> QUANTIFIER_PREV = EnumSet.of(Token.Kind.literalChar, Token.Kind.charClass, Token.Kind.charClassEnd, Token.Kind.classSet, Token.Kind.groupEnd,
+                    Token.Kind.backReference);
     private final RegexParserGlobals globals;
     private final RegexSource source;
-    private final RegexFlags flags;
-    private final RegexLexer lexer;
+    private final JSRegexLexer lexer;
     private final RegexASTBuilder astBuilder;
+    private final CodePointSetAccumulator curCharClass = new CodePointSetAccumulator();
 
     @TruffleBoundary
     public JSRegexParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) throws RegexSyntaxException {
         this.globals = language.parserGlobals;
         this.source = source;
-        this.flags = RegexFlags.parseFlags(source);
-        this.lexer = new RegexLexer(source, flags);
-        this.astBuilder = new RegexASTBuilder(language, source, flags, compilationBuffer);
-    }
-
-    public JSRegexParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer, RegexSource originalSource) throws RegexSyntaxException {
-        this.globals = language.parserGlobals;
-        this.source = source;
-        this.flags = RegexFlags.parseFlags(source);
-        this.lexer = new RegexLexer(source, flags);
-        this.astBuilder = new RegexASTBuilder(language, originalSource, flags, compilationBuffer);
+        RegexFlags flags = RegexFlags.parseFlags(source);
+        this.lexer = new JSRegexLexer(source, flags, compilationBuffer);
+        this.astBuilder = new RegexASTBuilder(language, source, flags, flags.isEitherUnicode(), compilationBuffer);
     }
 
     public static Group parseRootLess(RegexLanguage language, String pattern) throws RegexSyntaxException {
         return new JSRegexParser(language, new RegexSource(pattern, "", RegexOptions.DEFAULT, null), new CompilationBuffer(Encodings.UTF_16_RAW)).parse(false).getRoot();
     }
 
+    private RegexFlags getLocalFlags() {
+        return lexer.getLocalFlags();
+    }
+
     @Override
     public RegexFlags getFlags() {
-        return flags;
+        return lexer.getGlobalFlags();
     }
 
     @Override
     public AbstractRegexObject getNamedCaptureGroups() {
-        return AbstractRegexObject.createNamedCaptureGroupMapInt(lexer.getNamedCaptureGroups());
+        Map<String, List<Integer>> namedCaptureGroups = lexer.getNamedCaptureGroups();
+        return AbstractRegexObject.createNamedCaptureGroupMapListInt(namedCaptureGroups.isEmpty() ? null : namedCaptureGroups);
     }
 
     @Override
@@ -119,8 +130,8 @@ public final class JSRegexParser implements RegexParser {
             switch (token.kind) {
                 case caret:
                     if (prevKind != Token.Kind.caret) {
-                        if (flags.isMultiline()) {
-                            astBuilder.addCopy(token, globals.multiLineCaretSubstitution);
+                        if (getLocalFlags().isMultiline()) {
+                            astBuilder.addCopy(token, globals.getJsMultiLineCaretSubstitution());
                         } else {
                             astBuilder.addPositionAssertion(token);
                         }
@@ -128,8 +139,8 @@ public final class JSRegexParser implements RegexParser {
                     break;
                 case dollar:
                     if (prevKind != Token.Kind.dollar) {
-                        if (flags.isMultiline()) {
-                            astBuilder.addCopy(token, globals.multiLineDollarSubsitution);
+                        if (getLocalFlags().isMultiline()) {
+                            astBuilder.addCopy(token, globals.getJsMultiLineDollarSubsitution());
                         } else {
                             astBuilder.addPositionAssertion(token);
                         }
@@ -143,10 +154,10 @@ public final class JSRegexParser implements RegexParser {
                         astBuilder.replaceCurTermWithDeadNode();
                         break;
                     }
-                    if (flags.isUnicode() && flags.isIgnoreCase()) {
-                        astBuilder.addCopy(token, globals.unicodeIgnoreCaseWordBoundarySubstitution);
+                    if (getLocalFlags().isEitherUnicode() && getLocalFlags().isIgnoreCase()) {
+                        astBuilder.addCopy(token, globals.getJsUnicodeIgnoreCaseWordBoundarySubstitution());
                     } else {
-                        astBuilder.addCopy(token, globals.wordBoundarySubstituion);
+                        astBuilder.addCopy(token, globals.getJsWordBoundarySubstitution());
                     }
                     break;
                 case nonWordBoundary:
@@ -157,24 +168,27 @@ public final class JSRegexParser implements RegexParser {
                         astBuilder.replaceCurTermWithDeadNode();
                         break;
                     }
-                    if (flags.isUnicode() && flags.isIgnoreCase()) {
-                        astBuilder.addCopy(token, globals.unicodeIgnoreCaseNonWordBoundarySubsitution);
+                    if (getLocalFlags().isEitherUnicode() && getLocalFlags().isIgnoreCase()) {
+                        astBuilder.addCopy(token, globals.getJsUnicodeIgnoreCaseNonWordBoundarySubsitution());
                     } else {
-                        astBuilder.addCopy(token, globals.nonWordBoundarySubstitution);
+                        astBuilder.addCopy(token, globals.getJsNonWordBoundarySubstitution());
                     }
                     break;
                 case backReference:
-                    astBuilder.addBackReference((Token.BackReference) token);
+                    astBuilder.addBackReference((Token.BackReference) token, getLocalFlags().isIgnoreCase());
                     break;
                 case quantifier:
-                    if (astBuilder.getCurTerm() == null) {
-                        throw syntaxError(ErrorMessages.QUANTIFIER_WITHOUT_TARGET);
+                    if (astBuilder.getCurTerm() == null || !QUANTIFIER_PREV.contains(prevKind)) {
+                        throw syntaxError(JsErrorMessages.QUANTIFIER_WITHOUT_TARGET, ErrorCode.InvalidQuantifier);
                     }
-                    if (flags.isUnicode() && astBuilder.getCurTerm().isLookAheadAssertion()) {
-                        throw syntaxError(ErrorMessages.QUANTIFIER_ON_LOOKAHEAD_ASSERTION);
+                    if (prevKind == Token.Kind.quantifier) {
+                        throw syntaxError(JsErrorMessages.QUANTIFIER_ON_QUANTIFIER, ErrorCode.InvalidQuantifier);
+                    }
+                    if (getLocalFlags().isEitherUnicode() && astBuilder.getCurTerm().isLookAheadAssertion()) {
+                        throw syntaxError(JsErrorMessages.QUANTIFIER_ON_LOOKAHEAD_ASSERTION, ErrorCode.InvalidQuantifier);
                     }
                     if (astBuilder.getCurTerm().isLookBehindAssertion()) {
-                        throw syntaxError(ErrorMessages.QUANTIFIER_ON_LOOKBEHIND_ASSERTION);
+                        throw syntaxError(JsErrorMessages.QUANTIFIER_ON_LOOKBEHIND_ASSERTION, ErrorCode.InvalidQuantifier);
                     }
                     astBuilder.addQuantifier((Token.Quantifier) token);
                     break;
@@ -187,6 +201,12 @@ public final class JSRegexParser implements RegexParser {
                 case nonCaptureGroupBegin:
                     astBuilder.pushGroup(token);
                     break;
+                case inlineFlags:
+                    Token.InlineFlags inlineFlags = (Token.InlineFlags) token;
+                    assert !inlineFlags.isGlobal();
+                    astBuilder.pushGroup(inlineFlags);
+                    lexer.pushLocalFlags((RegexFlags) inlineFlags.getFlags());
+                    break;
                 case lookAheadAssertionBegin:
                     astBuilder.pushLookAheadAssertion(token, ((Token.LookAheadAssertionBegin) token).isNegated());
                     break;
@@ -195,19 +215,57 @@ public final class JSRegexParser implements RegexParser {
                     break;
                 case groupEnd:
                     if (astBuilder.getCurGroup().getParent() instanceof RegexASTRootNode) {
-                        throw syntaxError(ErrorMessages.UNMATCHED_RIGHT_PARENTHESIS);
+                        throw syntaxError(JsErrorMessages.UNMATCHED_RIGHT_PARENTHESIS, ErrorCode.UnmatchedParenthesis);
+                    }
+                    if (astBuilder.getCurGroup().isLocalFlags()) {
+                        lexer.popLocalFlags();
                     }
                     astBuilder.popGroup(token);
+                    break;
+                case literalChar:
+                    literalChar((Token.LiteralCharacter) token);
                     break;
                 case charClass:
                     astBuilder.addCharClass((Token.CharacterClass) token);
                     break;
+                case charClassBegin:
+                    curCharClass.clear();
+                    break;
+                case charClassAtom:
+                    curCharClass.addSet(((Token.CharacterClassAtom) token).getContents().getCodePointSet());
+                    break;
+                case charClassEnd:
+                    boolean wasSingleChar = !lexer.isCurCharClassInverted() && curCharClass.matchesSingleChar();
+                    if (getLocalFlags().isIgnoreCase()) {
+                        lexer.caseFoldUnfold(curCharClass);
+                    }
+                    CodePointSet cps = curCharClass.toCodePointSet();
+                    astBuilder.addCharClass(lexer.isCurCharClassInverted() ? cps.createInverse(source.getEncoding()) : cps, wasSingleChar, token.getSourceSection());
+                    break;
+                case classSet:
+                    astBuilder.addClassSet((Token.ClassSet) token, getLocalFlags().isIgnoreCase() ? CaseFoldData.CaseFoldUnfoldAlgorithm.ECMAScriptUnicode : null);
+                    break;
+                default:
+                    throw CompilerDirectives.shouldNotReachHere();
             }
         }
         if (!astBuilder.curGroupIsRoot()) {
-            throw syntaxError(ErrorMessages.UNTERMINATED_GROUP);
+            throw syntaxError(JsErrorMessages.UNTERMINATED_GROUP, ErrorCode.UnmatchedParenthesis);
         }
-        return astBuilder.popRootGroup();
+        RegexAST ast = astBuilder.popRootGroup();
+        checkNamedCaptureGroups(ast);
+        return ast;
+    }
+
+    private void literalChar(Token.LiteralCharacter literalCharacter) {
+        if (getLocalFlags().isIgnoreCase()) {
+            curCharClass.clear();
+            curCharClass.addCodePoint(literalCharacter.getCodePoint());
+            lexer.caseFoldUnfold(curCharClass);
+            astBuilder.addCharClass(curCharClass.toCodePointSet(), true, literalCharacter.getSourceSection());
+        } else {
+            astBuilder.addLiteralChar(literalCharacter);
+        }
     }
 
     private static boolean isNestedInLookBehindAssertion(Term t) {
@@ -221,7 +279,47 @@ public final class JSRegexParser implements RegexParser {
         return false;
     }
 
-    private RegexSyntaxException syntaxError(String msg) {
-        return RegexSyntaxException.createPattern(source, msg, lexer.getLastTokenPosition());
+    private void checkNamedCaptureGroups(RegexAST ast) {
+        if (lexer.getNamedCaptureGroups() != null) {
+            for (Map.Entry<String, List<Integer>> entry : lexer.getNamedCaptureGroups().entrySet()) {
+                for (int i = 0; i < entry.getValue().size() - 1; i++) {
+                    for (int j = i + 1; j < entry.getValue().size(); j++) {
+                        if (canBothParticipate(ast.getGroup(entry.getValue().get(i)).get(0), ast.getGroup(entry.getValue().get(j)).get(0))) {
+                            throw syntaxError(JsErrorMessages.MULTIPLE_GROUPS_SAME_NAME, ErrorCode.InvalidNamedGroup);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean canBothParticipate(Group a, Group b) {
+        // Find the lowest common ancestor Group between Groups `a` and `b` and check whether
+        // `a` and `b` lie in the same alternative of that ancestor group.
+        EconomicMap<Group, Integer> ancestorsA = EconomicMap.create(Equivalence.IDENTITY_WITH_SYSTEM_HASHCODE);
+        Group ancestorA = a;
+        while (ancestorA != null && !ancestorA.getParent().isRoot()) {
+            Sequence sequenceA = ancestorA.getParent().isSubtreeRoot() ? ancestorA.getParent().getParent().asSequence() : ancestorA.getParent().asSequence();
+            ancestorA = sequenceA.getParent().asGroup();
+            int indexA = ancestorA.getAlternatives().indexOf(sequenceA);
+            assert indexA >= 0;
+            ancestorsA.put(ancestorA, indexA);
+        }
+        Group ancestorB = b;
+        while (ancestorB != null && !ancestorB.getParent().isRoot()) {
+            Sequence sequenceB = ancestorB.getParent().isSubtreeRoot() ? ancestorB.getParent().getParent().asSequence() : ancestorB.getParent().asSequence();
+            ancestorB = sequenceB.getParent().asGroup();
+            if (ancestorsA.containsKey(ancestorB)) {
+                int indexA = ancestorsA.get(ancestorB);
+                int indexB = ancestorB.getAlternatives().indexOf(sequenceB);
+                assert indexB >= 0;
+                return indexA == indexB;
+            }
+        }
+        throw CompilerDirectives.shouldNotReachHere("no common ancestor found for named capture groups in regexp");
+    }
+
+    private RegexSyntaxException syntaxError(String msg, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(source, msg, lexer.getLastTokenPosition(), errorCode);
     }
 }

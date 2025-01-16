@@ -24,19 +24,41 @@
  */
 package com.oracle.graal.pointsto.infrastructure;
 
-import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
+import java.util.Objects;
 
+import com.oracle.graal.pointsto.util.GraalAccess;
+
+import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
 public interface OriginalClassProvider {
 
-    static Class<?> getJavaClass(SnippetReflectionProvider reflectionProvider, ResolvedJavaType javaType) {
-        if (javaType instanceof OriginalClassProvider) {
-            return ((OriginalClassProvider) javaType).getJavaClass();
-        } else {
-            return reflectionProvider.originalClass(javaType);
+    /**
+     * Provides a mapping back from a {@link ResolvedJavaType} to the original type provided by the
+     * JVMCI implementation of the VM that runs the image generator.
+     */
+    static ResolvedJavaType getOriginalType(JavaType type) {
+        JavaType cur = type;
+        while (cur instanceof OriginalClassProvider originalClassProvider) {
+            cur = originalClassProvider.unwrapTowardsOriginalType();
         }
+        /*
+         * The static analysis and the image generator never use unresolved types. The JavaType in
+         * the method signature is just to avoid casts in the callers.
+         */
+        return Objects.requireNonNull((ResolvedJavaType) cur);
     }
 
-    Class<?> getJavaClass();
+    static Class<?> getJavaClass(JavaType type) {
+        Class<?> result = GraalAccess.getOriginalSnippetReflection().originalClass(getOriginalType(type));
+        /*
+         * Currently, we do not support types at run time that have no matching java.lang.Class in
+         * the image generator. So while there is no 1:1 mapping between JVMCI types and classes,
+         * there needs to be some java.lang.Class for every JVMCI type. This class is also stored in
+         * DynamicHub.hostedJavaClass.
+         */
+        return Objects.requireNonNull(result);
+    }
+
+    ResolvedJavaType unwrapTowardsOriginalType();
 }

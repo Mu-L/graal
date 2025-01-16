@@ -29,8 +29,9 @@ import java.lang.reflect.Modifier;
 import java.util.Arrays;
 
 import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
-import com.oracle.graal.pointsto.util.GraalAccess;
-import com.oracle.svm.util.AnnotationWrapper;
+import com.oracle.svm.core.annotate.Substitute;
+import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.annotation.AnnotationWrapper;
 
 import jdk.vm.ci.common.JVMCIError;
 import jdk.vm.ci.meta.Assumptions.AssumptionResult;
@@ -40,6 +41,11 @@ import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+/**
+ * Type which fully substitutes its original type, i.e. @{@link Substitute} on the class level.
+ *
+ * @see InjectedFieldsType
+ */
 public class SubstitutionType implements ResolvedJavaType, OriginalClassProvider, AnnotationWrapper {
 
     private final ResolvedJavaType original;
@@ -70,6 +76,11 @@ public class SubstitutionType implements ResolvedJavaType, OriginalClassProvider
 
     public ResolvedJavaType getAnnotated() {
         return annotated;
+    }
+
+    @Override
+    public ResolvedJavaType unwrapTowardsOriginalType() {
+        return original;
     }
 
     void addInstanceField(ResolvedJavaField field) {
@@ -269,12 +280,24 @@ public class SubstitutionType implements ResolvedJavaType, OriginalClassProvider
 
     @Override
     public ResolvedJavaMethod[] getDeclaredConstructors() {
-        return annotated.getDeclaredConstructors();
+        return getDeclaredConstructors(true);
+    }
+
+    @Override
+    public ResolvedJavaMethod[] getDeclaredConstructors(boolean forceLink) {
+        VMError.guarantee(forceLink == false, "only use getDeclaredConstructors without forcing to link, because linking can throw LinkageError");
+        return annotated.getDeclaredConstructors(forceLink);
     }
 
     @Override
     public ResolvedJavaMethod[] getDeclaredMethods() {
-        return annotated.getDeclaredMethods();
+        return getDeclaredMethods(true);
+    }
+
+    @Override
+    public ResolvedJavaMethod[] getDeclaredMethods(boolean forceLink) {
+        VMError.guarantee(forceLink == false, "only use getDeclaredMethods without forcing to link, because linking can throw LinkageError");
+        return annotated.getDeclaredMethods(forceLink);
     }
 
     @Override
@@ -312,11 +335,6 @@ public class SubstitutionType implements ResolvedJavaType, OriginalClassProvider
     @Override
     public ResolvedJavaType getHostClass() {
         return original.getHostClass();
-    }
-
-    @Override
-    public Class<?> getJavaClass() {
-        return OriginalClassProvider.getJavaClass(GraalAccess.getOriginalSnippetReflection(), original);
     }
 
     @Override

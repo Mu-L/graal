@@ -28,28 +28,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
-
-import org.graalvm.compiler.bytecode.ResolvedJavaMethodBytecode;
-import org.graalvm.compiler.core.common.Fields;
-import org.graalvm.compiler.core.common.GraalOptions;
-import org.graalvm.compiler.core.common.type.AbstractObjectStamp;
-import org.graalvm.compiler.core.common.type.ObjectStamp;
-import org.graalvm.compiler.core.common.type.Stamp;
-import org.graalvm.compiler.core.common.type.StampPair;
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.graph.Node;
-import org.graalvm.compiler.graph.NodeClass;
-import org.graalvm.compiler.graph.NodeSourcePosition;
-import org.graalvm.compiler.nodes.FieldLocationIdentity;
-import org.graalvm.compiler.nodes.PiNode;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.virtual.CommitAllocationNode;
-import org.graalvm.compiler.nodes.virtual.VirtualInstanceNode;
-import org.graalvm.compiler.nodes.virtual.VirtualObjectNode;
-import org.graalvm.compiler.nodes.virtual.VirtualObjectState;
-import org.graalvm.compiler.options.OptionValues;
-import org.graalvm.compiler.replacements.SnippetTemplate;
+import java.util.Locale;
+import java.util.stream.Collectors;
 
 import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.meta.AnalysisField;
@@ -67,6 +47,27 @@ import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 
+import jdk.graal.compiler.bytecode.ResolvedJavaMethodBytecode;
+import jdk.graal.compiler.core.common.Fields;
+import jdk.graal.compiler.core.common.GraalOptions;
+import jdk.graal.compiler.core.common.type.AbstractObjectStamp;
+import jdk.graal.compiler.core.common.type.ObjectStamp;
+import jdk.graal.compiler.core.common.type.Stamp;
+import jdk.graal.compiler.core.common.type.StampPair;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.graph.NodeClass;
+import jdk.graal.compiler.graph.NodeSourcePosition;
+import jdk.graal.compiler.nodes.FieldLocationIdentity;
+import jdk.graal.compiler.nodes.PiNode;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.ValueNode;
+import jdk.graal.compiler.nodes.virtual.CommitAllocationNode;
+import jdk.graal.compiler.nodes.virtual.VirtualInstanceNode;
+import jdk.graal.compiler.nodes.virtual.VirtualObjectNode;
+import jdk.graal.compiler.nodes.virtual.VirtualObjectState;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.replacements.SnippetTemplate;
 import jdk.vm.ci.code.BytecodePosition;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -92,7 +93,7 @@ public class AnalysisToHostedGraphTransplanter {
          * The graph in the analysis universe is no longer necessary once it is transplanted into
          * the hosted universe.
          */
-        aMethod.setAnalyzedGraph(null);
+        aMethod.clearAnalyzedGraph();
 
         /*
          * The static analysis always needs NodeSourcePosition. But for AOT compilation, we only
@@ -101,7 +102,12 @@ public class AnalysisToHostedGraphTransplanter {
         OptionValues compileOptions = compileQueue.getCustomizedOptions(hMethod, debug);
         boolean trackNodeSourcePosition = GraalOptions.TrackNodeSourcePosition.getValue(compileOptions);
         assert aMethod.equals(aGraph.method());
-        StructuredGraph graph = aGraph.copy(hMethod, compileOptions, debug, trackNodeSourcePosition);
+
+        List<ResolvedJavaMethod> inlinedHMethods = null;
+        if (aGraph.isRecordingInlinedMethods()) {
+            inlinedHMethods = aGraph.getMethods().stream().map(m -> getHostedMethod(universe, m)).collect(Collectors.toList());
+        }
+        StructuredGraph graph = aGraph.copy(hMethod, inlinedHMethods, compileOptions, debug, trackNodeSourcePosition);
 
         transplantEscapeAnalysisState(graph);
 
@@ -333,14 +339,11 @@ public class AnalysisToHostedGraphTransplanter {
             SnippetTemplate.EagerSnippetInfo info = (SnippetTemplate.EagerSnippetInfo) obj;
             newReplacement = info.copyWith((ResolvedJavaMethod) replaceAnalysisObjects(info.getMethod(), node, replacements, hUniverse));
         } else if (obj instanceof ImageHeapConstant) {
-            ImageHeapConstant imageObj = (ImageHeapConstant) obj;
-            ResolvedJavaType type = imageObj.getType(null);
-            imageObj.setType(type instanceof AnalysisType ? hUniverse.lookup(type) : type);
-            newReplacement = imageObj;
+            newReplacement = obj;
         } else {
             /* Check that we do not have a class or package name that relates to the analysis. */
-            assert !obj.getClass().getName().toLowerCase().contains("analysis") : "Object " + obj + " of " + obj.getClass() + " in node " + node;
-            assert !obj.getClass().getName().toLowerCase().contains("pointsto") : "Object " + obj + " of " + obj.getClass() + " in node " + node;
+            assert !obj.getClass().getName().toLowerCase(Locale.ROOT).contains("analysis") : "Object " + obj + " of " + obj.getClass() + " in node " + node;
+            assert !obj.getClass().getName().toLowerCase(Locale.ROOT).contains("pointsto") : "Object " + obj + " of " + obj.getClass() + " in node " + node;
             newReplacement = obj;
         }
 

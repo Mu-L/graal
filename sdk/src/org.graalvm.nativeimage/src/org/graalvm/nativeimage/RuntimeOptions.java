@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,10 +40,9 @@
  */
 package org.graalvm.nativeimage;
 
-import java.util.EnumSet;
+import java.util.List;
 
 import org.graalvm.nativeimage.impl.RuntimeOptionsSupport;
-import org.graalvm.options.OptionDescriptors;
 
 /**
  * Used for manipulating options at run time.
@@ -74,31 +73,80 @@ public final class RuntimeOptions {
     }
 
     /**
-     * Classes of options that can be queried through {@link #getOptions(EnumSet)}.
+     * Lists all runtime option descriptors available.
      *
-     * @since 19.0
+     * @since 23.1
      */
-    public enum OptionClass {
-        VM,
-        Compiler
+    public static List<Descriptor> listDescriptors() {
+        return ImageSingletons.lookup(RuntimeOptionsSupport.class).listDescriptors();
     }
 
     /**
-     * Returns available run time options for the selected {@linkplain OptionClass option classes}.
+     * Looks up a single descriptor given an option name. Returns <code>null</code> if no descriptor
+     * could be found.
      *
-     * @since 19.0
+     * @since 23.1
      */
-    public static OptionDescriptors getOptions(EnumSet<OptionClass> classes) {
-        return ImageSingletons.lookup(RuntimeOptionsSupport.class).getOptions(classes);
+    public static Descriptor getDescriptor(String optionName) {
+        return ImageSingletons.lookup(RuntimeOptionsSupport.class).getDescriptor(optionName);
     }
 
-    /**
-     * Returns all available run time options.
-     *
-     * @since 19.0
-     */
-    public static OptionDescriptors getOptions() {
-        return getOptions(EnumSet.allOf(OptionClass.class));
+    public interface Descriptor {
+        /**
+         * Returns the name of the option that this descriptor represents.
+         *
+         * @since 23.1
+         */
+        String name();
+
+        /**
+         * Returns a human-readable description on how to use the option. For newlines, use
+         * <code>%n</code>.
+         *
+         * @since 23.1
+         */
+        String help();
+
+        /**
+         * Returns <code>true</code> if this option was marked deprecated. This indicates that the
+         * option is going to be removed in a future release or its use is not recommended.
+         *
+         * @since 23.1
+         */
+        boolean deprecated();
+
+        /**
+         * Returns the deprecation reason and the recommended fix. For newlines, use
+         * <code>%n</code>.
+         *
+         * @since 23.1
+         */
+        String deprecatedMessage();
+
+        /**
+         * Returns the option type of this key. Typical values are {@link String}, {@link Boolean},
+         * {@link Integer}. The result of {@link #convertValue(String)} is guaranteed to be
+         * assignable to this type.
+         *
+         * @since 23.1
+         */
+        Class<?> valueType();
+
+        /**
+         * Returns the default value of type {@link #valueType()} for this option.
+         *
+         * @since 23.1
+         */
+        Object defaultValue();
+
+        /**
+         * Converts a string value, validates it, and converts it to an object of this type. For
+         * option maps includes the previous map stored for the option and the key.
+         *
+         * @throws IllegalArgumentException if the value is invalid or cannot be converted.
+         * @since 23.1
+         */
+        Object convertValue(String value) throws IllegalArgumentException;
     }
 
 }

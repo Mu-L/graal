@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,9 +51,9 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 
-import com.oracle.truffle.api.benchmark.DSLInterpreterBenchmarkFactory.CachedDSLNodeGen;
-import com.oracle.truffle.api.benchmark.DSLInterpreterBenchmarkFactory.SimpleDSLNodeGen;
 import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.GenerateInline;
+import com.oracle.truffle.api.dsl.NeverDefault;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.UnsupportedSpecializationException;
 import com.oracle.truffle.api.frame.VirtualFrame;
@@ -84,7 +84,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
         @Setup(Level.Invocation)
         public void setup() {
             for (int i = 0; i < NODES; i++) {
-                nodes[i] = createNode(SimpleDSLNodeGen::create);
+                nodes[i] = createNode(DSLInterpreterBenchmarkFactory.SimpleDSLNodeGen::create);
             }
         }
 
@@ -103,7 +103,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
         @Setup(Level.Invocation)
         public void setup() {
             for (int i = 0; i < NODES; i++) {
-                nodes[i] = createNode(CachedDSLNodeGen::create);
+                nodes[i] = createNode(DSLInterpreterBenchmarkFactory.CachedDSLNodeGen::create);
             }
         }
 
@@ -121,7 +121,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
     @Setup
     public void setupInterpreterProfile() {
         for (int i = 0; i < 100; i++) {
-            AbstractNode node = createNode(SimpleDSLNodeGen::create);
+            AbstractNode node = createNode(DSLInterpreterBenchmarkFactory.SimpleDSLNodeGen::create);
             node.execute(42L);
             node.execute(42);
             try {
@@ -129,7 +129,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
             } catch (UnsupportedSpecializationException e) {
             }
 
-            node = createNode(SimpleDSLNodeGen::create);
+            node = createNode(DSLInterpreterBenchmarkFactory.SimpleDSLNodeGen::create);
             node.execute(42);
             node.execute(42L);
             try {
@@ -137,7 +137,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
             } catch (UnsupportedSpecializationException e) {
             }
 
-            node = createNode(CachedDSLNodeGen::create);
+            node = createNode(DSLInterpreterBenchmarkFactory.CachedDSLNodeGen::create);
             node.execute(42);
             node.execute(42L);
             try {
@@ -155,7 +155,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
         @Setup(Level.Invocation)
         public void setup() {
             for (int i = 0; i < NODES; i++) {
-                nodes[i] = createNode(SimpleDSLNodeGen::create);
+                nodes[i] = createNode(DSLInterpreterBenchmarkFactory.SimpleDSLNodeGen::create);
                 nodes[i].execute(42);
             }
         }
@@ -170,7 +170,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
         @Setup(Level.Invocation)
         public void setup() {
             for (int i = 0; i < NODES; i++) {
-                nodes[i] = createNode(CachedDSLNodeGen::create);
+                nodes[i] = createNode(DSLInterpreterBenchmarkFactory.CachedDSLNodeGen::create);
                 nodes[i].execute(42);
             }
         }
@@ -195,6 +195,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
         abstract int execute(Object v);
     }
 
+    @GenerateInline(false)
     abstract static class SimpleDSLNode extends AbstractNode {
 
         @Specialization
@@ -209,6 +210,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
 
     }
 
+    @SuppressWarnings("truffle-inlining")
     abstract static class CachedDSLNode extends AbstractNode {
 
         @Specialization
@@ -221,7 +223,7 @@ public class DSLInterpreterBenchmark extends TruffleBenchmark {
             return (int) v;
         }
 
-        static final int CACHED = 42;
+        @NeverDefault static final int CACHED = 42;
 
     }
 

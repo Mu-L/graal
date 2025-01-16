@@ -31,7 +31,7 @@ import com.oracle.truffle.api.nodes.NodeInfo;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * SASTORE bytecode with interop extensions.
@@ -57,7 +57,7 @@ public abstract class ShortArrayStore extends EspressoNode {
     public abstract void execute(StaticObject receiver, int index, short value);
 
     @Specialization
-    void executeWithNullCheck(StaticObject array, int index, short value,
+    void doWithNullCheck(StaticObject array, int index, short value,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck shortArrayStore) {
         shortArrayStore.execute(nullCheck.execute(array), index, value);

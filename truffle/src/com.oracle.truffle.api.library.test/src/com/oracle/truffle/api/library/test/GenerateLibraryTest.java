@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,7 +41,6 @@
 package com.oracle.truffle.api.library.test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.fail;
 
 import org.junit.Test;
@@ -56,7 +55,6 @@ import com.oracle.truffle.api.library.GenerateLibrary.DefaultExport;
 import com.oracle.truffle.api.library.Library;
 import com.oracle.truffle.api.library.test.CachedLibraryTest.SimpleDispatchedNode;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.nodes.NodeCost;
 import com.oracle.truffle.api.test.AbstractLibraryTest;
 import com.oracle.truffle.api.test.ExpectError;
 
@@ -105,7 +103,7 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
         }
 
         @ExportMessage
-        static final String call(Sample s, @Cached(value = "0", uncached = "1") int cached) {
+        static final String call(Sample s, @Cached(value = "0", uncached = "1", neverDefault = false) int cached) {
             if (cached == 0) {
                 if (s.name != null) {
                     return s.name + "_cached";
@@ -149,7 +147,6 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
         }
 
         uncached = getUncachedDispatch(SampleLibrary.class);
-        assertSame(NodeCost.MEGAMORPHIC, uncached.getCost());
         assertEquals("s1_uncached", uncached.call(s1));
         assertEquals("s1_uncached", uncached.call(s1));
         assertEquals("s2_uncached", uncached.call(s2));
@@ -173,45 +170,29 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
         }
 
         cached = createCachedDispatch(SampleLibrary.class, 0);
-        assertSame(NodeCost.MEGAMORPHIC, cached.getCost());
         assertEquals("s1_uncached", cached.call(s1));
-        assertSame(NodeCost.MEGAMORPHIC, cached.getCost());
 
         cached = createCachedDispatch(SampleLibrary.class, 1);
-        assertSame(NodeCost.UNINITIALIZED, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s2_uncached", cached.call(s2));
-        assertSame(NodeCost.MEGAMORPHIC, cached.getCost());
         assertEquals("s3_uncached", cached.call(s3));
         assertEquals("s1_uncached", cached.call(s1));
 
         cached = createCachedDispatch(SampleLibrary.class, 2);
-        assertSame(NodeCost.UNINITIALIZED, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s2_cached", cached.call(s2));
-        assertSame(NodeCost.POLYMORPHIC, cached.getCost());
         assertEquals("s3_uncached", cached.call(s3));
-        assertSame(NodeCost.MEGAMORPHIC, cached.getCost());
         assertEquals("s2_uncached", cached.call(s2));
         assertEquals("s1_uncached", cached.call(s1));
 
         SimpleDispatchedNode.limit = 3;
         cached = createCachedDispatch(SampleLibrary.class, 3);
-        assertSame(NodeCost.UNINITIALIZED, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s1_cached", cached.call(s1));
-        assertSame(NodeCost.MONOMORPHIC, cached.getCost());
         assertEquals("s2_cached", cached.call(s2));
-        assertSame(NodeCost.POLYMORPHIC, cached.getCost());
         assertEquals("s3_cached", cached.call(s3));
-        assertSame(NodeCost.POLYMORPHIC, cached.getCost());
 
     }
 
@@ -449,7 +430,7 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
         }
     }
 
-    @ExpectError({"The following message(s) of library AbstractErrorLibrary1 are abstract and must be exported using:%",
+    @ExpectError({"The following message(s) of library AbstractErrorLibrary1 are abstract and should be exported using:%",
                     "Exported library AbstractErrorLibrary1 does not export any messages and therefore has no effect. Remove the export declaration to resolve this."
     })
     @ExportLibrary(AbstractErrorLibrary1.class)
@@ -477,7 +458,7 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
     }
 
     // should now have an abstract error message
-    @ExpectError("The following message(s) of library AbstractErrorLibrary2 are abstract and must be exported usin%")
+    @ExpectError("The following message(s) of library AbstractErrorLibrary2 are abstract and should be exported usin%")
     @ExportLibrary(AbstractErrorLibrary2.class)
     public static class AbstractErrorTest3 {
         @SuppressWarnings("static-method")
@@ -561,13 +542,13 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
     // test that package-protected duplicate method leads to error
     @GenerateLibrary
     public abstract static class AbstractErrorLibrary9 extends Library {
-        @ExpectError("Library message must have a unique name. Two methods with the same name found.If this method is not intended to be a library message then add the private or final modifier to ignore it.")
+        @ExpectError("Library message must have a unique name. %")
         public String call(Object receiver, String arg) {
             return "default";
         }
 
-        @SuppressWarnings("static-method")
-        String call(Object receiver) {
+        @ExpectError("Library message must have a unique name. %")
+        public String call(Object receiver) {
             return "default";
         }
 
@@ -576,12 +557,12 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
     // test that protected duplicate method leads to error
     @GenerateLibrary
     public abstract static class AbstractErrorLibrary10 extends Library {
-        @ExpectError("Library message must have a unique name. Two methods with the same name found.If this method is not intended to be a library message then add the private or final modifier to ignore it.")
+        @ExpectError("Library message must have a unique name. %")
         public String call(Object receiver, String arg) {
             return "default";
         }
 
-        @SuppressWarnings("static-method")
+        @ExpectError("Library message must have a unique name. %")
         protected String call(Object receiver) {
             return "default";
         }
@@ -593,8 +574,8 @@ public class GenerateLibraryTest extends AbstractLibraryTest {
     public abstract static class AbstractErrorLibrary11 extends Library {
 
         @SuppressWarnings("static-method")
-        @ExpectError("Library messages must be public.")
-        protected String call(Object receiver) {
+        @ExpectError("Library messages must be public or protected.%")
+        String call(Object receiver) {
             return "default";
         }
 

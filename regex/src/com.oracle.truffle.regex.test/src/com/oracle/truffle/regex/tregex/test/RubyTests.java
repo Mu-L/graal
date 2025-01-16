@@ -40,9 +40,11 @@
  */
 package com.oracle.truffle.regex.tregex.test;
 
-import com.oracle.truffle.regex.tregex.string.Encodings;
 import org.junit.Assert;
 import org.junit.Test;
+
+import com.oracle.truffle.regex.errors.RbErrorMessages;
+import com.oracle.truffle.regex.tregex.string.Encodings;
 
 public class RubyTests extends RegexTestBase {
 
@@ -415,9 +417,9 @@ public class RubyTests extends RegexTestBase {
 
     @Test
     public void recursiveSubexpressionCalls() {
-        testUnsupported("(a\\g<1>?)(b\\g<2>?)", "");
-        testUnsupported("(?<a>a\\g<b>?)(?<b>b\\g<a>?)", "");
-        testUnsupported("a\\g<0>?", "");
+        expectUnsupported("(a\\g<1>?)(b\\g<2>?)", "");
+        expectUnsupported("(?<a>a\\g<b>?)(?<b>b\\g<a>?)", "");
+        expectUnsupported("a\\g<0>?", "");
     }
 
     @Test
@@ -533,6 +535,112 @@ public class RubyTests extends RegexTestBase {
 
     @Test
     public void gr41489() {
-        testUnsupported("\\((?>[^)(]+|\\g<0>)*\\)", "");
+        expectUnsupported("\\((?>[^)(]+|\\g<0>)*\\)", "");
+    }
+
+    @Test
+    public void quantifierOverflow() {
+        long max = Integer.MAX_VALUE;
+        test(String.format("x{%d,%d}", max, max + 1), "", "x", 0, false);
+        test(String.format("x{%d,}", max), "", "x", 0, false);
+        test(String.format("x{%d,}", max + 1), "", "x", 0, false);
+        expectSyntaxError(String.format("x{%d,%d}", max + 1, max), "", RbErrorMessages.MIN_REPEAT_GREATER_THAN_MAX_REPEAT);
+    }
+
+    @Test
+    public void testConditionalBackReferencesWithLookArounds() {
+        /// Test temporal ordering of lookaround assertions and conditional back-references in DFAs.
+        test("(?=(?(1)a|b))(b)", "", "b", 0, true, 0, 1, 0, 1);
+        test("(?=x(?(1)a|b))(x)b", "", "xb", 0, true, 0, 2, 0, 1);
+        test("(?=xy(?(1)a|b))(x)yb", "", "xyb", 0, true, 0, 3, 0, 1);
+        test("(?=(a))(?(1)a|b)", "", "a", 0, true, 0, 1, 0, 1);
+        test("(?=a(x))(?(1)a|b)x", "", "ax", 0, true, 0, 2, 1, 2);
+        test("(?=ax(y))(?(1)a|b)xy", "", "axy", 0, true, 0, 3, 2, 3);
+        test("(?(1)a|b)(?<=(b))", "", "b", 0, true, 0, 1, 0, 1);
+        test("x(?(1)a|b)(?<=(x)b)", "", "xb", 0, true, 0, 2, 0, 1);
+        test("xy(?(1)a|b)(?<=(x)yb)", "", "xyb", 0, true, 0, 3, 0, 1);
+
+        // Conditional back-reference and capture group within lookahead.
+        test("(?=(a)(?(1)a|b))", "", "aa", 0, true, 0, 0, 0, 1);
+        test("(?=(a)x(?(1)a|b))", "", "axa", 0, true, 0, 0, 0, 1);
+        test("(?=(a)xy(?(1)a|b))", "", "axya", 0, true, 0, 0, 0, 1);
+        test("(?=(?(1)a|b)())", "", "b", 0, true, 0, 0, 1, 1);
+    }
+
+    @Test
+    public void gh3167() {
+        // https://github.com/oracle/truffleruby/issues/3167
+        String pattern = "\n" +
+                        "        (?<open>\\s*\\(\\s*) {0}\n" +
+                        "        (?<close>\\s*\\)\\s*) {0}\n" +
+                        "        (?<name>\\s*\"(?<class_name>\\w+)\") {0}\n" +
+                        "        (?<parent>\\s*(?:\n" +
+                        "          (?<parent_name>[\\w\\*\\s\\(\\)\\.\\->]+) |\n" +
+                        "          rb_path2class\\s*\\(\\s*\"(?<path>[\\w:]+)\"\\s*\\)\n" +
+                        "        )) {0}\n" +
+                        "        (?<under>\\w+) {0}\n" +
+                        "\n" +
+                        "        (?<var_name>[\\w\\.]+)\\s* =\n" +
+                        "        \\s*rb_(?:\n" +
+                        "          define_(?:\n" +
+                        "            class(?: # rb_define_class(name, parent_name)\n" +
+                        "              \\(\\s*\n" +
+                        "                \\g<name>,\n" +
+                        "                \\g<parent>\n" +
+                        "              \\s*\\)\n" +
+                        "            |\n" +
+                        "              _under\\g<open> # rb_define_class_under(under, name, parent_name...)\n" +
+                        "                \\g<under>,\n" +
+                        "                \\g<name>,\n" +
+                        "                \\g<parent>\n" +
+                        "              \\g<close>\n" +
+                        "            )\n" +
+                        "          |\n" +
+                        "            (?<module>)\n" +
+                        "            module(?: # rb_define_module(name)\n" +
+                        "              \\g<open>\n" +
+                        "                \\g<name>\n" +
+                        "              \\g<close>\n" +
+                        "            |\n" +
+                        "              _under\\g<open> # rb_define_module_under(under, name)\n" +
+                        "                \\g<under>,\n" +
+                        "                \\g<name>\n" +
+                        "              \\g<close>\n" +
+                        "            )\n" +
+                        "          )\n" +
+                        "      |\n" +
+                        "        (?<attributes>(?:\\s*\"\\w+\",)*\\s*NULL\\s*) {0}\n" +
+                        "        struct_define(?:\n" +
+                        "          \\g<open> # rb_struct_define(name, ...)\n" +
+                        "            \\g<name>,\n" +
+                        "        |\n" +
+                        "          _under\\g<open> # rb_struct_define_under(under, name, ...)\n" +
+                        "            \\g<under>,\n" +
+                        "            \\g<name>,\n" +
+                        "        |\n" +
+                        "          _without_accessor(?:\n" +
+                        "            \\g<open> # rb_struct_define_without_accessor(name, parent_name, ...)\n" +
+                        "          |\n" +
+                        "            _under\\g<open> # rb_struct_define_without_accessor_under(under, name, parent_name, ...)\n" +
+                        "              \\g<under>,\n" +
+                        "          )\n" +
+                        "            \\g<name>,\n" +
+                        "            \\g<parent>,\n" +
+                        "            \\s*\\w+,        # Allocation function\n" +
+                        "        )\n" +
+                        "          \\g<attributes>\n" +
+                        "        \\g<close>\n" +
+                        "      |\n" +
+                        "        singleton_class\\g<open> # rb_singleton_class(target_class_name)\n" +
+                        "          (?<target_class_name>\\w+)\n" +
+                        "        \\g<close>\n" +
+                        "        )\n" +
+                        "      ";
+        test(pattern, "mx", "abc", 0, false);
+    }
+
+    @Test
+    public void gr52472() {
+        test("(|a+?){0,4}b", "", "aaab", 0, true, 0, 4, 1, 3);
     }
 }

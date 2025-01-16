@@ -27,7 +27,7 @@ import com.oracle.truffle.api.nodes.DirectCallNode;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.EspressoException;
 import com.oracle.truffle.espresso.runtime.EspressoExitException;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * The payload of the host thread executing a guest {@linkplain #thread thread}.
@@ -63,7 +63,7 @@ final class GuestRunnable implements Runnable {
             try {
                 // Execute the payload
                 context.getThreadAccess().fullSafePoint(thread);
-                thread.getKlass().vtableLookup(context.getMeta().java_lang_Thread_run.getVTableIndex()).invokeDirect(thread);
+                context.getMeta().java_lang_Thread_run.invokeDirectVirtual(thread);
                 context.getThreadAccess().fullSafePoint(thread);
             } catch (EspressoException uncaught) {
                 dispatchUncaught.call(thread, uncaught.getGuestException());

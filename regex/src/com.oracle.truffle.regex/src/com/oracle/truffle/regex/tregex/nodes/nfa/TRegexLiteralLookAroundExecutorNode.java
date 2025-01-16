@@ -97,6 +97,11 @@ public final class TRegexLiteralLookAroundExecutorNode extends TRegexBacktracker
     }
 
     @Override
+    public int getNumberOfStates() {
+        return matchers.length;
+    }
+
+    @Override
     public String getName() {
         return "la";
     }
@@ -113,16 +118,16 @@ public final class TRegexLiteralLookAroundExecutorNode extends TRegexBacktracker
 
     @TruffleBoundary
     @Override
-    public TRegexExecutorLocals createLocals(Object input, int fromIndex, int index, int maxIndex) {
+    public TRegexExecutorLocals createLocals(TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, int index) {
         throw new UnsupportedOperationException();
     }
 
     @ExplodeLoop
     @Override
-    public Object execute(VirtualFrame frame, TRegexExecutorLocals abstractLocals, TruffleString.CodeRange codeRange, boolean tString) {
+    public Object execute(VirtualFrame frame, TRegexExecutorLocals abstractLocals, TruffleString.CodeRange codeRange) {
         TRegexBacktrackingNFAExecutorLocals locals = (TRegexBacktrackingNFAExecutorLocals) abstractLocals;
         for (int i = 0; i < matchers.length; i++) {
-            if (!inputHasNext(locals) || !matchers[i].match(inputReadAndDecode(locals))) {
+            if (!inputHasNext(locals) || !matchers[i].match(inputReadAndDecode(locals, codeRange))) {
                 return negated;
             }
             inputAdvance(locals);

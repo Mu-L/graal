@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -43,7 +43,6 @@ package com.oracle.truffle.api.test.wrapper;
 import java.lang.reflect.Type;
 import java.util.function.Predicate;
 
-import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractHostLanguageService;
 
@@ -58,7 +57,7 @@ public class GuestToHostLanguageService extends AbstractHostLanguageService {
     }
 
     @Override
-    public void initializeHostContext(Object internalContext, Object context, HostAccess access, ClassLoader cl, Predicate<String> clFilter, boolean hostCLAllowed, boolean hostLookupAllowed) {
+    public void initializeHostContext(Object internalContext, Object context, Object hostAccess, ClassLoader cl, Predicate<String> clFilter, boolean hostCLAllowed, boolean hostLookupAllowed) {
         // we can just ignore the configuration of the host language
     }
 
@@ -101,12 +100,7 @@ public class GuestToHostLanguageService extends AbstractHostLanguageService {
     }
 
     @Override
-    public Object createToHostTypeNode() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public <T> T toHostType(Object hostNode, Object hostContext, Object value, Class<T> targetType, Type genericType) {
+    public <T> T toHostType(Object hostNode, Object targetNode, Object hostContext, Object value, Class<T> targetType, Type genericType) {
         throw new UnsupportedOperationException();
     }
 
@@ -194,4 +188,10 @@ public class GuestToHostLanguageService extends AbstractHostLanguageService {
     public void hostExit(int exitCode) {
         System.exit(exitCode);
     }
+
+    @Override
+    public boolean allowsPublicAccess() {
+        return false;
+    }
+
 }

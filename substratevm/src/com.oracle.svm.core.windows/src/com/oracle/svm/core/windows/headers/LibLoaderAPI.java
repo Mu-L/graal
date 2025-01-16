@@ -32,9 +32,10 @@ import org.graalvm.nativeimage.c.function.CFunction;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.word.PointerBase;
 
-import com.oracle.svm.core.windows.headers.WindowsLibC.WCharPointer;
+import com.oracle.svm.core.windows.headers.WinBase.HANDLE;
 import com.oracle.svm.core.windows.headers.WinBase.HMODULE;
 import com.oracle.svm.core.windows.headers.WinBase.HMODULEPointer;
+import com.oracle.svm.core.windows.headers.WindowsLibC.WCharPointer;
 
 // Checkstyle: stop
 
@@ -47,10 +48,6 @@ public class LibLoaderAPI {
     /** Frees the loaded dynamic-link library (DLL) module. */
     @CFunction(transition = NO_TRANSITION)
     public static native int FreeLibrary(HMODULE hLibModule);
-
-    /** Retrieves the fully qualified path of the file that contains the specified module. */
-    @CFunction(transition = NO_TRANSITION)
-    public static native int GetModuleFileNameA(HMODULE hModule, CCharPointer lpFilename, int nSize);
 
     /** Retrieves the fully qualified path of the file that contains the specified module. */
     @CFunction(transition = NO_TRANSITION)
@@ -79,4 +76,8 @@ public class LibLoaderAPI {
     /** Loads the specified module into the address space of the calling process. */
     @CFunction(transition = NO_TRANSITION)
     public static native HMODULE LoadLibraryA(CCharPointer lpLibFileName);
+
+    /** Loads the specified module into the address space of the calling process. */
+    @CFunction(transition = NO_TRANSITION)
+    public static native HMODULE LoadLibraryExA(CCharPointer lpLibFileName, HANDLE hFile, int dwFlags);
 }

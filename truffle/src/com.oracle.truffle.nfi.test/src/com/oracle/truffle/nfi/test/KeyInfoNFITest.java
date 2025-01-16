@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -67,6 +67,7 @@ import com.oracle.truffle.tck.TruffleRunner.Inject;
 
 @RunWith(Parameterized.class)
 @Parameterized.UseParametersRunnerFactory(TruffleRunner.ParametersFactory.class)
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing"})
 public class KeyInfoNFITest extends NFITest {
 
     private static void addTest(List<Object[]> ret, String symbol, Supplier<Object> object, String description, boolean read, boolean invoke, boolean optional) {

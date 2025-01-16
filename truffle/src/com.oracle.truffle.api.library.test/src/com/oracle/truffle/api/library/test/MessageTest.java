@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -74,7 +74,7 @@ public class MessageTest {
         assertSame(MessageLibrary.class, m0.getLibraryClass());
         assertEquals(MessageLibrary.class.getName(), m0.getLibraryName());
         assertEquals(Arrays.asList(Object.class, String.class, int.class), m0.getParameterTypes());
-        assertEquals(MessageLibrary.class.getName() + ".m0", m0.getQualifiedName());
+        assertEquals(MessageLibrary.class.getName() + ".m0(Object,String,int)", m0.getQualifiedName());
         assertSame(Object.class, m0.getReceiverType());
         assertSame(String.class, m0.getReturnType());
         assertSame(m0.getSimpleName().intern(), m0.getSimpleName());

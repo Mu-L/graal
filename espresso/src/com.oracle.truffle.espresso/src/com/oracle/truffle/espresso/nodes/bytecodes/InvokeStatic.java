@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -53,6 +53,10 @@ public abstract class InvokeStatic extends EspressoNode {
         this.staticMethod = staticMethod;
     }
 
+    public Method getStaticMethod() {
+        return staticMethod;
+    }
+
     public abstract Object execute(Object[] args);
 
     @Specialization
@@ -96,7 +100,7 @@ public abstract class InvokeStatic extends EspressoNode {
 
     static Method.MethodVersion methodLookup(Method staticMethod) {
         assert staticMethod.isStatic();
-        if (staticMethod.isRemovedByRedefition()) {
+        if (staticMethod.isRemovedByRedefinition()) {
             /*
              * Accept a slow path once the method has been removed put method behind a boundary to
              * avoid a deopt loop.

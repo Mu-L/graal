@@ -53,16 +53,37 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 public class ReportUtils {
 
-    static final String CONNECTING_INDENT = "\u2502   "; // "| "
-    static final String EMPTY_INDENT = "    ";
-    static final String CHILD = "\u251c\u2500\u2500 "; // "|-- "
-    static final String LAST_CHILD = "\u2514\u2500\u2500 "; // "`-- "
+    public static final String CONNECTING_INDENT = "\u2502   "; // "| "
+    public static final String EMPTY_INDENT = "    ";
+    public static final String CHILD = "\u251c\u2500\u2500 "; // "|-- "
+    public static final String LAST_CHILD = "\u2514\u2500\u2500 "; // "`-- "
 
-    public static final Comparator<ResolvedJavaMethod> methodComparator = Comparator.comparing(m -> m.format("%H.%n(%p)"));
+    public static final Comparator<ResolvedJavaMethod> methodComparator = Comparator.comparing(m -> m.format("%H.%n(%P):%R"));
     static final Comparator<AnalysisField> fieldComparator = Comparator.comparing(f -> f.format("%H.%n"));
-    static final Comparator<InvokeInfo> invokeInfoComparator = Comparator.comparing(i -> i.getTargetMethod().format("%H.%n(%p)"));
-    static final Comparator<BytecodePosition> positionMethodComparator = Comparator.comparing(pos -> pos.getMethod().format("%H.%n(%p)"));
+    static final Comparator<InvokeInfo> invokeInfoBCIComparator = Comparator.comparing(i -> i.getPosition().getBCI());
+    static final Comparator<InvokeInfo> invokeInfoComparator = invokeInfoBCIComparator.thenComparing(i -> comparingMethodNames(i.getTargetMethod()));
+    static final Comparator<BytecodePosition> positionMethodComparator = Comparator.comparing(pos -> pos.getMethod().format("%H.%n(%P):%R"));
     static final Comparator<BytecodePosition> positionComparator = positionMethodComparator.thenComparing(pos -> pos.getBCI());
+    static final Comparator<Object> reasonComparator = (o1, o2) -> {
+        if (o1 instanceof BytecodePosition p1 && o2 instanceof BytecodePosition p2) {
+            return positionComparator.compare(p1, p2);
+        }
+        return o1.toString().compareTo(o2.toString());
+    };
+
+    /**
+     *
+     * Lambda function names are still not completely deterministic e.g. in name
+     * Lambda$7ad16f47b695d909/0x00000007c0b4c630.accept(java.lang.Object):void hash part is not
+     * deterministic yet. In order to avoid comparing based on that part, we need to eliminate hash
+     * part from name of lambda function. To read more about Lambda names check GH issue
+     * https://github.com/openjdk/jdk/pull/10024/.
+     *
+     */
+    private static String comparingMethodNames(AnalysisMethod method) {
+        String methodName = method.format("%H.%n(%P):%R");
+        return methodName.contains("$$Lambda$") ? methodName.replaceAll("/[0-9a-fA-Fx]*\\.", ".") : methodName;
+    }
 
     public static Path report(String description, String path, String name, String extension, Consumer<PrintWriter> reporter) {
         return report(description, path, name, extension, reporter, true);
@@ -246,7 +267,7 @@ public class ReportUtils {
             StackTraceElement e = parsingContext[i];
             if (isStackTraceTruncationSentinel(e)) {
                 msg.append(String.format("%n%s", e.getClassName()));
-                assert i == parsingContext.length - 1;
+                assert i == parsingContext.length - 1 : parsingContext;
             } else {
                 msg.append(String.format("%n%sat %s", indent, e));
             }
@@ -254,7 +275,9 @@ public class ReportUtils {
         msg.append(String.format("%n"));
     }
 
-    private static final String stackTraceTruncationSentinel = "WARNING: Parsing context is truncated because its depth exceeds a reasonable limit for ";
+    // Checkstyle: Allow raw info or warning printing - begin
+    private static final String stackTraceTruncationSentinel = "Warning: Parsing context is truncated because its depth exceeds a reasonable limit for ";
+    // Checkstyle: Allow raw info or warning printing - end
 
     private static boolean isStackTraceTruncationSentinel(StackTraceElement element) {
         return element.getClassName().startsWith(stackTraceTruncationSentinel);
@@ -264,6 +287,10 @@ public class ReportUtils {
         return new StackTraceElement(stackTraceTruncationSentinel + method.format("%H.%n(%p)"), "", null, -1);
     }
 
+    public static StackTraceElement rootMethodSentinel(String reason) {
+        return new StackTraceElement(reason, "", null, -1);
+    }
+
     public static String typePropagationTrace(PointsToAnalysis bb, TypeFlow<?> flow, AnalysisType type) {
         return typePropagationTrace(bb, flow, type, "   ");
     }
@@ -271,25 +298,45 @@ public class ReportUtils {
     public static String typePropagationTrace(PointsToAnalysis bb, TypeFlow<?> flow, AnalysisType type, String indent) {
         if (bb.trackTypeFlowInputs()) {
             StringBuilder msg = new StringBuilder(String.format("Propagation trace through type flows for type %s: %n", type.toJavaName()));
-            followInput(flow, type, indent, new HashSet<>(), msg);
+            followInput(bb, flow, type, indent, new HashSet<>(), msg);
             return msg.toString();
         } else {
             return String.format("To print the propagation trace through type flows for type %s set the -H:+TrackInputFlows option. %n", type.toJavaName());
         }
     }
 
-    private static void followInput(TypeFlow<?> flow, AnalysisType type, String indent, HashSet<TypeFlow<?>> seen, StringBuilder msg) {
+    private static void followInput(PointsToAnalysis bb, TypeFlow<?> flow, AnalysisType type, String indent, HashSet<TypeFlow<?>> seen, StringBuilder msg) {
         seen.add(flow);
         if (flow instanceof AllInstantiatedTypeFlow) {
             msg.append(String.format("AllInstantiated(%s)%n", flow.getDeclaredType().toJavaName(true)));
         } else {
             msg.append(String.format("%sat %s: %s%n", indent, flow.formatSource(), flow.format(false, false)));
             for (TypeFlow<?> input : flow.getInputs()) {
-                if (!seen.contains(input) && input.getState().containsType(type)) {
-                    followInput(input, type, indent, seen, msg);
+                if (!seen.contains(input) && input.getOutputState(bb).containsType(type)) {
+                    followInput(bb, input, type, indent, seen, msg);
                     break;
                 }
             }
+        }
+    }
+
+    public static String loaderName(AnalysisType type) {
+        var declaringJavaClass = type.getJavaClass();
+        if (declaringJavaClass == null) {
+            return "err";
+        }
+        return loaderName(declaringJavaClass.getClassLoader());
+    }
+
+    public static String loaderName(ClassLoader loader) {
+        if (loader == null) {
+            return "null";
+        }
+        var loaderName = loader.getName();
+        if (loaderName == null || loaderName.isBlank()) {
+            return loader.getClass().getName();
+        } else {
+            return loaderName;
         }
     }
 }

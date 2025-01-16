@@ -26,15 +26,17 @@ import static com.oracle.truffle.espresso.classfile.Constants.ACC_FINALIZER;
 
 import java.lang.reflect.Modifier;
 
-import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.staticobject.StaticShape;
-import com.oracle.truffle.espresso.classfile.ConstantPool;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Name;
-import com.oracle.truffle.espresso.descriptors.Symbol.Type;
-import com.oracle.truffle.espresso.runtime.Attribute;
-import com.oracle.truffle.espresso.runtime.StaticObject.StaticObjectFactory;
+import com.oracle.truffle.espresso.EspressoLanguage;
+import com.oracle.truffle.espresso.classfile.ImmutableConstantPool;
+import com.oracle.truffle.espresso.classfile.ParserKlass;
+import com.oracle.truffle.espresso.classfile.ParserMethod;
+import com.oracle.truffle.espresso.classfile.attributes.Attribute;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Name;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Type;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject.StaticObjectFactory;
 
 // Structural shareable klass (superklass in superinterfaces resolved and linked)
 // contains shape, field locations.
@@ -59,10 +61,10 @@ public final class LinkedKlass {
     private final StaticShape<StaticObjectFactory> staticShape;
 
     // instance fields declared in the corresponding LinkedKlass (includes hidden fields)
-    @CompilerDirectives.CompilationFinal(dimensions = 1) //
+    @CompilationFinal(dimensions = 1) //
     final LinkedField[] instanceFields;
     // static fields declared in the corresponding LinkedKlass (no hidden fields)
-    @CompilerDirectives.CompilationFinal(dimensions = 1) //
+    @CompilationFinal(dimensions = 1) //
     final LinkedField[] staticFields;
 
     final int fieldTableLength;
@@ -99,8 +101,8 @@ public final class LinkedKlass {
         this.methods = linkedMethods;
     }
 
-    public static LinkedKlass create(ContextDescription description, ParserKlass parserKlass, LinkedKlass superKlass, LinkedKlass[] interfaces) {
-        LinkedKlassFieldLayout fieldLayout = new LinkedKlassFieldLayout(description, parserKlass, superKlass);
+    public static LinkedKlass create(EspressoLanguage language, ParserKlass parserKlass, LinkedKlass superKlass, LinkedKlass[] interfaces) {
+        LinkedKlassFieldLayout fieldLayout = new LinkedKlassFieldLayout(language, parserKlass, superKlass);
         return new LinkedKlass(
                         parserKlass,
                         superKlass,
@@ -138,7 +140,7 @@ public final class LinkedKlass {
         return flags;
     }
 
-    ConstantPool getConstantPool() {
+    ImmutableConstantPool getConstantPool() {
         return parserKlass.getConstantPool();
     }
 
@@ -192,5 +194,10 @@ public final class LinkedKlass {
 
     public StaticShape<StaticObjectFactory> getShape(boolean isStatic) {
         return isStatic ? staticShape : instanceShape;
+    }
+
+    @Override
+    public String toString() {
+        return "LinkedKlass<" + getType() + ">";
     }
 }

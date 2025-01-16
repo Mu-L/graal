@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,14 +24,14 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.AlwaysInline;
 import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.log.Log;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.util.VMError;
 
 /**
@@ -57,26 +57,25 @@ final class GreyObjectsWalker {
      * Take a snapshot of a Space, such that all Objects in the Space are now black, and any new
      * Objects in the Space will be grey, and can have an ObjectVisitor applied to them.
      */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     void setScanStart(Space s) {
-        Log trace = Log.noopLog().string("[Space.GreyObjectsWalker.setScanStart:").string("  s: ").string(s.getName());
         space = s;
         AlignedHeapChunk.AlignedHeader aChunk = s.getLastAlignedHeapChunk();
         alignedHeapChunk = aChunk;
-        trace.string("  alignedHeapChunk: ").zhex(alignedHeapChunk).string("  isNull: ").bool(aChunk.isNull());
-        alignedTop = (aChunk.isNonNull() ? HeapChunk.getTopPointer(aChunk) : WordFactory.nullPointer());
-        trace.string("  alignedTop: ").zhex(alignedTop);
+        alignedTop = (aChunk.isNonNull() ? HeapChunk.getTopPointer(aChunk) : Word.nullPointer());
         unalignedHeapChunk = s.getLastUnalignedHeapChunk();
-        trace.string("  unalignedChunkPointer: ").zhex(unalignedHeapChunk).string("]").newline();
     }
 
     /** Compare the snapshot to the current state of the Space to see if there are grey Objects. */
     @AlwaysInline("GC performance")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     boolean haveGreyObjects() {
         return alignedHeapChunk.notEqual(space.getLastAlignedHeapChunk()) || alignedHeapChunk.isNonNull() && alignedTop.notEqual(HeapChunk.getTopPointer(alignedHeapChunk)) ||
                         unalignedHeapChunk.notEqual(space.getLastUnalignedHeapChunk());
     }
 
     @NeverInline("Split the GC into reasonable compilation units")
+    @Uninterruptible(reason = "Called from uninterruptible code.")
     void walkGreyObjects() {
         while (haveGreyObjects()) {
             walkAlignedGreyObjects();
@@ -85,14 +84,18 @@ final class GreyObjectsWalker {
     }
 
     @AlwaysInline("GC performance")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private void walkAlignedGreyObjects() {
         AlignedHeapChunk.AlignedHeader aChunk;
+        Pointer aStart;
         if (alignedHeapChunk.isNull() && alignedTop.isNull()) {
             /* If the snapshot is empty, then I have to walk from the beginning of the Space. */
             aChunk = space.getFirstAlignedHeapChunk();
+            aStart = (aChunk.isNonNull() ? AlignedHeapChunk.getObjectsStart(aChunk) : Word.nullPointer());
         } else {
             /* Otherwise walk Objects that arrived after the snapshot. */
             aChunk = alignedHeapChunk;
+            aStart = alignedTop;
         }
         /* Visit Objects in the AlignedChunks. */
         GreyToBlackObjectVisitor visitor = GCImpl.getGCImpl().getGreyToBlackObjectVisitor();
@@ -100,10 +103,11 @@ final class GreyObjectsWalker {
             AlignedHeapChunk.AlignedHeader lastChunk;
             do {
                 lastChunk = aChunk;
-                if (!AlignedHeapChunk.walkObjectsInline(aChunk, visitor)) {
-                    throw VMError.shouldNotReachHere();
+                if (!AlignedHeapChunk.walkObjectsFromInline(aChunk, aStart, visitor)) {
+                    throw VMError.shouldNotReachHereAtRuntime();
                 }
                 aChunk = HeapChunk.getNext(aChunk);
+                aStart = (aChunk.isNonNull() ? AlignedHeapChunk.getObjectsStart(aChunk) : Word.nullPointer());
             } while (aChunk.isNonNull());
 
             /* Move the scan point. */
@@ -113,6 +117,7 @@ final class GreyObjectsWalker {
     }
 
     @AlwaysInline("GC performance")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private void walkUnalignedGreyObjects() {
         /* Visit the Objects in the UnalignedChunk after the snapshot UnalignedChunk. */
         UnalignedHeapChunk.UnalignedHeader uChunk;
@@ -127,7 +132,7 @@ final class GreyObjectsWalker {
             do {
                 lastChunk = uChunk;
                 if (!UnalignedHeapChunk.walkObjectsInline(uChunk, visitor)) {
-                    throw VMError.shouldNotReachHere();
+                    throw VMError.shouldNotReachHereAtRuntime();
                 }
                 uChunk = HeapChunk.getNext(uChunk);
             } while (uChunk.isNonNull());

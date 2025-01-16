@@ -27,12 +27,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.oracle.truffle.api.TruffleLogger;
-import com.oracle.truffle.espresso.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.ParserKlass;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
 import com.oracle.truffle.espresso.impl.ClassLoadingEnv;
 import com.oracle.truffle.espresso.impl.ClassRegistry;
-import com.oracle.truffle.espresso.impl.ParserKlass;
-import com.oracle.truffle.espresso.runtime.StaticObject;
-import com.oracle.truffle.espresso.verifier.MethodVerifier;
+import com.oracle.truffle.espresso.runtime.EspressoVerifier;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 public final class CachedParserKlassProvider extends AbstractCachedKlassProvider implements ParserKlassProvider {
     private final ParserKlassProvider fallbackProvider;
@@ -46,18 +46,19 @@ public final class CachedParserKlassProvider extends AbstractCachedKlassProvider
 
     @Override
     public ParserKlass getParserKlass(ClassLoadingEnv env, StaticObject loader, Symbol<Symbol.Type> typeOrNull, byte[] bytes, ClassRegistry.ClassDefinitionInfo info) {
-        if (shouldCacheClass(info) && typeOrNull != null) {
+        if (env.shouldCacheClass(info, loader) && typeOrNull != null) {
             ParserKlassCacheKey key = null;
-            ParserKlass parserKlass;
+            ParserKlass parserKlass = null;
 
             boolean loaderIsBootOrPlatform = env.loaderIsBootOrPlatform(loader);
+            boolean loaderIsApp = env.loaderIsAppLoader(loader);
 
             if (loaderIsBootOrPlatform) {
                 // For boot/platform CL, query the boot cache
                 parserKlass = bootParserKlassCache.get(typeOrNull);
-            } else {
+            } else if (loaderIsApp) {
                 // For other class loaders, query the application cache
-                boolean verifiable = MethodVerifier.needsVerify(env.getLanguage(), loader);
+                boolean verifiable = EspressoVerifier.needsVerify(env.getLanguage(), loader);
                 assert !info.isAnonymousClass() && !info.isHidden() && info.patches == null;
                 key = new ParserKlassCacheKey(bytes, typeOrNull, verifiable);
                 parserKlass = appParserKlassCache.get(key);
@@ -69,9 +70,10 @@ public final class CachedParserKlassProvider extends AbstractCachedKlassProvider
                 parserKlass = fallbackProvider.getParserKlass(env, loader, typeOrNull, bytes, info);
                 if (loaderIsBootOrPlatform) {
                     bootParserKlassCache.put(typeOrNull, parserKlass);
-                } else {
+                } else if (loaderIsApp) {
                     appParserKlassCache.put(key, parserKlass);
                 }
+                // For now, don't cache if loader is not app or platform.
             } else {
                 ParserKlass finalParserKlass = parserKlass;
                 getLogger().finer(() -> "ParserKlass cache hit: " + finalParserKlass.getName());

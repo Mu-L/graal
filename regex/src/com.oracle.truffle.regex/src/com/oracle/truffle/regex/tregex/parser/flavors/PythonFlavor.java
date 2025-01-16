@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,51 +40,58 @@
  */
 package com.oracle.truffle.regex.tregex.parser.flavors;
 
+import com.oracle.truffle.api.CompilerDirectives;
+import org.graalvm.shadowed.com.ibm.icu.lang.UCharacter;
+
 import com.oracle.truffle.regex.RegexLanguage;
 import com.oracle.truffle.regex.RegexSource;
+import com.oracle.truffle.regex.charset.UnicodeProperties;
+import com.oracle.truffle.regex.charset.UnicodePropertyDataVersion;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
+import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
 import com.oracle.truffle.regex.tregex.parser.RegexParser;
 import com.oracle.truffle.regex.tregex.parser.RegexValidator;
+import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
+import com.oracle.truffle.regex.tregex.string.Encodings;
 
 /**
- * An implementation of the Python regex flavor. Technically, this class provides an implementation
- * for two regex flavors: 'str' regexes, which result from compiling string patterns, and 'bytes'
- * patterns, which result from compiling binary (byte buffer) patterns.
- *
- * This implementation supports translating all Python regular expressions to ECMAScript regular
- * expressions with the exception of the following features:
- * <ul>
- * <li>case insensitive backreferences: Python regular expressions use a different definition of
- * case folding and they also allow mixing case sensitive and case insensitive backreferences in the
- * same regular expression.</li>
- * <li>locale-sensitive case folding, word boundary assertions and character classes: When a regular
- * expression is compiled with the {@code re.LOCALE} flag, some of its elements should depend on the
- * locale set during matching time. This is not compatible with compiling regular expressions
- * ahead-of-time into automata.</li>
- * <li>conditional backreferences, i.e. {@code (?(groupId)ifPart|elsePart)}: These do not have a
- * direct counterpart in ECMAScript. It should be theoretically feasible to translate Python regular
- * expressions using these into ECMAScript regular expressions, however the translation would have
- * to use much more complex global rewriting rules than the current approach.</li>
- * </ul>
+ * An implementation of the Python regex flavor. Supports both string regexes ('str' patterns) and
+ * binary regexes ('bytes' patterns).
  *
  * @see PythonREMode
  */
 public final class PythonFlavor extends RegexFlavor {
 
     public static final PythonFlavor INSTANCE = new PythonFlavor();
+    public static final UnicodeProperties UNICODE = new UnicodeProperties(UnicodePropertyDataVersion.UNICODE_15_1_0, 0);
 
     private PythonFlavor() {
         super(BACKREFERENCES_TO_UNMATCHED_GROUPS_FAIL | NESTED_CAPTURE_GROUPS_KEPT_ON_LOOP_REENTRY | FAILING_EMPTY_CHECKS_DONT_BACKTRACK | USES_LAST_GROUP_RESULT_FIELD |
-                        LOOKBEHINDS_RUN_LEFT_TO_RIGHT);
+                        LOOKBEHINDS_RUN_LEFT_TO_RIGHT | NEEDS_GROUP_START_POSITIONS | HAS_CONDITIONAL_BACKREFERENCES);
     }
 
     @Override
-    public RegexValidator createValidator(RegexSource source) {
-        return PythonRegexParser.createValidator(source);
+    public RegexValidator createValidator(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) {
+        throw new UnsupportedOperationException();
     }
 
     @Override
     public RegexParser createParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) {
-        return PythonRegexParser.createParser(language, source, compilationBuffer);
+        return new PythonRegexParser(language, source, compilationBuffer);
+    }
+
+    @Override
+    public EqualsIgnoreCasePredicate getEqualsIgnoreCasePredicate(RegexAST ast) {
+        if (ast.getOptions().getEncoding() == Encodings.UTF_32) {
+            return (codePointA, codePointB, altMode) -> UCharacter.toLowerCase(codePointA) == UCharacter.toLowerCase(codePointB);
+        } else {
+            assert ast.getOptions().getEncoding() == Encodings.LATIN_1;
+            return (a, b, altMode) -> CaseFoldData.CaseFoldUnfoldAlgorithm.Ascii.getEqualsPredicate().test(a, b);
+        }
+    }
+
+    @Override
+    public CaseFoldData.CaseFoldAlgorithm getCaseFoldAlgorithm(RegexAST ast) {
+        throw CompilerDirectives.shouldNotReachHere();
     }
 }

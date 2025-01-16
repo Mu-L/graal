@@ -35,7 +35,6 @@ import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.typestate.MultiTypeState;
 import com.oracle.graal.pointsto.typestate.PointsToStats;
 import com.oracle.graal.pointsto.typestate.TypeState;
-import com.oracle.graal.pointsto.typestate.TypeStateUtils;
 
 public class ContextSensitiveMultiTypeState extends MultiTypeState {
 
@@ -45,36 +44,18 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
     protected int[] objectTypeIds;
 
     /** Creates a new type state using the provided types bit set and objects. */
-    public ContextSensitiveMultiTypeState(PointsToAnalysis bb, boolean canBeNull, int properties, BitSet typesBitSet, AnalysisObject... objects) {
-        super(bb, canBeNull, properties, typesBitSet);
+    public ContextSensitiveMultiTypeState(boolean canBeNull, BitSet typesBitSet, int typesCount, AnalysisObject... objects) {
+        super(canBeNull, typesBitSet, typesCount);
         this.objects = objects;
-        /*
-         * Trim the typesBitSet to size eagerly. The typesBitSet is effectively immutable, i.e., no
-         * calls to mutating methods are made on it after it is set in the MultiTypeState, thus we
-         * don't need to use any external synchronization. However, to keep it immutable we use
-         * BitSet.clone() when deriving a new BitSet since the set operations (and, or, etc.) mutate
-         * the original object. The problem is that BitSet.clone() breaks the informal contract that
-         * the clone method should not modify the original object; it calls trimToSize() before
-         * creating a copy. Thus, trimming the bit set here ensures that cloning does not modify the
-         * typesBitSet. Since BitSet is not thread safe mutating it during cloning is problematic in
-         * a multithreaded environment. If for example you iterate over the bits at the same time as
-         * another thread calls clone() the words[] array can be in an inconsistent state.
-         */
-        TypeStateUtils.trimBitSetToSize(typesBitSet);
-        long cardinality = typesBitSet.cardinality();
-        assert cardinality < Integer.MAX_VALUE : "We don't expect so much types.";
-        assert typesCount > 1 : "Multi type state with single type.";
         assert objects.length > 1 : "Multi type state with single object.";
-        assert !bb.extendedAsserts() || checkObjects(bb);
-        PointsToStats.registerTypeState(bb, this);
+        assert checkObjects();
     }
 
     /** Create a type state with the same content and a reversed canBeNull value. */
-    protected ContextSensitiveMultiTypeState(PointsToAnalysis bb, boolean canBeNull, ContextSensitiveMultiTypeState other) {
-        super(bb, canBeNull, other);
+    protected ContextSensitiveMultiTypeState(boolean canBeNull, ContextSensitiveMultiTypeState other) {
+        super(canBeNull, other);
         this.objects = other.objects;
         this.merged = other.merged;
-        PointsToStats.registerTypeState(bb, this);
     }
 
     protected BitSet bitSet() {
@@ -99,9 +80,7 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
         return objectTypeIds;
     }
 
-    private boolean checkObjects(PointsToAnalysis bb) {
-        assert bb.extendedAsserts();
-
+    private boolean checkObjects() {
         for (int idx = 0; idx < objects.length - 1; idx++) {
             AnalysisObject o0 = objects[idx];
             AnalysisObject o1 = objects[idx + 1];
@@ -112,8 +91,8 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
             assert (o0.type().equals(o1.type()) && o0.getId() < o1.getId()) || o0.type().getId() < o1.type().getId() : "Analysis objects must be sorted by type ID and ID.";
 
             /* Check that the bit is set for the types. */
-            assert typesBitSet.get(o0.type().getId());
-            assert typesBitSet.get(o1.type().getId());
+            assert typesBitSet.get(o0.type().getId()) : typesBitSet;
+            assert typesBitSet.get(o1.type().getId()) : typesBitSet;
         }
 
         return true;
@@ -130,14 +109,18 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
         return Arrays.asList(objects).iterator();
     }
 
-    /** Get the type of the first object group. */
-    public AnalysisType firstType() {
-        return objects[0].type();
+    /**
+     * Get the type of the first object group.
+     */
+    public int firstTypeId() {
+        return objects[0].getTypeId();
     }
 
-    /** Get the type of the last object group. */
-    public AnalysisType lastType() {
-        return objects[objects.length - 1].type();
+    /**
+     * Get the type of the last object group.
+     */
+    public int lastTypeId() {
+        return objects[objects.length - 1].getTypeId();
     }
 
     @Override
@@ -146,7 +129,7 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
             return this;
         } else {
             /* Just flip the canBeNull flag and copy the rest of the values from this. */
-            return new ContextSensitiveMultiTypeState(bb, resultCanBeNull, this);
+            return PointsToStats.registerTypeState(bb, new ContextSensitiveMultiTypeState(resultCanBeNull, this));
         }
     }
 
@@ -248,7 +231,7 @@ public class ContextSensitiveMultiTypeState extends MultiTypeState {
     /** Note that the objects of this type state have been merged. */
     @Override
     public void noteMerge(PointsToAnalysis bb) {
-        assert bb.analysisPolicy().isMergingEnabled();
+        assert bb.analysisPolicy().isMergingEnabled() : "policy mismatch";
 
         if (!merged) {
             for (AnalysisObject obj : objects) {

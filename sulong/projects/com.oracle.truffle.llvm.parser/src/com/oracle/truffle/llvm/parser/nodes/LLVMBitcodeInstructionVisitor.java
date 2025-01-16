@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2022, Oracle and/or its affiliates.
+ * Copyright (c) 2019, 2023, Oracle and/or its affiliates.
  *
  * All rights reserved.
  *
@@ -118,6 +118,7 @@ import com.oracle.truffle.llvm.runtime.nodes.api.LLVMInstrumentableNode;
 import com.oracle.truffle.llvm.runtime.nodes.api.LLVMNode;
 import com.oracle.truffle.llvm.runtime.nodes.api.LLVMStatementNode;
 import com.oracle.truffle.llvm.runtime.nodes.api.LLVMVoidStatementNodeGen;
+import com.oracle.truffle.llvm.runtime.nodes.control.LLVMRetNode.LLVMTailReturnNode;
 import com.oracle.truffle.llvm.runtime.nodes.func.LLVMCatchPadNode;
 import com.oracle.truffle.llvm.runtime.nodes.func.LLVMCatchSwitchNode;
 import com.oracle.truffle.llvm.runtime.nodes.func.LLVMCatchSwitchNode.CatchPadEntryNode;
@@ -416,7 +417,7 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
         argTypes.set(argIndex, new PointerType(null));
         argIndex++;
 
-        if (targetType instanceof StructureType) {
+        if (targetType instanceof StructureType || targetType instanceof ArrayType) {
             argTypes.set(argIndex, new PointerType(targetType));
             argNodes[argIndex] = nodeFactory.createGetUniqueStackSpace(targetType, uniquesRegion);
             argIndex++;
@@ -452,7 +453,7 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
             } else {
                 LLVMExpressionNode function = symbols.resolve(target);
                 int fixedArgsPos = computeVaArgsPosition(functionType);
-                result = CommonNodeFactory.createFunctionCall(function, argNodes, new FunctionType(targetType, argTypes, fixedArgsPos));
+                result = CommonNodeFactory.createFunctionCall(function, argNodes, new FunctionType(targetType, argTypes, fixedArgsPos), call.getMustTail());
 
                 // the callNode needs to be instrumentable so that the debugger can see the CallTag.
                 // If it did not provide a source location, the debugger may not be able to show the
@@ -669,7 +670,7 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
                 final LLVMExpressionNode function = resolveOptimized(target, call.getArguments());
                 int fixedArgsPos = computeVaArgsPosition(functionType);
                 final FunctionType realType = new FunctionType(call.getType(), argTypes, fixedArgsPos);
-                result = CommonNodeFactory.createFunctionCall(function, argNodes, realType);
+                result = CommonNodeFactory.createFunctionCall(function, argNodes, realType, call.getMustTail());
 
                 // the callNode needs to be instrumentable so that the debugger can see the CallTag.
                 // If it did not provide a source location, the debugger may not be able to show the
@@ -678,7 +679,11 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
             }
         }
 
-        addStatement(result, call, intent);
+        if (call.getMustTail()) {
+            setControlFlowNode(nodeFactory.createRetTail(result), call, intent);
+        } else {
+            addStatement(result, call, intent);
+        }
     }
 
     @Override
@@ -695,7 +700,7 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
 
         ensureSupportedOperandBundle(target, call.getOperandBundle());
 
-        if (targetType instanceof StructureType) {
+        if (targetType instanceof StructureType || targetType instanceof ArrayType) {
             argTypes.set(argIndex, new PointerType(targetType));
             argNodes[argIndex] = nodeFactory.createGetUniqueStackSpace(targetType, uniquesRegion);
             argIndex++;
@@ -799,7 +804,7 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
 
     private static int getArgumentCount(int argumentCount, final Type targetType) {
         int count = argumentCount;
-        if (targetType instanceof StructureType) {
+        if (targetType instanceof StructureType || targetType instanceof ArrayType) {
             count++;
         }
         count++; // stackpointer
@@ -1327,6 +1332,11 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
     }
 
     private void setControlFlowNode(LLVMControlFlowNode controlFlowNode, Instruction sourceInstruction, SourceInstrumentationStrategy intention) {
+        if (this.controlFlowNode instanceof LLVMTailReturnNode) {
+            // If the block contains a tail call node then this control flow
+            // node will never be reached so ignore it.
+            return;
+        }
         assert this.controlFlowNode == null;
         this.controlFlowNode = controlFlowNode;
         assignSourceLocation(controlFlowNode, sourceInstruction, intention);
@@ -1433,6 +1443,11 @@ public final class LLVMBitcodeInstructionVisitor implements SymbolVisitor {
 
     private void assignSourceLocation(LLVMInstrumentableNode node, Instruction sourceInstruction, SourceInstrumentationStrategy instrumentationStrategy) {
         if (node == null) {
+            return;
+        }
+
+        if (!node.isAdoptable()) {
+            // don't assign source sections to cacheable nodes
             return;
         }
 

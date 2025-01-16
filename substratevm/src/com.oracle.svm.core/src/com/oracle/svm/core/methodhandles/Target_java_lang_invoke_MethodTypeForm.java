@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,10 @@ import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.TargetClass;
+import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.fieldvaluetransformer.NewEmptyArrayFieldValueTransformer;
+import com.oracle.svm.core.jdk.JDK21OrEarlier;
+import com.oracle.svm.core.jdk.JDKLatest;
 
 @TargetClass(className = "java.lang.invoke.MethodTypeForm")
 final class Target_java_lang_invoke_MethodTypeForm {
@@ -40,8 +43,17 @@ final class Target_java_lang_invoke_MethodTypeForm {
      * consistent state, to avoid problems when the lazily initialization happens during image heap
      * writing.
      */
-    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class) //
-    private SoftReference<?>[] methodHandles;
-    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class) //
-    private SoftReference<?>[] lambdaForms;
+    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class, isFinal = true) //
+    @TargetElement(onlyWith = JDKLatest.class) //
+    private Object[] methodHandles;
+    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class, isFinal = true) //
+    @TargetElement(onlyWith = JDKLatest.class) //
+    private Object[] lambdaForms;
+
+    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class, isFinal = true) //
+    @TargetElement(name = "methodHandles", onlyWith = JDK21OrEarlier.class) //
+    private SoftReference<?>[] methodHandlesJDK21;
+    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = NewEmptyArrayFieldValueTransformer.class, isFinal = true) //
+    @TargetElement(name = "lambdaForms", onlyWith = JDK21OrEarlier.class) //
+    private SoftReference<?>[] lambdaFormsJDK21;
 }

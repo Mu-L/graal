@@ -24,9 +24,9 @@ package com.oracle.truffle.espresso.impl;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
-import com.oracle.truffle.espresso.classfile.RuntimeConstantPool;
-import com.oracle.truffle.espresso.descriptors.Types;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.classfile.descriptors.Types;
+import com.oracle.truffle.espresso.constantpool.RuntimeConstantPool;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 public final class EnumConstantField extends Field {
 

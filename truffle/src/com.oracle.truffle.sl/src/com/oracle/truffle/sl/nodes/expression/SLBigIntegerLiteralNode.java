@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -45,7 +45,7 @@ import java.math.BigInteger;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.NodeInfo;
 import com.oracle.truffle.sl.nodes.SLExpressionNode;
-import com.oracle.truffle.sl.runtime.SLBigNumber;
+import com.oracle.truffle.sl.runtime.SLBigInteger;
 
 /**
  * Constant literal for a arbitrary-precision number that exceeds the range of
@@ -54,14 +54,14 @@ import com.oracle.truffle.sl.runtime.SLBigNumber;
 @NodeInfo(shortName = "const")
 public final class SLBigIntegerLiteralNode extends SLExpressionNode {
 
-    private final SLBigNumber value;
+    private final SLBigInteger value;
 
     public SLBigIntegerLiteralNode(BigInteger value) {
-        this.value = new SLBigNumber(value);
+        this.value = new SLBigInteger(value);
     }
 
     @Override
-    public SLBigNumber executeGeneric(VirtualFrame frame) {
+    public SLBigInteger executeGeneric(VirtualFrame frame) {
         return value;
     }
 }

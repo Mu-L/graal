@@ -46,7 +46,7 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
         super(method, originalFlowsGraph.getGraphKind());
         this.context = context;
         this.originalFlowsGraph = originalFlowsGraph;
-        assert this.originalFlowsGraph.isLinearized();
+        assert this.originalFlowsGraph.isLinearized() : originalFlowsGraph;
     }
 
     public AnalysisContext context() {
@@ -89,7 +89,6 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
         }
 
         nodeFlows = lookupClonesOf(bb, originalFlowsGraph.nodeFlows);
-        instanceOfFlows = lookupClonesOf(bb, originalFlowsGraph.instanceOfFlows);
         miscEntryFlows = lookupClonesOf(bb, originalFlowsGraph.miscEntryFlows);
         invokeFlows = lookupClonesOf(bb, originalFlowsGraph.invokeFlows);
 
@@ -121,12 +120,6 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
     }
 
     @Override
-    public void init(final PointsToAnalysis bb) {
-        // the cloning mechanism does all the initialization
-        throw AnalysisError.shouldNotReachHere();
-    }
-
-    @Override
     @SuppressWarnings("unchecked")
     public <T extends TypeFlow<?>> T lookupCloneOf(PointsToAnalysis bb, T original) {
         assert original != null : "Looking for the clone of a 'null' flow in " + this;
@@ -134,8 +127,9 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
         assert !(original instanceof FieldTypeFlow) : "Trying to clone a field type flow";
         assert !(original instanceof ArrayElementsTypeFlow) : "Trying to clone an mixed elements type flow";
 
-        if (original instanceof AllInstantiatedTypeFlow || original instanceof AllSynchronizedTypeFlow) {
-            /* All instantiated is not cloneable. */
+        if (original instanceof AllInstantiatedTypeFlow || original instanceof AllSynchronizedTypeFlow || (original instanceof AnyPrimitiveSourceTypeFlow && original.getSource() == null) ||
+                        original instanceof ConstantPrimitiveSourceTypeFlow) {
+            /* These flows are not cloneable. */
             return original;
         }
         if (original instanceof ProxyTypeFlow) {
@@ -157,7 +151,7 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
             // copy only makes a shallow copy of the original flows;
             // it does not copy it's uses or inputs (for those flows that have inputs)
             clone = original.copy(bb, this);
-            assert slot == clone.getSlot();
+            assert slot == clone.getSlot() : slot + " != " + clone.getSlot();
 
             assert linearizedGraph[slot] == null : "Clone already exists: " + slot + " : " + original;
             linearizedGraph[slot] = clone;
@@ -175,13 +169,15 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
              * Run initialization code for corner case type flows. This can be used to add link from
              * 'outside' into the graph.
              */
-            clone.initFlow(bb);
+            if (clone.needsInitialization()) {
+                clone.initFlow(bb);
+            }
 
             /* Link all 'internal' observers. */
             for (TypeFlow<?> originalObserver : original.getObservers()) {
                 // only clone the original observers
-                assert !(originalObserver instanceof AllInstantiatedTypeFlow);
-                assert !(originalObserver.isClone());
+                assert !(originalObserver instanceof AllInstantiatedTypeFlow) : originalObserver;
+                assert !(originalObserver.isClone()) : originalObserver;
 
                 if (MethodFlowsGraph.nonCloneableFlow(originalObserver)) {
                     clone.addObserver(bb, originalObserver);
@@ -197,7 +193,7 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
             /* Link all 'internal' uses. */
             for (TypeFlow<?> originalUse : original.getUses()) {
                 // only clone the original uses
-                assert !(originalUse instanceof AllInstantiatedTypeFlow);
+                assert !(originalUse instanceof AllInstantiatedTypeFlow) : originalUse;
                 assert !(originalUse.isClone()) : "Original use " + originalUse + " should not be a clone. Reached from: " + original;
 
                 if (MethodFlowsGraph.nonCloneableFlow(originalUse)) {
@@ -209,12 +205,6 @@ public class MethodFlowsGraphClone extends MethodFlowsGraph {
                     TypeFlow<?> clonedUse = lookupCloneOf(bb, originalUse);
                     clone.addUse(bb, clonedUse);
                 }
-            }
-
-            if (clone instanceof AbstractStaticInvokeTypeFlow) {
-                /* Trigger the update for static invokes, there is no receiver to trigger it. */
-                AbstractStaticInvokeTypeFlow invokeFlow = (AbstractStaticInvokeTypeFlow) clone;
-                bb.postFlow(invokeFlow);
             }
         }
     }

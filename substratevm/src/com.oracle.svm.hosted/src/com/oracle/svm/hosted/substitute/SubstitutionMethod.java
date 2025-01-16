@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,23 +24,21 @@
  */
 package com.oracle.svm.hosted.substitute;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
-import static com.oracle.svm.core.util.VMError.unimplemented;
+import static com.oracle.svm.core.util.VMError.intentionallyUnimplemented;
+import static com.oracle.svm.core.util.VMError.shouldNotReachHereAtRuntime;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Executable;
 import java.lang.reflect.Type;
-
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.nodes.StructuredGraph;
 
 import com.oracle.graal.pointsto.infrastructure.GraphProvider;
 import com.oracle.graal.pointsto.infrastructure.OriginalMethodProvider;
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.HostedProviders;
-import com.oracle.graal.pointsto.util.GraalAccess;
-import com.oracle.svm.util.AnnotationWrapper;
+import com.oracle.svm.hosted.annotation.AnnotationWrapper;
 
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.nodes.StructuredGraph;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ConstantPool;
 import jdk.vm.ci.meta.ExceptionHandler;
@@ -104,6 +102,11 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
     }
 
     @Override
+    public ResolvedJavaMethod unwrapTowardsOriginalMethod() {
+        return original;
+    }
+
+    @Override
     public String getName() {
         return original.getName();
     }
@@ -114,17 +117,17 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
     }
 
     @Override
-    public StructuredGraph buildGraph(DebugContext debug, ResolvedJavaMethod method, HostedProviders providers, Purpose purpose) {
-        if (annotated instanceof GraphProvider) {
-            return ((GraphProvider) annotated).buildGraph(debug, method, providers, purpose);
+    public StructuredGraph buildGraph(DebugContext debug, AnalysisMethod method, HostedProviders providers, Purpose purpose) {
+        if (annotated instanceof GraphProvider graphProvider) {
+            return graphProvider.buildGraph(debug, method, providers, purpose);
         }
         return null;
     }
 
     @Override
     public boolean allowRuntimeCompilation() {
-        if (annotated instanceof GraphProvider) {
-            return ((GraphProvider) annotated).allowRuntimeCompilation();
+        if (annotated instanceof GraphProvider graphProvider) {
+            return graphProvider.allowRuntimeCompilation();
         }
         return true;
     }
@@ -201,7 +204,7 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
 
     @Override
     public ProfilingInfo getProfilingInfo(boolean includeNormal, boolean includeOSR) {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -231,17 +234,17 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
 
     @Override
     public boolean canBeInlined() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public boolean hasNeverInlineDirective() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public boolean shouldBeInlined() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -261,12 +264,12 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
 
     @Override
     public void reprofile() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public Constant getEncoding() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -276,16 +279,11 @@ public class SubstitutionMethod implements ResolvedJavaMethod, GraphProvider, Or
 
     @Override
     public boolean isDefault() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public SpeculationLog getSpeculationLog() {
-        throw shouldNotReachHere();
-    }
-
-    @Override
-    public Executable getJavaMethod() {
-        return OriginalMethodProvider.getJavaMethod(GraalAccess.getOriginalSnippetReflection(), original);
+        throw shouldNotReachHereAtRuntime(); // ExcludeFromJacocoGeneratedReport
     }
 }

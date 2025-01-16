@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,25 +25,27 @@
 package com.oracle.svm.core.jfr;
 
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.ProcessProperties;
 
-import com.oracle.svm.core.Containers;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.jdk.JDK11OrEarlier;
-import com.oracle.svm.core.jdk.JDK17OrEarlier;
-import com.oracle.svm.core.jdk.JDK17OrLater;
-import com.oracle.svm.core.jdk.JDK19OrEarlier;
-import com.oracle.svm.core.jdk.JDK19OrLater;
-import com.oracle.svm.core.jdk.JDK20OrLater;
+import com.oracle.svm.core.container.Container;
+import com.oracle.svm.core.container.OperatingSystem;
+import com.oracle.svm.core.jdk.JDKLatest;
 import com.oracle.svm.core.jfr.traceid.JfrTraceId;
+import com.oracle.svm.core.util.PlatformTimeUtils;
 import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.util.ReflectionUtil;
 
-import jdk.jfr.Event;
+import jdk.graal.compiler.api.replacements.Fold;
 import jdk.jfr.internal.JVM;
 import jdk.jfr.internal.LogTag;
 
@@ -51,29 +53,51 @@ import jdk.jfr.internal.LogTag;
 @TargetClass(value = jdk.jfr.internal.JVM.class, onlyWith = HasJfrSupport.class)
 public final class Target_jdk_jfr_internal_JVM {
     // Checkstyle: stop
-    @Alias @TargetElement(onlyWith = JDK20OrLater.class) //
+    @Alias //
+    @TargetElement(onlyWith = HasChunkRotationMonitorField.class) //
     static Object CHUNK_ROTATION_MONITOR;
 
-    @Alias @TargetElement(onlyWith = JDK19OrEarlier.class) //
+    @Alias //
+    @TargetElement(onlyWith = HasFileDeltaChangeField.class) //
     static Object FILE_DELTA_CHANGE;
     // Checkstyle: resume
 
-    @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    private volatile boolean nativeOK;
-
-    @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private volatile boolean recording;
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
+    @TargetElement(onlyWith = JDKLatest.class) //
+    private static volatile boolean nativeOK;
 
     /** See {@link JVM#registerNatives}. */
     @Substitute
     private static void registerNatives() {
     }
 
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void markChunkFinal() {
+        SubstrateJVM.get().markChunkFinal();
+    }
+
     /** See {@link JVM#beginRecording}. */
     @Substitute
-    public void beginRecording() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void beginRecording() {
         SubstrateJVM.get().beginRecording();
+    }
+
+    /** See {@link JVM#isRecording}. */
+    @Substitute
+    @Uninterruptible(reason = "Needed for calling SubstrateJVM.isRecording().")
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean isRecording() {
+        return SubstrateJVM.get().isRecording();
+    }
+
+    /** See {@link JVM#endRecording}. */
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void endRecording() {
+        SubstrateJVM.get().endRecording();
     }
 
     /** See {@link JVM#counterTime}. */
@@ -84,77 +108,109 @@ public final class Target_jdk_jfr_internal_JVM {
 
     /** See {@link JVM#emitEvent}. */
     @Substitute
-    public boolean emitEvent(long eventTypeId, long timestamp, long when) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean emitEvent(long eventTypeId, long timestamp, long when) {
         return false;
-    }
-
-    /** See {@link JVM#endRecording}. */
-    @Substitute
-    public void endRecording() {
-        SubstrateJVM.get().endRecording();
-    }
-
-    /** See {@link JVM#isRecording}. */
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
-    public boolean isRecording() {
-        return SubstrateJVM.get().unsafeIsRecording();
     }
 
     /** See {@link JVM#getAllEventClasses}. */
     @Substitute
-    public List<Class<? extends Event>> getAllEventClasses() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static List<Class<? extends jdk.internal.event.Event>> getAllEventClasses() {
         return JfrJavaEvents.getAllEventClasses();
     }
 
     /** See {@link JVM#getUnloadedEventClassCount}. */
     @Substitute
-    public long getUnloadedEventClassCount() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getUnloadedEventClassCount() {
         return 0;
     }
 
     /** See {@link JVM#getClassId}. Intrinsified on HotSpot. */
     @Substitute
+    @Uninterruptible(reason = "Needed for SubstrateJVM.getClassId().")
     public static long getClassId(Class<?> clazz) {
+        /*
+         * The result is only valid until the epoch changes but this is fine because EventWriter
+         * instances are invalidated when the epoch changes.
+         */
         return SubstrateJVM.get().getClassId(clazz);
-    }
-
-    /** See JVM.getClassIdNonIntrinsic(Class). */
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    public static long getClassIdNonIntrinsic(Class<?> clazz) {
-        return getClassId(clazz);
     }
 
     /** See {@link JVM#getPid}. */
     @Substitute
-    public String getPid() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static String getPid() {
         long id = ProcessProperties.getProcessID();
         return String.valueOf(id);
     }
 
     /** See {@link JVM#getStackTraceId}. */
     @Substitute
-    public long getStackTraceId(int skipCount) {
+    @Uninterruptible(reason = "Needed for SubstrateJVM.getStackTraceId().")
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getStackTraceId(int skipCount, long stackFilterId) {
+        /*
+         * The result is only valid until the epoch changes but this is fine because EventWriter
+         * instances are invalidated when the epoch changes.
+         */
         return SubstrateJVM.get().getStackTraceId(skipCount);
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long registerStackFilter(String[] classes, String[] methods) {
+        throw VMError.unimplemented("JFR StackFilters are not yet supported.");
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void unregisterStackFilter(long stackFilterId) {
+        throw VMError.unimplemented("JFR StackFilters are not yet supported.");
+    }
+
+    /**
+     * As of 22+27, This method is both used to set cutoff tick values for leak profiling and
+     * for @Deprecated events. Note that this method is called during JFR startup.
+     */
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setMiscellaneous(long eventTypeId, long value) {
+        /* Ignore the call and don't throw an exception (would result in an unspecific warning). */
     }
 
     /** See {@link JVM#getThreadId}. */
     @Substitute
-    public long getThreadId(Thread t) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getThreadId(Thread t) {
         return SubstrateJVM.getThreadId(t);
     }
 
     /** See {@link JVM#getTicksFrequency}. */
     @Substitute
-    public long getTicksFrequency() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getTicksFrequency() {
         return JfrTicks.getTicksFrequency();
+    }
+
+    /** See {@code JVM#nanosNow}. */
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long nanosNow() {
+        return PlatformTimeUtils.singleton().nanosNow();
     }
 
     /** See {@link JVM#log}. */
     @Substitute
     public static void log(int tagSetId, int level, String message) {
         SubstrateJVM.get().log(tagSetId, level, message);
+    }
+
+    /** See {@link JVM#logEvent}. */
+    @Substitute
+    public static void logEvent(int level, String[] lines, boolean system) {
+        SubstrateJVM.get().logEvent(level, lines, system);
     }
 
     /** See {@link JVM#subscribeLogLevel}. */
@@ -165,310 +221,354 @@ public final class Target_jdk_jfr_internal_JVM {
 
     /** See {@link JVM#retransformClasses}. */
     @Substitute
-    public synchronized void retransformClasses(Class<?>[] classes) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static synchronized void retransformClasses(Class<?>[] classes) {
         // Not supported but this method is called during JFR startup, so we can't throw an error.
     }
 
     /** See {@link JVM#setEnabled}. */
     @Substitute
-    public void setEnabled(long eventTypeId, boolean enabled) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setEnabled(long eventTypeId, boolean enabled) {
         SubstrateJVM.get().setEnabled(eventTypeId, enabled);
     }
 
     /** See {@link JVM#setFileNotification}. */
     @Substitute
-    public void setFileNotification(long delta) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setFileNotification(long delta) {
         SubstrateJVM.get().setFileNotification(delta);
     }
 
     /** See {@link JVM#setGlobalBufferCount}. */
     @Substitute
-    public void setGlobalBufferCount(long count) throws IllegalArgumentException, IllegalStateException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setGlobalBufferCount(long count) throws IllegalArgumentException, IllegalStateException {
         SubstrateJVM.get().setGlobalBufferCount(count);
     }
 
     /** See {@link JVM#setGlobalBufferSize}. */
     @Substitute
-    public void setGlobalBufferSize(long size) throws IllegalArgumentException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setGlobalBufferSize(long size) throws IllegalArgumentException {
         SubstrateJVM.get().setGlobalBufferSize(size);
     }
 
     /** See {@link JVM#setMemorySize}. */
     @Substitute
-    public void setMemorySize(long size) throws IllegalArgumentException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setMemorySize(long size) throws IllegalArgumentException {
         SubstrateJVM.get().setMemorySize(size);
-    }
-
-    /** See {@code JVM#setMethodSamplingInterval}. */
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrEarlier.class)
-    public void setMethodSamplingInterval(long type, long intervalMillis) {
-        SubstrateJVM.get().setMethodSamplingInterval(type, intervalMillis);
     }
 
     /** See {@code JVM#setMethodSamplingPeriod}. */
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class)
-    public void setMethodSamplingPeriod(long type, long intervalMillis) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setMethodSamplingPeriod(long type, long intervalMillis) {
         SubstrateJVM.get().setMethodSamplingInterval(type, intervalMillis);
     }
 
     /** See {@link JVM#setOutput}. */
     @Substitute
-    public void setOutput(String file) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setOutput(String file) {
         SubstrateJVM.get().setOutput(file);
     }
 
     /** See {@link JVM#setForceInstrumentation}. */
     @Substitute
-    public void setForceInstrumentation(boolean force) {
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrEarlier.class)
-    public void setSampleThreads(boolean sampleThreads) throws IllegalStateException {
-        SubstrateJVM.get().setSampleThreads(sampleThreads);
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setForceInstrumentation(boolean force) {
     }
 
     /** See {@link JVM#setCompressedIntegers}. */
     @Substitute
-    public void setCompressedIntegers(boolean compressed) throws IllegalStateException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setCompressedIntegers(boolean compressed) throws IllegalStateException {
         SubstrateJVM.get().setCompressedIntegers(compressed);
     }
 
     /** See {@link JVM#setStackDepth}. */
     @Substitute
-    public void setStackDepth(int depth) throws IllegalArgumentException, IllegalStateException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setStackDepth(int depth) throws IllegalArgumentException, IllegalStateException {
         SubstrateJVM.get().setStackDepth(depth);
     }
 
     /** See {@link JVM#setStackTraceEnabled}. */
     @Substitute
-    public void setStackTraceEnabled(long eventTypeId, boolean enabled) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setStackTraceEnabled(long eventTypeId, boolean enabled) {
         SubstrateJVM.get().setStackTraceEnabled(eventTypeId, enabled);
     }
 
     /** See {@link JVM#setThreadBufferSize}. */
     @Substitute
-    public void setThreadBufferSize(long size) throws IllegalArgumentException, IllegalStateException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setThreadBufferSize(long size) throws IllegalArgumentException, IllegalStateException {
         SubstrateJVM.get().setThreadBufferSize(size);
     }
 
     /** See {@link JVM#setThreshold}. */
     @Substitute
-    public boolean setThreshold(long eventTypeId, long ticks) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean setThreshold(long eventTypeId, long ticks) {
         return SubstrateJVM.get().setThreshold(eventTypeId, ticks);
     }
 
     /** See {@link JVM#storeMetadataDescriptor}. */
     @Substitute
-    public void storeMetadataDescriptor(byte[] bytes) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void storeMetadataDescriptor(byte[] bytes) {
         SubstrateJVM.get().storeMetadataDescriptor(bytes);
     }
 
     /** See {@link JVM#getAllowedToDoEventRetransforms}. */
     @Substitute
-    public boolean getAllowedToDoEventRetransforms() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean getAllowedToDoEventRetransforms() {
         return false;
     }
 
     /** See {@link JVM#createJFR}. */
     @Substitute
-    private boolean createJFR(boolean simulateFailure) throws IllegalStateException {
+    @TargetElement(onlyWith = JDKLatest.class)
+    private static boolean createJFR(boolean simulateFailure) throws IllegalStateException {
         return SubstrateJVM.get().createJFR(simulateFailure);
     }
 
     /** See {@link JVM#destroyJFR}. */
     @Substitute
-    private boolean destroyJFR() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    private static boolean destroyJFR() {
         return SubstrateJVM.get().destroyJFR();
     }
 
     /** See {@link JVM#isAvailable}. */
     @Substitute
-    public boolean isAvailable() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean isAvailable() {
         return true;
     }
 
     /** See {@link JVM#getTimeConversionFactor}. */
     @Substitute
-    public double getTimeConversionFactor() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static double getTimeConversionFactor() {
         return 1;
     }
 
-    /** See {@link SubstrateJVM#getChunkStartNanos}. */
+    /** See {@link JVM#getTypeId(Class)}. */
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
-    public long getChunkStartNanos() {
-        return SubstrateJVM.get().getChunkStartNanos();
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = {JDK17OrLater.class, JDK17OrEarlier.class})
-    public boolean setHandler(Class<? extends jdk.internal.event.Event> eventClass, Target_jdk_jfr_internal_handlers_EventHandler handler) {
-        // eventHandler fields should all be set at compile time so this method
-        // should never be reached at runtime
-        throw VMError.shouldNotReachHere("eventHandler does not exist for: " + eventClass);
-    }
-
-    /** See {@link SubstrateJVM#getHandler}. */
-    @Substitute
-    @TargetElement(onlyWith = {JDK17OrLater.class, JDK17OrEarlier.class})
-    public Object getHandler(Class<? extends jdk.internal.event.Event> eventClass) {
-        return SubstrateJVM.getHandler(eventClass);
-    }
-
-    /** See {@link JVM#getTypeId}. */
-    @Substitute
-    public long getTypeId(Class<?> clazz) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getTypeId(Class<?> clazz) {
         return JfrTraceId.getTraceId(clazz);
     }
 
     /** See {@link JVM#getEventWriter}. */
     @Substitute
-    public static Object getEventWriter() {
+    public static Target_jdk_jfr_internal_event_EventWriter getEventWriter() {
         return SubstrateJVM.get().getEventWriter();
     }
 
     /** See {@link JVM#newEventWriter}. */
     @Substitute
-    public static Target_jdk_jfr_internal_EventWriter newEventWriter() {
+    public static Target_jdk_jfr_internal_event_EventWriter newEventWriter() {
         return SubstrateJVM.get().newEventWriter();
     }
 
     /** See {@link JVM#flush}. */
     @Substitute
-    public static boolean flush(Target_jdk_jfr_internal_EventWriter writer, int uncommittedSize, int requestedSize) {
-        return SubstrateJVM.get().flush(writer, uncommittedSize, requestedSize);
+    public static void flush(Target_jdk_jfr_internal_event_EventWriter writer, int uncommittedSize, int requestedSize) {
+        SubstrateJVM.get().flush(writer, uncommittedSize, requestedSize);
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void flush() {
+        SubstrateJVM.get().flush();
+    }
+
+    @Substitute
+    public static long commit(long nextPosition) {
+        return SubstrateJVM.get().commit(nextPosition);
     }
 
     /** See {@link JVM#setRepositoryLocation}. */
     @Substitute
-    public void setRepositoryLocation(String dirText) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setRepositoryLocation(String dirText) {
         SubstrateJVM.get().setRepositoryLocation(dirText);
     }
 
     /** See {@code JVM#setDumpPath(String)}. */
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class)
-    public void setDumpPath(String dumpPathText) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void setDumpPath(String dumpPathText) {
         SubstrateJVM.get().setDumpPath(dumpPathText);
     }
 
     /** See {@code JVM#getDumpPath()}. */
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class)
-    public String getDumpPath() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static String getDumpPath() {
         return SubstrateJVM.get().getDumpPath();
     }
 
     /** See {@link JVM#abort}. */
     @Substitute
-    public void abort(String errorMsg) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void abort(String errorMsg) {
         SubstrateJVM.get().abort(errorMsg);
+    }
+
+    /** See {@link JVM#addStringConstant}. */
+    @Substitute
+    public static boolean addStringConstant(long id, String s) {
+        return false;
     }
 
     /** See {@link JVM#uncaughtException}. */
     @Substitute
-    public void uncaughtException(Thread thread, Throwable t) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void uncaughtException(Thread thread, Throwable t) {
         // Would be used to determine the emergency dump filename if an exception happens during
         // shutdown.
     }
 
     /** See {@link JVM#setCutoff}. */
     @Substitute
-    public boolean setCutoff(long eventTypeId, long cutoffTicks) {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean setCutoff(long eventTypeId, long cutoffTicks) {
         return SubstrateJVM.get().setCutoff(eventTypeId, cutoffTicks);
     }
 
+    /** See {@link JVM#setThrottle}. */
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
-    public boolean setThrottle(long eventTypeId, long eventSampleSize, long periodMs) {
-        // Not supported but this method is called during JFR startup, so we can't throw an error.
-        return true;
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean setThrottle(long eventTypeId, long eventSampleSize, long periodMs) {
+        return SubstrateJVM.get().setThrottle(eventTypeId, eventSampleSize, periodMs);
     }
 
     /** See {@link JVM#emitOldObjectSamples}. */
     @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    public void emitOldObjectSamples(long cutoff, boolean emitAll) {
-        // Not supported but this method is called during JFR shutdown, so we can't throw an error.
-    }
-
-    /** See {@link JVM#emitOldObjectSamples}. */
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public void emitOldObjectSamples(long cutoff, boolean emitAll, boolean skipBFS) {
-        // Not supported but this method is called during JFR shutdown, so we can't throw an error.
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void emitOldObjectSamples(long cutoff, boolean emitAll, boolean skipBFS) {
+        SubstrateJVM.get().emitOldObjectSamples(cutoff, emitAll, skipBFS);
     }
 
     /** See {@link JVM#shouldRotateDisk}. */
     @Substitute
-    public boolean shouldRotateDisk() {
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean shouldRotateDisk() {
         return SubstrateJVM.get().shouldRotateDisk();
     }
 
-    /** See {@link JVM#flush}. */
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public void flush() {
-        // Temporarily do nothing. This is used for JFR streaming.
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void include(Thread thread) {
+        JfrThreadLocal.setExcluded(thread, false);
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public void include(Thread thread) {
-        // Temporarily do nothing. This is used for JFR streaming.
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static void exclude(Thread thread) {
+        JfrThreadLocal.setExcluded(thread, true);
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public void exclude(Thread thread) {
-        // Temporarily do nothing. This is used for JFR streaming.
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static boolean isExcluded(Thread thread) {
+        return JfrThreadLocal.isThreadExcluded(thread);
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public boolean isExcluded(Thread thread) {
-        // Temporarily do nothing. This is used for JFR streaming.
-        return false;
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
-    public boolean isExcluded(Class<? extends jdk.internal.event.Event> eventClass) {
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static boolean isExcluded(Class<? extends jdk.internal.event.Event> eventClass) {
         // Temporarily always include.
         return false;
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
-    public boolean setConfiguration(Class<? extends jdk.internal.event.Event> eventClass, Target_jdk_jfr_internal_event_EventConfiguration configuration) {
-        return SubstrateJVM.get().setConfiguration(eventClass, configuration);
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
-    public Object getConfiguration(Class<? extends jdk.internal.event.Event> eventClass) {
-        return SubstrateJVM.get().getConfiguration(eventClass);
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
-    public boolean isInstrumented(Class<? extends jdk.internal.event.Event> eventClass) {
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static boolean isInstrumented(Class<? extends jdk.internal.event.Event> eventClass) {
         // This should check for blessed commit methods in the event class [GR-41200]
         return true;
     }
 
+    /** See {@link SubstrateJVM#getChunkStartNanos}. */
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
-    public boolean isContainerized() {
-        return Containers.isContainerized();
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getChunkStartNanos() {
+        return SubstrateJVM.get().getChunkStartNanos();
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class) //
-    public void markChunkFinal() {
-        // Temporarily do nothing. This is used for JFR streaming.
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static boolean setConfiguration(Class<? extends jdk.internal.event.Event> eventClass, Target_jdk_jfr_internal_event_EventConfiguration configuration) {
+        return SubstrateJVM.get().setConfiguration(eventClass, configuration);
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static Object getConfiguration(Class<? extends jdk.internal.event.Event> eventClass) {
+        return SubstrateJVM.get().getConfiguration(eventClass);
+    }
+
+    /** See {@link JVM#getTypeId(String)}. */
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class)
+    public static long getTypeId(String name) {
+        /* Not implemented at the moment. */
+        return -1;
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static boolean isContainerized() {
+        return Container.singleton().isContainerized();
+    }
+
+    /**
+     * Return the total memory available on the host.
+     *
+     * This is unconditionally using {@link OperatingSystem#getPhysicalMemorySize} since we are
+     * interested in the host values (and not the containerized values).
+     */
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static long hostTotalMemory() {
+        return OperatingSystem.singleton().getPhysicalMemorySize().rawValue();
+    }
+
+    @Substitute
+    @TargetElement(onlyWith = JDKLatest.class) //
+    public static long hostTotalSwapMemory() {
+        /* Not implemented at the moment. */
+        return -1;
+    }
+}
+
+class HasChunkRotationMonitorField implements BooleanSupplier {
+    private static final boolean HAS_FIELD = ReflectionUtil.lookupField(true, JVM.class, "CHUNK_ROTATION_MONITOR") != null;
+
+    @Override
+    public boolean getAsBoolean() {
+        return HAS_FIELD;
+    }
+
+    @Fold
+    public static boolean get() {
+        return HAS_FIELD;
+    }
+}
+
+@Platforms(Platform.HOSTED_ONLY.class)
+class HasFileDeltaChangeField implements BooleanSupplier {
+    private static final boolean HAS_FIELD = ReflectionUtil.lookupField(true, JVM.class, "FILE_DELTA_CHANGE") != null;
+
+    @Override
+    public boolean getAsBoolean() {
+        return HAS_FIELD;
     }
 }

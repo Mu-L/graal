@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,7 @@ package com.oracle.truffle.sl.nodes.util;
 
 import static com.oracle.truffle.api.CompilerDirectives.shouldNotReachHere;
 
+import com.oracle.truffle.api.bytecode.OperationProxy;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
@@ -53,7 +54,7 @@ import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.sl.SLLanguage;
 import com.oracle.truffle.sl.nodes.SLExpressionNode;
 import com.oracle.truffle.sl.nodes.SLTypes;
-import com.oracle.truffle.sl.runtime.SLBigNumber;
+import com.oracle.truffle.sl.runtime.SLBigInteger;
 import com.oracle.truffle.sl.runtime.SLFunction;
 import com.oracle.truffle.sl.runtime.SLNull;
 
@@ -63,43 +64,44 @@ import com.oracle.truffle.sl.runtime.SLNull;
  */
 @TypeSystemReference(SLTypes.class)
 @NodeChild
+@OperationProxy.Proxyable(allowUncached = true)
 public abstract class SLUnboxNode extends SLExpressionNode {
 
-    static final int LIMIT = 5;
+    public static final int LIMIT = 5;
 
     @Specialization
-    protected static TruffleString fromString(String value,
+    public static TruffleString fromString(String value,
                     @Cached TruffleString.FromJavaStringNode fromJavaStringNode) {
         return fromJavaStringNode.execute(value, SLLanguage.STRING_ENCODING);
     }
 
     @Specialization
-    protected static TruffleString fromTruffleString(TruffleString value) {
+    public static TruffleString fromTruffleString(TruffleString value) {
         return value;
     }
 
     @Specialization
-    protected static boolean fromBoolean(boolean value) {
+    public static boolean fromBoolean(boolean value) {
         return value;
     }
 
     @Specialization
-    protected static long fromLong(long value) {
+    public static long fromLong(long value) {
         return value;
     }
 
     @Specialization
-    protected static SLBigNumber fromBigNumber(SLBigNumber value) {
+    public static SLBigInteger fromBigNumber(SLBigInteger value) {
         return value;
     }
 
     @Specialization
-    protected static SLFunction fromFunction(SLFunction value) {
+    public static SLFunction fromFunction(SLFunction value) {
         return value;
     }
 
     @Specialization
-    protected static SLNull fromFunction(SLNull value) {
+    public static SLNull fromFunction(SLNull value) {
         return value;
     }
 
@@ -108,6 +110,8 @@ public abstract class SLUnboxNode extends SLExpressionNode {
         try {
             if (interop.fitsInLong(value)) {
                 return interop.asLong(value);
+            } else if (interop.fitsInBigInteger(value)) {
+                return value;
             } else if (interop.fitsInDouble(value)) {
                 return (long) interop.asDouble(value);
             } else if (interop.isString(value)) {

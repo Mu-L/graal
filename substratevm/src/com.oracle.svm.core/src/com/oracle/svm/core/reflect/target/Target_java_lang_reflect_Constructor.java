@@ -32,13 +32,14 @@ import java.lang.reflect.Executable;
 
 import org.graalvm.nativeimage.ImageSingletons;
 
+import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.reflect.MissingReflectionRegistrationUtils;
 
 import sun.reflect.generics.repository.ConstructorRepository;
 
@@ -61,16 +62,16 @@ public final class Target_java_lang_reflect_Constructor {
     @Alias
     @TargetElement(name = CONSTRUCTOR_NAME)
     @SuppressWarnings("hiding")
-    public native void constructor(Class<?> declaringClass, Class<?>[] parameterTypes, Class<?>[] checkedExceptions, int modifiers, int slot, String signature, byte[] annotations,
+    native void constructor(Class<?> declaringClass, Class<?>[] parameterTypes, Class<?>[] checkedExceptions, int modifiers, int slot, String signature, byte[] annotations,
                     byte[] parameterAnnotations);
 
     @Alias
     native Target_java_lang_reflect_Constructor copy();
 
     @Substitute
-    Target_jdk_internal_reflect_ConstructorAccessor acquireConstructorAccessor() {
+    public Target_jdk_internal_reflect_ConstructorAccessor acquireConstructorAccessor() {
         if (constructorAccessor == null) {
-            throw VMError.unsupportedFeature("Runtime reflection is not supported for " + this);
+            throw MissingReflectionRegistrationUtils.errorForQueriedOnlyExecutable(SubstrateUtil.cast(this, Executable.class));
         }
         return constructorAccessor;
     }
@@ -78,14 +79,14 @@ public final class Target_java_lang_reflect_Constructor {
     static class AnnotationsComputer extends ReflectionMetadataComputer {
         @Override
         public Object transform(Object receiver, Object originalValue) {
-            return ImageSingletons.lookup(EncodedReflectionMetadataSupplier.class).getAnnotationsEncoding((AccessibleObject) receiver);
+            return ImageSingletons.lookup(EncodedRuntimeMetadataSupplier.class).getAnnotationsEncoding((AccessibleObject) receiver);
         }
     }
 
     static class ParameterAnnotationsComputer extends ReflectionMetadataComputer {
         @Override
         public Object transform(Object receiver, Object originalValue) {
-            return ImageSingletons.lookup(EncodedReflectionMetadataSupplier.class).getParameterAnnotationsEncoding((Executable) receiver);
+            return ImageSingletons.lookup(EncodedRuntimeMetadataSupplier.class).getParameterAnnotationsEncoding((Executable) receiver);
         }
     }
 }

@@ -27,9 +27,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 
 import com.oracle.truffle.api.CompilerAsserts;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Name;
-import com.oracle.truffle.espresso.descriptors.Symbol.Signature;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Name;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Signature;
 import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 
@@ -149,6 +149,7 @@ final class InterfaceTables {
                 thisInterfKlass.hasDeclaredDefaultMethods = true;
             }
         }
+        thisInterfKlass.hasDefaultMethods = thisInterfKlass.hasDeclaredDefaultMethods;
         Method.MethodVersion[] methods = tmpMethodTable.toArray(Method.EMPTY_VERSION_ARRAY);
         ArrayList<ObjectKlass.KlassVersion> tmpKlassTable = new ArrayList<>();
         tmpKlassTable.add(thisInterfKlass);
@@ -157,6 +158,9 @@ final class InterfaceTables {
                 if (canInsert(supInterf, tmpKlassTable)) {
                     tmpKlassTable.add(supInterf);
                 }
+            }
+            if (interf.getKlassVersion().hasDefaultMethods) {
+                thisInterfKlass.hasDefaultMethods = true;
             }
         }
         ObjectKlass.KlassVersion[] sortedInterfaces = tmpKlassTable.toArray(ObjectKlass.EMPTY_KLASSVERSION_ARRAY);
@@ -172,17 +176,29 @@ final class InterfaceTables {
     /**
      * Performs the first step of itable creation.
      *
-     * @param superKlass the super class of this Klass
+     * @param klassVersion    the class for which the itables are being created
+     * @param superKlass      the super class of this Klass
      * @param superInterfaces the superInterfaces of thisKlass
-     * @return a 3-uple containing: <p>
-     *      - An intermediate helper for the itable.
-     *        Each entry of the helper table contains information of where to find the method that will be put in its place<p>
-     *      - An array containing all directly and indirectly implemented interfaces<p>
-     *      - An array of implicitly declared methods (aka, mirandas). This most notably contains default methods.<p>
+     * @return a 3-uple containing: <ul>
+     * <li> An intermediate helper for the itable.
+     * Each entry of the helper table contains information of where to find the method that will be put in its place</li>
+     * <li> An array containing all directly and indirectly implemented interfaces</li>
+     * <li> An array of implicitly declared methods (aka, mirandas). This most notably contains default methods.</li>
+     * </ul>
      */
     // checkstyle: resume
     // @formatter:on
-    public static CreationResult create(ObjectKlass superKlass, ObjectKlass[] superInterfaces, Method.MethodVersion[] declaredMethods) {
+    public static CreationResult create(ObjectKlass.KlassVersion klassVersion, ObjectKlass superKlass, ObjectKlass[] superInterfaces, Method.MethodVersion[] declaredMethods) {
+        if (superKlass != null && superKlass.getKlassVersion().hasDefaultMethods) {
+            klassVersion.hasDefaultMethods = true;
+        } else {
+            for (ObjectKlass interf : superInterfaces) {
+                if (interf.getKlassVersion().hasDefaultMethods) {
+                    klassVersion.hasDefaultMethods = true;
+                    break;
+                }
+            }
+        }
         return new InterfaceTables(superKlass, superInterfaces, declaredMethods).create();
     }
 
@@ -324,20 +340,12 @@ final class InterfaceTables {
         int pos = 0;
         Method.MethodVersion[] res = new Method.MethodVersion[entries.length];
         for (Entry entry : entries) {
-            switch (entry.loc) {
-                case SUPERVTABLE:
-                    Method.MethodVersion m = vtable[entry.index];
-                    res[pos] = new Method(m.getMethod()).getMethodVersion();
-                    break;
-                case DECLARED:
-                    m = declared[entry.index];
-                    res[pos] = new Method(m.getMethod()).getMethodVersion();
-                    break;
-                case MIRANDAS:
-                    m = mirandas[entry.index];
-                    res[pos] = new Method(m.getMethod()).getMethodVersion();
-                    break;
-            }
+            Method.MethodVersion m = switch (entry.loc) {
+                case SUPERVTABLE -> vtable[entry.index];
+                case DECLARED -> declared[entry.index];
+                case MIRANDAS -> mirandas[entry.index];
+            };
+            res[pos] = new Method(m.getMethod()).getMethodVersion();
             res[pos].setITableIndex(pos);
             pos++;
         }

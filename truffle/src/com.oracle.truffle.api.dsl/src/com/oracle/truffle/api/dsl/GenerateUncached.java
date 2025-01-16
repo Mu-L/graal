@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -113,6 +113,14 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.CLASS)
 @Target({ElementType.TYPE})
 public @interface GenerateUncached {
+
+    /**
+     * If <code>true</code> enables the generation of an uncached version of this
+     * {@link Specialization specializing} node. It is disabled by default.
+     *
+     * @since 19.0
+     */
+    boolean value() default true;
 
     /**
      * Inherits the semantics of the annotation to subclasses.

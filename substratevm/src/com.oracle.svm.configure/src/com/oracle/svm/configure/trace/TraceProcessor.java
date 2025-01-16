@@ -31,9 +31,11 @@ import java.io.StringWriter;
 import java.util.List;
 
 import org.graalvm.collections.EconomicMap;
-import org.graalvm.util.json.JSONParser;
 
 import com.oracle.svm.configure.config.ConfigurationSet;
+import com.oracle.svm.util.LogUtils;
+
+import jdk.graal.compiler.util.json.JsonParser;
 
 public class TraceProcessor extends AbstractProcessor {
     private final AccessAdvisor advisor;
@@ -53,7 +55,7 @@ public class TraceProcessor extends AbstractProcessor {
     @SuppressWarnings("unchecked")
     public void process(Reader reader, ConfigurationSet configurationSet) throws IOException {
         setInLivePhase(false);
-        JSONParser parser = new JSONParser(reader);
+        JsonParser parser = new JsonParser(reader);
         List<EconomicMap<String, ?>> trace = (List<EconomicMap<String, ?>>) parser.parse();
         processTrace(trace, configurationSet);
     }
@@ -75,8 +77,10 @@ public class TraceProcessor extends AbstractProcessor {
                         setInLivePhase(entry.get("phase").equals("live"));
                     } else if (event.equals("initialization")) {
                         // not needed for now, but contains version for breaking changes
+                    } else if (event.equals("track_reflection_metadata")) {
+                        reflectionProcessor.setTrackReflectionMetadata((boolean) entry.get("track"));
                     } else {
-                        logWarning("Unknown meta event, ignoring: " + event);
+                        LogUtils.warning("Unknown meta event, ignoring: " + event);
                     }
                     break;
                 }
@@ -93,13 +97,13 @@ public class TraceProcessor extends AbstractProcessor {
                     classLoadingProcessor.processEntry(entry, configurationSet);
                     break;
                 default:
-                    logWarning("Unknown tracer, ignoring: " + tracer);
+                    LogUtils.warning("Unknown tracer, ignoring: " + tracer);
                     break;
             }
         } catch (Exception e) {
             StringWriter stackTrace = new StringWriter();
             e.printStackTrace(new PrintWriter(stackTrace));
-            logWarning("Error processing trace entry " + entry.toString() + ": " + stackTrace);
+            LogUtils.warning("Error processing trace entry " + entry.toString() + ": " + stackTrace);
         }
     }
 

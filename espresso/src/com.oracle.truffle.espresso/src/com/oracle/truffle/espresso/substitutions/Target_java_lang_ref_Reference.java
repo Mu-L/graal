@@ -29,11 +29,11 @@ import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.DirectCallNode;
-import com.oracle.truffle.espresso.ref.FinalizationSupport;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.ref.EspressoReference;
+import com.oracle.truffle.espresso.ref.FinalizationSupport;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.vm.InterpreterToVM;
 
 @EspressoSubstitutions

@@ -1,15 +1,14 @@
 {
-  local common_json = import '../../common.json',
   local common = import '../../ci/ci_common/common.jsonnet',
-  local composable = (import '../../ci/ci_common/common-utils.libsonnet').composable,
-  local top_level_ci = (import '../../ci/ci_common/common-utils.libsonnet').top_level_ci,
-  local devkits = composable(common_json.devkits),
+  local utils = import '../../ci/ci_common/common-utils.libsonnet',
+  local top_level_ci = utils.top_level_ci,
+  local devkits = common.devkits,
 
-  local tools_common = composable(common_json.deps.common) + common.mx + {
+  local tools_common = {
     setup+: [
       ["cd", "./tools"],
     ],
-    timelimit: "30:00",
+    timelimit: "45:00",
   },
 
   local common_guard = {
@@ -23,8 +22,8 @@
     }
   },
 
-  local tools_gate = gate_guard + tools_common + common.eclipse + common.jdt + {
-    name: 'gate-tools-oraclejdk' + self.jdk_version + '-' + self.os + '-' + self.arch,
+  local tools_gate = gate_guard + tools_common + common.deps.eclipse + common.deps.jdt + common.deps.spotbugs + {
+    name: 'gate-tools-oracle' + self.jdk_name + '-' + self.os + '-' + self.arch,
     run: [["mx", "--strict-compliance", "gate", "--strict-mode"]],
     targets: ["gate"],
     guard+: {
@@ -32,8 +31,8 @@
     }
   },
 
-  local tools_gate_lite = tools_common + {
-    name: 'gate-tools-lite-oraclejdk' + self.jdk_version + '-' + self.os + '-' + self.arch,
+  local tools_weekly = tools_common + {
+    name: 'weekly-tools-oracle' + self.jdk_name + '-' + self.os + '-' + self.arch,
     run: [
       ["mx", "build"],
       ["mx", "unittest", "--verbose"],
@@ -59,7 +58,7 @@
     "com.oracle.truffle.tools"
   ],
 
-  local tools_coverage_weekly = tools_common + common.eclipse + common.jdt + {
+  local tools_coverage_weekly = tools_common + common.deps.eclipse + common.deps.jdt + {
     name: "weekly-tools-coverage",
     run: [
       ["mx"] + coverage_whitelisting + [
@@ -82,18 +81,21 @@
     notify_groups:: ["tools"],
   },
 
-  builds: [
-    common.linux_amd64   + common.oraclejdk20 + tools_gate,
-    common.linux_amd64   + common.oraclejdk17 + tools_gate,
+  local _builds = [
+    common.linux_amd64   + common.oraclejdkLatest + tools_gate,
+    common.linux_amd64   + common.oraclejdk21 + tools_gate,
 
-    common.linux_amd64   + common.oraclejdk20 + tools_javadoc,
-    common.linux_amd64   + common.oraclejdk17 + tools_coverage_weekly,
-    common.linux_aarch64 + common.labsjdk17   + tools_gate_lite,
+    common.linux_amd64   + common.oraclejdk21 + tools_javadoc,
+    common.linux_amd64   + common.oraclejdk21 + tools_coverage_weekly,
+    common.linux_aarch64 + common.labsjdkLatest   + tools_weekly,
+    common.linux_aarch64 + common.labsjdk21   + tools_weekly,
 
-    common.windows_amd64 + common.oraclejdk20 + tools_gate_lite + devkits["windows-jdk20"],
-    common.windows_amd64 + common.oraclejdk17 + tools_gate_lite + devkits["windows-jdk17"],
+    common.windows_amd64 + common.oraclejdkLatest + tools_weekly + devkits["windows-jdkLatest"],
+    common.windows_amd64 + common.oraclejdk21 + tools_weekly + devkits["windows-jdk21"],
 
-    common.darwin_amd64  + common.oraclejdk20 + tools_gate_lite,
-    common.darwin_amd64  + common.oraclejdk17 + tools_gate_lite,
+    common.darwin_amd64  + common.oraclejdkLatest + tools_weekly,
+    common.darwin_amd64  + common.oraclejdk21 + tools_weekly,
   ],
+
+  builds: utils.add_defined_in(_builds, std.thisFile),
 }

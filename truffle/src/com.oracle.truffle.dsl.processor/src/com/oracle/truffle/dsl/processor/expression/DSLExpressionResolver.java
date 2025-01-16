@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -66,6 +66,7 @@ import com.oracle.truffle.dsl.processor.expression.DSLExpression.IntLiteral;
 import com.oracle.truffle.dsl.processor.expression.DSLExpression.Negate;
 import com.oracle.truffle.dsl.processor.expression.DSLExpression.Variable;
 import com.oracle.truffle.dsl.processor.java.ElementUtils;
+import com.oracle.truffle.dsl.processor.java.compiler.CompilerFactory;
 import com.oracle.truffle.dsl.processor.java.model.CodeTypeMirror;
 import com.oracle.truffle.dsl.processor.java.model.CodeVariableElement;
 
@@ -184,20 +185,35 @@ public class DSLExpressionResolver implements DSLExpressionVisitor {
         }
     }
 
-    private ExecutableElement resolveCall(Call call) {
+    public ExecutableElement lookupMethod(String searchName, List<TypeMirror> searchParameters) {
         lazyProcess();
-        List<ExecutableElement> methodsWithName = this.methods.get(call.getName());
+        List<ExecutableElement> methodsWithName = this.methods.get(searchName);
         ExecutableElement foundWithName = null;
+        ExecutableElement found = null;
+        List<ExecutableElement> overloads = null;
         if (methodsWithName != null) {
             for (ExecutableElement method : methodsWithName) {
-                if (matchExecutable(call, method) && ElementUtils.isVisible(accessType, method)) {
-                    return method;
+                if (matchExecutable(searchName, searchParameters, method) && ElementUtils.isVisible(accessType, method)) {
+                    if (found == null) {
+                        found = method;
+                    } else {
+                        if (overloads == null) {
+                            overloads = new ArrayList<>();
+                            overloads.add(found);
+                        }
+                        overloads.add(method);
+                    }
                 }
                 foundWithName = method;
             }
+            if (overloads != null) {
+                return selectOverload(overloads, searchParameters);
+            } else if (found != null) {
+                return found;
+            }
         }
         if (parent != null) {
-            ExecutableElement parentResult = parent.resolveCall(call);
+            ExecutableElement parentResult = parent.lookupMethod(searchName, searchParameters);
             if (parentResult != null) {
                 return parentResult;
             }
@@ -205,25 +221,51 @@ public class DSLExpressionResolver implements DSLExpressionVisitor {
         return foundWithName;
     }
 
-    private static boolean matchExecutable(Call call, ExecutableElement method) {
-        if (!getMethodName(method).equals(call.getName())) {
+    private ExecutableElement resolveCall(Call call) {
+        lazyProcess();
+
+        ExecutableElement foundMethod = lookupMethod(call.getName(), call.getResolvedParameterTypes());
+        if (foundMethod != null) {
+            List<DSLExpression> expressions = call.getParameters();
+            // refine resolved parameter types
+            for (int i = 0; i < expressions.size() && i < foundMethod.getParameters().size(); i++) {
+                expressions.get(i).setResolvedTargetType(foundMethod.getParameters().get(i).asType());
+            }
+        }
+        return foundMethod;
+    }
+
+    public static boolean matchExecutable(String name, List<TypeMirror> searchParameters, ExecutableElement method) {
+        if (!getMethodName(method).equals(name)) {
             return false;
         }
         List<? extends VariableElement> parameters = method.getParameters();
-        if (parameters.size() != call.getParameters().size()) {
+        if (parameters.size() != searchParameters.size()) {
             return false;
         }
         int parameterIndex = 0;
-        for (DSLExpression expression : call.getParameters()) {
-            TypeMirror sourceType = expression.getResolvedType();
+        for (TypeMirror sourceType : searchParameters) {
             TypeMirror targetType = parameters.get(parameterIndex).asType();
             if (!ElementUtils.isAssignable(sourceType, targetType)) {
                 return false;
             }
-            expression.setResolvedTargetType(targetType);
             parameterIndex++;
         }
         return true;
+    }
+
+    private static ExecutableElement selectOverload(List<ExecutableElement> overloads, List<TypeMirror> searchParameters) {
+        method: for (ExecutableElement method : overloads) {
+            for (int i = 0; i < searchParameters.size(); i++) {
+                TypeMirror searchParameter = searchParameters.get(i);
+                TypeMirror actualParameter = method.getParameters().get(i).asType();
+                if (!ElementUtils.typeEquals(searchParameter, actualParameter)) {
+                    continue method;
+                }
+            }
+            return method;
+        }
+        return overloads.get(0);
     }
 
     private VariableElement resolveVariable(Variable variable) {
@@ -284,7 +326,7 @@ public class DSLExpressionResolver implements DSLExpressionVisitor {
             throw new InvalidExpressionException(message);
         } else if (!ElementUtils.isVisible(accessType, resolvedMethod)) {
             throw new InvalidExpressionException(String.format("The method %s is not visible.", ElementUtils.getReadableSignature(resolvedMethod)));
-        } else if (!matchExecutable(call, resolvedMethod)) {
+        } else if (!matchExecutable(call.getName(), call.getResolvedParameterTypes(), resolvedMethod)) {
             StringBuilder arguments = new StringBuilder();
             String sep = "";
             for (DSLExpression expression : call.getParameters()) {
@@ -326,14 +368,14 @@ public class DSLExpressionResolver implements DSLExpressionVisitor {
         if (var == null) {
             throw new InvalidExpressionException(String.format("%s cannot be resolved.", variable.getName()));
         } else if (!ElementUtils.isVisible(accessType, var)) {
-            throw new InvalidExpressionException(String.format("%s is not visible.", variable.getName()));
+            throw new InvalidExpressionException(String.format("%s is not visible from %s.", variable.getName(), accessType.getSimpleName()));
         }
         variable.setResolvedVariable(var);
 
     }
 
     private List<? extends Element> getMembers(TypeElement t) {
-        return context.getEnvironment().getElementUtils().getAllMembers(t);
+        return CompilerFactory.getCompiler(t).getAllMembersInDeclarationOrder(context.getEnvironment(), t);
     }
 
     public void visitBooleanLiteral(BooleanLiteral binary) {

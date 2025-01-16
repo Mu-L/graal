@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 
 import org.graalvm.collections.Pair;
+import org.graalvm.polyglot.impl.AbstractPolyglotImpl.APIAccess;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
@@ -61,6 +62,7 @@ import com.oracle.truffle.polyglot.PolyglotLocals.LanguageContextLocal;
 import com.oracle.truffle.polyglot.PolyglotLocals.LanguageContextThreadLocal;
 import com.oracle.truffle.polyglot.PolyglotLocals.LocalLocation;
 
+/** The data corresponding to a specific {@link TruffleLanguage} instance. */
 final class PolyglotLanguageInstance implements VMObject {
 
     final PolyglotLanguage language;
@@ -74,7 +76,7 @@ final class PolyglotLanguageInstance implements VMObject {
     private final Map<Class<?>, CallTarget> callTargetCache;
 
     final Map<Object, Object> hostToGuestCodeCache = new ConcurrentHashMap<>();
-    final Map<Class<?>, ClassLoader> staticObjectClassLoaders = new ConcurrentHashMap<>();
+    final Map<Class<?>, Object> staticObjectClassLoaders = new ConcurrentHashMap<>();
     final ConcurrentHashMap<Pair<Class<?>, Class<?>>, Object> generatorCache = new ConcurrentHashMap<>();
 
     final WeakAssumedValue<PolyglotLanguageContext> singleLanguageContext = new WeakAssumedValue<>("single language context");
@@ -113,8 +115,19 @@ final class PolyglotLanguageInstance implements VMObject {
         return callTargetCache.computeIfAbsent(rootNode.getClass(), (r) -> rootNode.getCallTarget());
     }
 
+    @Override
     public PolyglotEngineImpl getEngine() {
         return language.engine;
+    }
+
+    @Override
+    public APIAccess getAPIAccess() {
+        return language.engine.apiAccess;
+    }
+
+    @Override
+    public PolyglotImpl getImpl() {
+        return language.engine.impl;
     }
 
     PolyglotValueDispatch lookupValueCache(PolyglotContextImpl context, Object guestValue) {

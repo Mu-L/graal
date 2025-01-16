@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -65,7 +65,7 @@ public class WasmImplementationLimitationsSuite {
     public static Collection<Object[]> data() {
         return Arrays.asList(
                         stringCase("Table instance - initial size out of bounds",
-                                        "table instance size exceeds limit: 2147483648 should be <= 2147483647",
+                                        "table instance size exceeds limit: 2147483648 should be <= 10000000",
                                         "(table $table1 2147483648 funcref)", Failure.Type.TRAP),
                         stringCase("Memory instance - initial size out of bounds",
                                         "memory instance size exceeds limit: 32768 should be <= 32767",
@@ -103,6 +103,8 @@ public class WasmImplementationLimitationsSuite {
             final String failureType = actualFailureObject.getMember("failureType").asString();
             Assert.assertEquals("unexpected failure type", expectedFailureType.name, failureType);
             return;
+        } finally {
+            context.close();
         }
         throw new AssertionError("expected to be invalid");
     }

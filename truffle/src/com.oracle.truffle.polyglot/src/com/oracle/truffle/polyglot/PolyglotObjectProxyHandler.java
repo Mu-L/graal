@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,7 +51,9 @@ import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.NeverDefault;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.ArityException;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -61,10 +63,11 @@ import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.profiles.BranchProfile;
-import com.oracle.truffle.api.profiles.ConditionProfile;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
+import com.oracle.truffle.api.profiles.InlinedConditionProfile;
 import com.oracle.truffle.polyglot.PolyglotLanguageContext.ToGuestValuesNode;
-import com.oracle.truffle.polyglot.PolyglotObjectProxyHandlerFactory.ProxyInvokeNodeGen;
+import com.oracle.truffle.polyglot.PolyglotObjectProxyHandlerFactory.ObjectProxyNodeGen;
+import org.graalvm.polyglot.Context;
 
 final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWrapper {
 
@@ -73,11 +76,17 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
     final Object obj;
     final PolyglotLanguageContext languageContext;
     final CallTarget invoke;
+    /**
+     * Strong reference to the creator {@link Context} to prevent it from being garbage collected
+     * and closed while this object is still reachable.
+     */
+    final Context contextAnchor;
 
-    PolyglotObjectProxyHandler(Object obj, PolyglotLanguageContext languageContext, Class<?> interfaceClass) {
+    PolyglotObjectProxyHandler(Object obj, PolyglotLanguageContext languageContext, Class<?> interfaceClass, Type genericType) {
         this.obj = obj;
         this.languageContext = languageContext;
-        this.invoke = ObjectProxyNode.lookup(languageContext, obj.getClass(), interfaceClass);
+        this.invoke = ObjectProxyNode.lookup(languageContext, obj.getClass(), interfaceClass, genericType);
+        this.contextAnchor = languageContext.context.getContextAPI();
     }
 
     @Override
@@ -100,7 +109,7 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
         CompilerAsserts.neverPartOfCompilation();
         Object[] resolvedArguments = arguments == null ? EMPTY : arguments;
         try {
-            return invoke.call(languageContext, obj, method, resolvedArguments);
+            return invoke.call(null, languageContext, obj, method, resolvedArguments);
         } catch (UnsupportedOperationException e) {
             try {
                 return PolyglotFunctionProxyHandler.invokeDefault(this, proxy, method, resolvedArguments);
@@ -112,22 +121,21 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
     }
 
     @TruffleBoundary
-    static Object newProxyInstance(Class<?> clazz, Object obj, PolyglotLanguageContext languageContext) throws IllegalArgumentException {
-        return Proxy.newProxyInstance(clazz.getClassLoader(), new Class<?>[]{clazz}, new PolyglotObjectProxyHandler(obj, languageContext, clazz));
+    static Object newProxyInstance(Class<?> clazz, Type genericType, Object obj, PolyglotLanguageContext languageContext) throws IllegalArgumentException {
+        return Proxy.newProxyInstance(clazz.getClassLoader(), new Class<?>[]{clazz}, new PolyglotObjectProxyHandler(obj, languageContext, clazz, genericType));
     }
 
-    static final class ObjectProxyNode extends HostToGuestRootNode {
+    abstract static class ObjectProxyNode extends HostToGuestRootNode {
 
         final Class<?> receiverClass;
         final Class<?> interfaceType;
+        final Type genericType;
 
-        @Child private ProxyInvokeNode proxyInvoke = ProxyInvokeNodeGen.create();
-        @Child private ToGuestValuesNode toGuests = ToGuestValuesNode.create();
-
-        ObjectProxyNode(PolyglotLanguageInstance languageInstance, Class<?> receiverType, Class<?> interfaceType) {
+        ObjectProxyNode(PolyglotLanguageInstance languageInstance, Class<?> receiverType, Class<?> interfaceType, Type genericType) {
             super(languageInstance);
-            this.receiverClass = receiverType;
-            this.interfaceType = interfaceType;
+            this.receiverClass = Objects.requireNonNull(receiverType);
+            this.interfaceType = Objects.requireNonNull(interfaceType);
+            this.genericType = genericType;
         }
 
         @SuppressWarnings("unchecked")
@@ -141,11 +149,14 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
             return "InterfaceProxy<" + receiverClass + ">";
         }
 
-        @Override
-        protected Object executeImpl(PolyglotLanguageContext languageContext, Object receiver, Object[] args) {
+        @Specialization
+        final Object doDefault(PolyglotLanguageContext languageContext, Object receiver, Object[] args,
+                        @Bind Node node,
+                        @Cached ProxyInvokeNode proxyInvoke,
+                        @Cached ToGuestValuesNode toGuests) {
             Method method = (Method) args[ARGUMENT_OFFSET];
-            Object[] arguments = toGuests.apply(languageContext, (Object[]) args[ARGUMENT_OFFSET + 1]);
-            return proxyInvoke.execute(languageContext, receiver, method, arguments);
+            Object[] arguments = toGuests.execute(node, languageContext, (Object[]) args[ARGUMENT_OFFSET + 1]);
+            return proxyInvoke.execute(languageContext, receiver, method, genericType, arguments);
         }
 
         @Override
@@ -153,6 +164,7 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
             int result = 1;
             result = 31 * result + Objects.hashCode(receiverClass);
             result = 31 * result + Objects.hashCode(interfaceType);
+            result = 31 * result + Objects.hashCode(genericType);
             return result;
         }
 
@@ -162,11 +174,11 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
                 return false;
             }
             ObjectProxyNode other = (ObjectProxyNode) obj;
-            return receiverClass == other.receiverClass && interfaceType == other.interfaceType;
+            return receiverClass == other.receiverClass && interfaceType == other.interfaceType && Objects.equals(genericType, other.genericType);
         }
 
-        static CallTarget lookup(PolyglotLanguageContext languageContext, Class<?> receiverClass, Class<?> interfaceClass) {
-            ObjectProxyNode node = new ObjectProxyNode(languageContext.getLanguageInstance(), receiverClass, interfaceClass);
+        static CallTarget lookup(PolyglotLanguageContext languageContext, Class<?> receiverClass, Class<?> interfaceClass, Type genericType) {
+            ObjectProxyNode node = ObjectProxyNodeGen.create(languageContext.getLanguageInstance(), receiverClass, interfaceClass, genericType);
             CallTarget target = lookupHostCodeCache(languageContext, node, CallTarget.class);
             if (target == null) {
                 target = installHostCodeCache(languageContext, node, node.getCallTarget(), CallTarget.class);
@@ -177,7 +189,7 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
 
     abstract static class ProxyInvokeNode extends Node {
 
-        public abstract Object execute(PolyglotLanguageContext languageContext, Object receiver, Method method, Object[] arguments);
+        public abstract Object execute(PolyglotLanguageContext languageContext, Object receiver, Method method, Type genericType, Object[] arguments);
 
         /*
          * The limit of the proxy node is unbounded. There are only so many methods a Java interface
@@ -192,38 +204,48 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
          * interned.
          */
         @Specialization(guards = {"cachedMethod == method"}, limit = "LIMIT")
-        @SuppressWarnings("unused")
-        protected Object doCachedMethod(PolyglotLanguageContext languageContext, Object receiver, Method method, Object[] arguments,
+
+        /*
+         * One of the rare occurrences where we want to suppress truffle warnings, we can't make
+         * this method static even though it is recommended.
+         */
+        @SuppressWarnings({"unused", "truffle-static-method"})
+        protected Object doCachedMethod(PolyglotLanguageContext languageContext, Object receiver, Method method, Type genericType, Object[] arguments,
+                        @Bind Node node,
                         @Cached("method") Method cachedMethod,
                         @Cached("method.getName()") String name,
-                        @Cached("getMethodReturnType(method)") Class<?> returnClass,
-                        @Cached("getMethodGenericReturnType(method)") Type returnType,
+                        @Cached("getMethodGenericReturnType(method, genericType)") Type returnType,
+                        @Cached("getMethodReturnType(method, returnType)") Class<?> returnClass,
                         @CachedLibrary("receiver") InteropLibrary receivers,
                         @CachedLibrary(limit = "LIMIT") InteropLibrary members,
-                        @Cached ConditionProfile branchProfile,
+                        @Cached InlinedConditionProfile branchProfile,
                         @Cached PolyglotToHostNode toHost,
-                        @Cached BranchProfile error) {
-            Object result = invokeOrExecute(languageContext, receiver, arguments, name, receivers, members, branchProfile, error);
-            return toHost.execute(languageContext, result, returnClass, returnType);
+                        @Cached InlinedBranchProfile error) {
+            assert Objects.equals(ProxyInvokeNode.getMethodGenericReturnType(method, genericType), returnType) &&
+                            Objects.equals(ProxyInvokeNode.getMethodReturnType(method, returnType), returnClass);
+            Object result = invokeOrExecute(node, languageContext, receiver, arguments, name, receivers, members, branchProfile, error);
+            return toHost.execute(node, languageContext, result, returnClass, returnType);
         }
 
-        static Class<?> getMethodReturnType(Method method) {
+        @NeverDefault
+        static Class<?> getMethodReturnType(Method method, Type genericReturnType) {
             if (method == null || method.getReturnType() == void.class) {
                 return Object.class;
             }
-            return method.getReturnType();
+            return EngineAccessor.HOST.getRawTypeFromGenericType(genericReturnType, method.getReturnType());
         }
 
-        static Type getMethodGenericReturnType(Method method) {
+        @NeverDefault
+        static Type getMethodGenericReturnType(Method method, Type genericTargetType) {
             if (method == null || method.getReturnType() == void.class) {
                 return Object.class;
             }
-            return method.getGenericReturnType();
+            return EngineAccessor.HOST.findActualTypeArgument(method.getGenericReturnType(), genericTargetType);
         }
 
-        private Object invokeOrExecute(PolyglotLanguageContext polyglotContext, Object receiver, Object[] arguments, String member, InteropLibrary receivers,
+        private Object invokeOrExecute(Node node, PolyglotLanguageContext polyglotContext, Object receiver, Object[] arguments, String member, InteropLibrary receivers,
                         InteropLibrary members,
-                        ConditionProfile invokeProfile, BranchProfile error) {
+                        InlinedConditionProfile invokeProfile, InlinedBranchProfile error) {
             try {
                 boolean localInvokeFailed = this.invokeFailed;
                 if (!localInvokeFailed) {
@@ -236,7 +258,7 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
                     }
                 }
                 if (localInvokeFailed) {
-                    if (invokeProfile.profile(receivers.isMemberInvocable(receiver, member))) {
+                    if (invokeProfile.profile(node, receivers.isMemberInvocable(receiver, member))) {
                         return receivers.invokeMember(receiver, member, arguments);
                     } else if (receivers.isMemberReadable(receiver, member)) {
                         Object readMember = receivers.readMember(receiver, member);
@@ -247,19 +269,19 @@ final class PolyglotObjectProxyHandler implements InvocationHandler, PolyglotWra
                         }
                     }
                 }
-                error.enter();
+                error.enter(node);
                 throw PolyglotInteropErrors.invokeUnsupported(polyglotContext, receiver, member);
             } catch (UnknownIdentifierException e) {
-                error.enter();
+                error.enter(node);
                 throw PolyglotInteropErrors.invokeUnsupported(polyglotContext, receiver, member);
             } catch (UnsupportedTypeException e) {
-                error.enter();
+                error.enter(node);
                 throw PolyglotInteropErrors.invalidExecuteArgumentType(polyglotContext, receiver, e.getSuppliedValues());
             } catch (ArityException e) {
-                error.enter();
+                error.enter(node);
                 throw PolyglotInteropErrors.invalidExecuteArity(polyglotContext, receiver, arguments, e.getExpectedMinArity(), e.getExpectedMaxArity(), e.getActualArity());
             } catch (UnsupportedMessageException e) {
-                error.enter();
+                error.enter(node);
                 throw PolyglotInteropErrors.invokeUnsupported(polyglotContext, receiver, member);
             }
         }

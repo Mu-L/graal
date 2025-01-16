@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -474,9 +474,15 @@ public class MethodGuardsTest {
 
         private boolean hiddenValue;
 
+        @SuppressWarnings("truffle-guard")
         @Specialization(guards = "method()")
         static String do1(int value) {
             return "do1";
+        }
+
+        @Specialization
+        static String do2(int value) {
+            return "do2";
         }
 
         boolean method() {

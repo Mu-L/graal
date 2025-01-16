@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -58,7 +58,7 @@ import com.oracle.truffle.api.library.Library;
 import com.oracle.truffle.api.test.AbstractParametrizedLibraryTest;
 import com.oracle.truffle.api.test.ExpectError;
 
-@SuppressWarnings({"static-method", "unused"})
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing", "static-method", "unused"})
 public class MultiExportTest extends AbstractParametrizedLibraryTest {
 
     @Parameters(name = "{0}")

@@ -2,8 +2,23 @@
 
 This changelog summarizes major changes to the WebAssembly engine implemented in GraalVM (GraalWasm).
 
+## Version 24.2.0
+
+* Updated developer metadata of Maven artifacts.
+* Deprecated the `--wasm.AsyncParsingBinarySize` and `--wasm.AsyncParsingStackSize` options. These options no longer have any effect and will be removed in a future release.
+
+## Version 24.1.0
+
+* Implemented the [SIMD](https://github.com/WebAssembly/simd) proposal. This feature is enabled by default and can be disabled with the option `--wasm.SIMD=false`.
+* Implemented `clock_res_get`, `fd_advise`, `fd_datasync`, `fd_fdstat_set_rights`, `fd_filestat_set_size`, `fd_pread`, `fd_pwrite`, `fd_readdir`, `fd_renumber`, `fd_sync` and `fd_tell` in `wasi_snapshot_preview1`.
+
+## Version 23.1.0
+
+* Implemented the [extended const expressions](https://github.com/WebAssembly/extended-const) proposal. The feature can be enabled with the option `--wasm.ExtendedConstExpressions=true`.
+
 ## Version 23.0.0
 
+* Added experimental debugging support for DWARFv4. This enables debugging of C, C++, and Rust applications.
 * Added experimental support for [Memory64](https://github.com/WebAssembly/memory64). The feature can be enabled with the option `--wasm.Memory64=true`.
 * Implemented the [Bulk-Memory](https://github.com/WebAssembly/bulk-memory-operations) and [Reference-Types](https://github.com/WebAssembly/reference-types) proposal. They can be disabled with the option `--wasm.BulkMemoryAndRefTypes`.
 

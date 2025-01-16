@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -44,6 +44,7 @@ package org.graalvm.wasm.predefined.wasi.fd;
 import com.oracle.truffle.api.TruffleFile;
 import com.oracle.truffle.api.nodes.Node;
 import org.graalvm.wasm.memory.WasmMemory;
+import org.graalvm.wasm.predefined.wasi.types.Dirent;
 import org.graalvm.wasm.predefined.wasi.types.Errno;
 import org.graalvm.wasm.predefined.wasi.types.Fdstat;
 import org.graalvm.wasm.predefined.wasi.types.Filestat;
@@ -53,6 +54,7 @@ import org.graalvm.wasm.predefined.wasi.types.Iovec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.SeekableByteChannel;
 import java.util.concurrent.TimeUnit;
 
 final class FdUtils {
@@ -72,16 +74,14 @@ final class FdUtils {
                 final int iovecAddress = iovecArrayAddress + i * Iovec.BYTES;
                 final int start = Iovec.readBuf(node, memory, iovecAddress);
                 final int len = Iovec.readBufLen(node, memory, iovecAddress);
-                for (int j = 0; j < len; j++) {
-                    stream.write(memory.load_i32_8u(node, start + j));
-                    ++totalBytesWritten;
-                }
+                memory.copyToStream(node, stream, start, len);
+                totalBytesWritten += len;
             }
         } catch (IOException e) {
             return Errno.Io;
         }
 
-        memory.store_i32(null, sizeAddress, totalBytesWritten);
+        memory.store_i32(node, sizeAddress, totalBytesWritten);
         return Errno.Success;
     }
 
@@ -91,27 +91,51 @@ final class FdUtils {
         }
 
         int totalBytesRead = 0;
-        int byteRead = 0;
         try {
             for (int i = 0; i < iovecCount; i++) {
                 final int iovecAddress = iovecArrayAddress + i * Iovec.BYTES;
                 final int start = Iovec.readBuf(node, memory, iovecAddress);
                 final int len = Iovec.readBufLen(node, memory, iovecAddress);
-                for (int j = 0; j < len; j++) {
-                    byteRead = stream.read();
-                    if (byteRead == -1) {
-                        break;
-                    }
-                    memory.store_i32_8(node, start + j, (byte) byteRead);
-                    ++totalBytesRead;
+                final int bytesRead = memory.copyFromStream(node, stream, start, len);
+                if (bytesRead == -1) {
+                    break;
                 }
+                totalBytesRead += bytesRead;
             }
         } catch (IOException e) {
             return Errno.Io;
         }
 
-        memory.store_i32(null, sizeAddress, totalBytesRead);
+        memory.store_i32(node, sizeAddress, totalBytesRead);
         return Errno.Success;
+    }
+
+    static Errno writeToStreamAt(Node node, WasmMemory memory, OutputStream stream, int iovecArrayAddress, int iovecCount, SeekableByteChannel channel, long offset, int sizeAddress) {
+        try {
+            long currentOffset = channel.position();
+            try {
+                channel.position(offset);
+                return writeToStream(node, memory, stream, iovecArrayAddress, iovecCount, sizeAddress);
+            } finally {
+                channel.position(currentOffset);
+            }
+        } catch (IOException e) {
+            return Errno.Io;
+        }
+    }
+
+    static Errno readFromStreamAt(Node node, WasmMemory memory, InputStream stream, int iovecArrayAddress, int iovecCount, SeekableByteChannel channel, long offset, int sizeAddress) {
+        try {
+            long currentOffset = channel.position();
+            try {
+                channel.position(offset);
+                return readFromStream(node, memory, stream, iovecArrayAddress, iovecCount, sizeAddress);
+            } finally {
+                channel.position(currentOffset);
+            }
+        } catch (IOException e) {
+            return Errno.Io;
+        }
     }
 
     /**
@@ -138,21 +162,48 @@ final class FdUtils {
         try {
             Filestat.writeFiletype(node, memory, address, getType(file));
             Filestat.writeSize(node, memory, address, file.getAttribute(TruffleFile.SIZE));
-            Filestat.writeAtim(node, memory, address, file.getAttribute(TruffleFile.LAST_ACCESS_TIME).to(TimeUnit.SECONDS));
-            Filestat.writeMtim(node, memory, address, file.getAttribute(TruffleFile.LAST_MODIFIED_TIME).to(TimeUnit.SECONDS));
+            Filestat.writeAtim(node, memory, address, file.getAttribute(TruffleFile.LAST_ACCESS_TIME).to(TimeUnit.NANOSECONDS));
+            Filestat.writeMtim(node, memory, address, file.getAttribute(TruffleFile.LAST_MODIFIED_TIME).to(TimeUnit.NANOSECONDS));
 
             try {
                 Filestat.writeDev(node, memory, address, file.getAttribute(TruffleFile.UNIX_DEV));
                 Filestat.writeIno(node, memory, address, file.getAttribute(TruffleFile.UNIX_INODE));
                 Filestat.writeNlink(node, memory, address, file.getAttribute(TruffleFile.UNIX_NLINK));
-                Filestat.writeCtim(node, memory, address, file.getAttribute(TruffleFile.UNIX_CTIME).to(TimeUnit.SECONDS));
+                Filestat.writeCtim(node, memory, address, file.getAttribute(TruffleFile.UNIX_CTIME).to(TimeUnit.NANOSECONDS));
             } catch (UnsupportedOperationException e) {
                 // GR-29297: these attributes are currently not supported on non-Unix platforms.
             }
         } catch (IOException e) {
             return Errno.Io;
+        } catch (SecurityException e) {
+            return Errno.Acces;
         }
         return Errno.Success;
+    }
+
+    static int writeDirent(Node node, WasmMemory memory, int address, TruffleFile file, int nameLength, long offset) throws IOException {
+        Dirent.writeDNext(node, memory, address, offset);
+        try {
+            Dirent.writeDIno(node, memory, address, file.getAttribute(TruffleFile.UNIX_INODE));
+        } catch (UnsupportedOperationException e) {
+            // GR-29297: these attributes are currently not supported on non-Unix platforms.
+        }
+        Dirent.writeDNamlen(node, memory, address, nameLength);
+        Dirent.writeDType(node, memory, address, FdUtils.getType(file));
+        return Dirent.BYTES;
+    }
+
+    static byte[] writeDirentToByteArray(TruffleFile file, int nameLength, long offset) throws IOException {
+        byte[] buffer = new byte[Dirent.BYTES];
+        Dirent.writeDNextToByteArray(buffer, 0, offset);
+        try {
+            Dirent.writeDInoToByteArray(buffer, 0, file.getAttribute(TruffleFile.UNIX_INODE));
+        } catch (UnsupportedOperationException e) {
+            // GR-29297: these attributes are currently not supported on non-Unix platforms.
+        }
+        Dirent.writeDNamlen(buffer, 0, nameLength);
+        Dirent.writeDType(buffer, 0, FdUtils.getType(file));
+        return buffer;
     }
 
     static Filetype getType(TruffleFile file) throws IOException {

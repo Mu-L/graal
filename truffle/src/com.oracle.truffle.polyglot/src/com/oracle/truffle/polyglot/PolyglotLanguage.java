@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -46,15 +46,16 @@ import static com.oracle.truffle.polyglot.EngineAccessor.NODES;
 
 import java.util.Set;
 
+import org.graalvm.home.Version;
 import org.graalvm.options.OptionDescriptors;
-import org.graalvm.polyglot.Language;
+import org.graalvm.polyglot.SandboxPolicy;
+import org.graalvm.polyglot.impl.AbstractPolyglotImpl.APIAccess;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.polyglot.PolyglotLocals.LocalLocation;
-import org.graalvm.home.Version;
 
 final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl.VMObject {
 
@@ -62,7 +63,6 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
     final LanguageCache cache;
     final LanguageInfo info;
 
-    Language api; // effectively final
     final int engineIndex;
     final RuntimeException initError;
 
@@ -180,6 +180,16 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
         return engine;
     }
 
+    @Override
+    public APIAccess getAPIAccess() {
+        return engine.apiAccess;
+    }
+
+    @Override
+    public PolyglotImpl getImpl() {
+        return engine.impl;
+    }
+
     private void ensureInitialized(PolyglotLanguageInstance instance) {
         if (!initialized) {
             synchronized (engine.lock) {
@@ -200,7 +210,7 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
         if (optionValues == null) {
             synchronized (engine.lock) {
                 if (optionValues == null) {
-                    optionValues = new OptionValuesImpl(getOptionsInternal(), false);
+                    optionValues = new OptionValuesImpl(getOptionsInternal(), engine.sandboxPolicy, false, false);
                 }
             }
         }
@@ -306,5 +316,14 @@ final class PolyglotLanguage implements com.oracle.truffle.polyglot.PolyglotImpl
 
     String getWebsite() {
         return websiteSubstitutions(cache.getWebsite());
+    }
+
+    void validateSandbox(SandboxPolicy sandboxPolicy) {
+        SandboxPolicy languageSandboxPolicy = cache.getSandboxPolicy();
+        if (sandboxPolicy.isStricterThan(languageSandboxPolicy)) {
+            throw PolyglotEngineException.illegalArgument(PolyglotImpl.sandboxPolicyException(sandboxPolicy,
+                            String.format("The language %s can only be used up to the %s sandbox policy.", getId(), languageSandboxPolicy),
+                            String.format("do not enable %s language by removing it from a list of permitted languages in the Context.newBuilder(String...)", getId())));
+        }
     }
 }

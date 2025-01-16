@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.api.nodes;
 
+import java.lang.invoke.MethodHandles.Lookup;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.locks.Lock;
@@ -71,6 +72,11 @@ final class NodeAccessor extends Accessor {
     static final class AccessNodes extends NodeSupport {
 
         @Override
+        public Lookup nodeLookup() {
+            return Node.lookup();
+        }
+
+        @Override
         public boolean isInstrumentable(RootNode rootNode) {
             return rootNode.isInstrumentable();
         }
@@ -88,6 +94,11 @@ final class NodeAccessor extends Accessor {
         @Override
         public int adoptChildrenAndCount(RootNode rootNode) {
             return rootNode.adoptChildrenAndCount();
+        }
+
+        @Override
+        public int computeSize(RootNode rootNode) {
+            return rootNode.computeSize();
         }
 
         @Override
@@ -119,6 +130,11 @@ final class NodeAccessor extends Accessor {
         public List<TruffleStackTraceElement> findAsynchronousFrames(CallTarget target, Frame frame) {
             CompilerAsserts.neverPartOfCompilation();
             return ((RootCallTarget) target).getRootNode().findAsynchronousFrames(frame);
+        }
+
+        @Override
+        public void prepareForInstrumentation(RootNode root, Set<Class<?>> tags) {
+            root.prepareForInstrumentation(tags);
         }
 
         @Override
@@ -158,8 +174,8 @@ final class NodeAccessor extends Accessor {
         }
 
         @Override
-        public Object translateStackTraceElement(TruffleStackTraceElement stackTraceLement) {
-            return stackTraceLement.getTarget().getRootNode().translateStackTraceElement(stackTraceLement);
+        public Object translateStackTraceElement(TruffleStackTraceElement stackTraceElement) {
+            return stackTraceElement.getTarget().getRootNode().translateStackTraceElement(stackTraceElement);
         }
 
         @Override
@@ -180,6 +196,33 @@ final class NodeAccessor extends Accessor {
         @Override
         public EncapsulatingNodeReference createEncapsulatingNodeReference(Thread thread) {
             return new EncapsulatingNodeReference(thread);
+        }
+
+        @Override
+        public boolean isSameFrame(RootNode root, Frame frame1, Frame frame2) {
+            return root.isSameFrame(frame1, frame2);
+        }
+
+        @Override
+        public int findBytecodeIndex(RootNode rootNode, Node callNode, Frame frame) {
+            return rootNode.findBytecodeIndex(callNode, frame);
+        }
+
+        @Override
+        public boolean isCaptureFramesForTrace(RootNode rootNode, boolean compiled) {
+            return rootNode.isCaptureFramesForTrace(compiled);
+        }
+
+        @Override
+        public boolean prepareForCompilation(RootNode rootNode, boolean rootCompilation, int compilationTier, boolean lastTier) {
+            return rootNode.prepareForCompilation(rootCompilation, compilationTier, lastTier);
+        }
+
+        @Override
+        public Node findInstrumentableCallNode(RootNode root, Node callNode, Frame frame, int bytecodeIndex) {
+            Node node = root.findInstrumentableCallNode(callNode, frame, bytecodeIndex);
+            assert node == null || node.getRootNode() != null : "Invariant violated: Returned instrumentable call node is not adopted.";
+            return node;
         }
 
     }

@@ -39,6 +39,7 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.Name;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
@@ -66,9 +67,6 @@ public final class SubstitutionProcessor extends EspressoProcessor {
     // InlinedMethodPredicate.class
     private TypeElement noPredicate;
 
-    // StaticObject
-    private TypeElement staticObjectElement;
-
     // region Various String constants.
 
     private static final String SUBSTITUTION_PACKAGE = "com.oracle.truffle.espresso.substitutions";
@@ -76,7 +74,6 @@ public final class SubstitutionProcessor extends EspressoProcessor {
     private static final String ESPRESSO_SUBSTITUTIONS = SUBSTITUTION_PACKAGE + "." + "EspressoSubstitutions";
     private static final String SUBSTITUTION = SUBSTITUTION_PACKAGE + "." + "Substitution";
     private static final String INLINE_IN_BYTECODE = SUBSTITUTION_PACKAGE + "." + "InlineInBytecode";
-    private static final String STATIC_OBJECT = "com.oracle.truffle.espresso.runtime.StaticObject";
     private static final String JAVA_TYPE = SUBSTITUTION_PACKAGE + "." + "JavaType";
     private static final String NO_PROVIDER = SUBSTITUTION_PACKAGE + "." + "SubstitutionNamesProvider" + "." + "NoProvider";
     private static final String NO_FILTER = SUBSTITUTION_PACKAGE + "." + "VersionFilter" + "." + "NoFilter";
@@ -87,7 +84,7 @@ public final class SubstitutionProcessor extends EspressoProcessor {
     private static final String SUBSTITUTION_CLASS_NAMES = "substitutionClassNames";
     private static final String VERSION_FILTER_METHOD = "isValidFor";
     private static final String INLINE_IN_BYTECODE_METHOD = "inlineInBytecode";
-    private static final String JAVA_VERSION = "com.oracle.truffle.espresso.runtime.JavaVersion";
+    private static final String JAVA_VERSION = "com.oracle.truffle.espresso.classfile.JavaVersion";
 
     private static final String INSTANCE = "INSTANCE";
 
@@ -184,15 +181,11 @@ public final class SubstitutionProcessor extends EspressoProcessor {
             }
         } else if (typeMirror.getKind() != TypeKind.VOID) {
             // Reference type.
-            if (!processingEnv.getTypeUtils().isSameType(typeMirror, staticObjectElement.asType())) {
+            if (!processingEnv.getTypeUtils().isSameType(typeMirror, staticObject.asType())) {
                 processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
                                 headerMessage + " is not of type StaticObject", element);
             }
-            AnnotationMirror javaTypeMirror = getAnnotation(typeMirror, javaType);
-            if (javaTypeMirror == null) {
-                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR,
-                                headerMessage + " must be annotated with e.g. @JavaType(String.class) according to the substituted method signature", element);
-            }
+            // @JavaType annotation check is done in SubstitutionProcessor.getGuestTypes
         }
     }
 
@@ -317,11 +310,11 @@ public final class SubstitutionProcessor extends EspressoProcessor {
 
             String actualMethodName = getSubstutitutedMethodName(element);
 
-            // Obtain the (fully qualified) guest types parameters of the element.
-            List<String> guestTypes = getGuestTypes(targetMethod);
-
             // Obtain the hasReceiver() value from the @Substitution annotation.
             boolean hasReceiver = getAnnotationValue(subst, "hasReceiver", Boolean.class);
+
+            // Obtain the (fully qualified) guest types parameters of the element.
+            List<String> guestTypes = getGuestTypes(targetMethod, hasReceiver);
 
             // Obtain the fully qualified guest return type of the element.
             String returnType = getReturnTypeFromHost(targetMethod);
@@ -399,11 +392,12 @@ public final class SubstitutionProcessor extends EspressoProcessor {
             // passing the method as anchor for reporting errors instead.
             return getClassFromJavaType(a, method);
         }
-        return getInternalName(returnType.toString());
+        return getInternalName(returnType);
     }
 
-    private List<String> getGuestTypes(ExecutableElement inner) {
+    private List<String> getGuestTypes(ExecutableElement inner, boolean hasReceiver) {
         ArrayList<String> parameterTypeNames = new ArrayList<>();
+        boolean isReceiver = hasReceiver;
         for (VariableElement parameter : inner.getParameters()) {
             if (isActualParameter(parameter)) {
                 AnnotationMirror mirror = getAnnotation(parameter.asType(), javaType);
@@ -412,12 +406,13 @@ public final class SubstitutionProcessor extends EspressoProcessor {
                 } else {
                     // @JavaType annotation not found -> primitive or j.l.Object
                     // All StaticObject(s) parameters must be annotated with @JavaType.
-                    if (processingEnv.getTypeUtils().isSameType(parameter.asType(), staticObjectElement.asType())) {
-                        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "StaticObject parameters require the @JavaType annotation", parameter);
+                    if (!isReceiver && processingEnv.getTypeUtils().isSameType(parameter.asType(), staticObject.asType())) {
+                        processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "non-receiver StaticObject parameters require the @JavaType annotation", parameter);
                     }
-                    String arg = getInternalName(parameter.asType().toString());
+                    String arg = getInternalName(parameter.asType());
                     parameterTypeNames.add(arg);
                 }
+                isReceiver = false;
             }
         }
         return parameterTypeNames;
@@ -460,7 +455,7 @@ public final class SubstitutionProcessor extends EspressoProcessor {
         // .internalName overrides .value .
         if (internalName == null || internalName.isEmpty()) {
             TypeMirror value = getAnnotationValue(annotation, "value", TypeMirror.class);
-            internalName = getInternalName(value.toString());
+            internalName = getInternalName(value);
             // JavaType.value = JavaType.class is used as the "no type" type, forbid accidental
             // usages.
             if (processingEnv.getTypeUtils().isSameType(value, javaType.asType())) {
@@ -478,69 +473,62 @@ public final class SubstitutionProcessor extends EspressoProcessor {
         return internalName;
     }
 
-    private static String getArraySubstring(int nbDim) {
-        char[] chars = new char[nbDim];
-        Arrays.fill(chars, '[');
-        return new String(chars);
-    }
-
     /**
-     * Given a qualified class name, returns the fully qualified internal name of the class.
+     * Given a type, returns its fully qualified internal name.
      * 
      * In particular,
-     * <li>This transforms primitives (boolean, int) to their JVM signature (Z, I).
-     * <li>Replaces "." by "/" and, if not present, prepends a "L" an appends a ";" to reference
-     * types (/ex: java.lang.Object -> Ljava/lang/Object;)
-     * <li>If an array is passed, it is of the form "java.lang.Object[]" or "byte[][]". This
-     * prepends the correct number of "[" before applying this function to the name without the
-     * "[]". (/ex: byte[][] -> [[B)
+     * <li>Primitives (boolean, int) use their JVM signature (Z, I).
+     * <li>Use "/" rather than "." to separate packages (/ex: java.lang.Object ->
+     * Ljava/lang/Object;)
+     * <li>Array types use "[" followed by the internal name of the component type.
      */
-    private String getInternalName(String className) {
-        int arrayStart = className.indexOf("[]");
-        if (arrayStart != -1) {
-            int nbDim = 0;
-            boolean isOpen = false;
-            for (int i = arrayStart; i < className.length(); i++) {
-                if (isOpen) {
-                    if (className.charAt(i) != ']') {
-                        throw new IllegalArgumentException("Malformed class name: " + className);
-                    }
-                    nbDim++;
-                } else {
-                    if (className.charAt(i) != '[') {
-                        throw new IllegalArgumentException("Malformed class name: " + className);
-                    }
-                }
-                isOpen = !isOpen;
-            }
-            return getArraySubstring(nbDim) + getInternalName(className.substring(0, arrayStart));
+    private String getInternalName(TypeMirror type) {
+        int arrayDims = 0;
+        TypeMirror elementalType = type;
+        while (elementalType.getKind() == TypeKind.ARRAY) {
+            elementalType = ((ArrayType) elementalType).getComponentType();
+            arrayDims += 1;
         }
 
-        if (className.startsWith("[") || className.endsWith(";")) {
-            return className.replace('.', '/');
+        if (arrayDims == 0) {
+            return getNonArrayInternalName(type);
         }
-        switch (className) {
-            case "boolean":
-                return "Z";
-            case "byte":
-                return "B";
-            case "char":
-                return "C";
-            case "short":
-                return "S";
-            case "int":
-                return "I";
-            case "float":
-                return "F";
-            case "double":
-                return "D";
-            case "long":
-                return "J";
-            case "void":
-                return "V";
+        StringBuilder sb = new StringBuilder();
+        sb.repeat('[', arrayDims);
+        sb.append(getNonArrayInternalName(elementalType));
+        return sb.toString();
+    }
+
+    private String getNonArrayInternalName(TypeMirror type) {
+        TypeKind typeKind = type.getKind();
+        assert typeKind != TypeKind.ARRAY;
+        if (typeKind.isPrimitive() || typeKind == TypeKind.VOID) {
+            return switch (typeKind) {
+                case BOOLEAN -> "Z";
+                case BYTE -> "B";
+                case CHAR -> "C";
+                case SHORT -> "S";
+                case INT -> "I";
+                case FLOAT -> "F";
+                case DOUBLE -> "D";
+                case LONG -> "J";
+                case VOID -> "V";
+                default -> throw new IllegalStateException("Unexpected primitive type kind: " + typeKind);
+            };
         }
-        // Reference type.
-        return "L" + className.replace('.', '/') + ";";
+        if (typeKind != TypeKind.DECLARED) {
+            throw new IllegalStateException("Unexpected type kind: " + typeKind);
+        }
+        Element element = processingEnv.getTypeUtils().asElement(type);
+        Name binaryName = processingEnv.getElementUtils().getBinaryName((TypeElement) element);
+        StringBuilder sb = new StringBuilder();
+        sb.append("L").append(binaryName).append(';');
+        int idx = sb.indexOf(".", 1);
+        while (idx >= 0) {
+            sb.setCharAt(idx, '/');
+            idx = sb.indexOf(".", idx + 1);
+        }
+        return sb.toString();
     }
 
     private List<String> getEspressoTypes(ExecutableElement inner) {
@@ -567,7 +555,6 @@ public final class SubstitutionProcessor extends EspressoProcessor {
         // Set up the different annotations, along with their values, that we will need.
         this.espressoSubstitutions = getTypeElement(ESPRESSO_SUBSTITUTIONS);
         this.substitutionAnnotation = getTypeElement(SUBSTITUTION);
-        this.staticObjectElement = getTypeElement(STATIC_OBJECT);
         this.inlineInBytecodeAnnotation = getTypeElement(INLINE_IN_BYTECODE);
         this.javaType = getTypeElement(JAVA_TYPE);
         this.noProvider = getTypeElement(NO_PROVIDER);

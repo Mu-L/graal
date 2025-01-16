@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,10 +23,9 @@
 
 package com.oracle.truffle.espresso.substitutions;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-
-import org.graalvm.home.HomeFinder;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Bind;
@@ -35,7 +34,8 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.DirectCallNode;
 import com.oracle.truffle.espresso.EspressoLanguage;
 import com.oracle.truffle.espresso.meta.Meta;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.EspressoContext;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 @EspressoSubstitutions
 final class Target_jdk_internal_module_SystemModuleFinders {
@@ -48,14 +48,14 @@ final class Target_jdk_internal_module_SystemModuleFinders {
 
         @Specialization
         @JavaType(internalName = "Ljava/lang/module/ModuleFinder;")
-        StaticObject executeImpl(
+        StaticObject doDefault(
                         @JavaType(internalName = "Ljdk/internal/module/SystemModules;") StaticObject systemModules,
                         @Bind("getMeta()") Meta meta,
                         @Cached("create(meta.jdk_internal_module_SystemModuleFinders_of.getCallTargetNoSubstitution())") DirectCallNode original) {
             // construct a ModuleFinder that can locate our Espresso-specific platform modules
             // and compose it with the resulting module finder from the original call
             StaticObject moduleFinder = (StaticObject) original.call(systemModules);
-            StaticObject extensionPathArray = getEspressoExtensionPaths(meta);
+            StaticObject extensionPathArray = getEspressoExtensionPaths(getContext());
             if (extensionPathArray != StaticObject.NULL) {
                 moduleFinder = extendModuleFinders(getLanguage(), meta, moduleFinder, extensionPathArray);
             }
@@ -70,13 +70,13 @@ final class Target_jdk_internal_module_SystemModuleFinders {
 
         @Specialization
         @JavaType(internalName = "Ljava/lang/module/ModuleFinder;")
-        StaticObject executeImpl(
+        StaticObject doDefault(
                         @Bind("getMeta()") Meta meta,
                         @Cached("create(meta.jdk_internal_module_SystemModuleFinders_ofSystem.getCallTargetNoSubstitution())") DirectCallNode original) {
             // construct ModuleFinders that can locate our Espresso-specific platform modules
             // and compose it with the resulting module finder from the original call
             StaticObject moduleFinder = (StaticObject) original.call();
-            StaticObject extensionPathArray = getEspressoExtensionPaths(meta);
+            StaticObject extensionPathArray = getEspressoExtensionPaths(getContext());
             if (extensionPathArray != StaticObject.NULL) {
                 moduleFinder = extendModuleFinders(getLanguage(), meta, moduleFinder, extensionPathArray);
             }
@@ -85,15 +85,20 @@ final class Target_jdk_internal_module_SystemModuleFinders {
     }
 
     @TruffleBoundary
-    private static StaticObject getEspressoExtensionPaths(Meta meta) {
+    private static StaticObject getEspressoExtensionPaths(EspressoContext context) {
         ArrayList<StaticObject> extensionPaths = new ArrayList<>(2);
-        for (ModuleExtension me : ModuleExtension.get(meta.getContext())) {
-            extensionPaths.add(getEspressoModulePath(meta, me.jarName()));
+        for (ModuleExtension me : ModuleExtension.getAllExtensions(context)) {
+            Path jar = context.getEspressoLibs().resolve(me.jarName());
+            if (Files.notExists(jar)) {
+                context.getLogger().warning("Missing jar for extension module" + me.moduleName() + ": " + jar);
+                continue;
+            }
+            extensionPaths.add(getEspressoModulePath(context, jar));
         }
-        if (!extensionPaths.isEmpty()) {
-            return meta.java_nio_file_Path.allocateReferenceArray(extensionPaths.size(), extensionPaths::get);
-        } else {
+        if (extensionPaths.isEmpty()) {
             return StaticObject.NULL;
+        } else {
+            return context.getMeta().java_nio_file_Path.allocateReferenceArray(extensionPaths.size(), extensionPaths::get);
         }
     }
 
@@ -101,22 +106,21 @@ final class Target_jdk_internal_module_SystemModuleFinders {
     private static StaticObject extendModuleFinders(EspressoLanguage language, Meta meta, StaticObject moduleFinder, StaticObject pathArray) {
         // ModuleFinder extension = ModulePath.of(pathArray);
         // moduleFinder = ModuleFinder.compose(extension, moduleFinder);
-        StaticObject extension = (StaticObject) meta.jdk_internal_module_ModulePath_of.invokeDirect(StaticObject.NULL, pathArray);
+        StaticObject extension = (StaticObject) meta.jdk_internal_module_ModulePath_of.invokeDirectStatic(pathArray);
         StaticObject moduleFinderArray = meta.java_lang_module_ModuleFinder.allocateReferenceArray(2);
         StaticObject[] unwrapped = moduleFinderArray.unwrap(language);
         unwrapped[0] = extension;
         unwrapped[1] = moduleFinder;
-        return (StaticObject) meta.java_lang_module_ModuleFinder_compose.invokeDirect(StaticObject.NULL, moduleFinderArray);
+        return (StaticObject) meta.java_lang_module_ModuleFinder_compose.invokeDirectStatic(moduleFinderArray);
     }
 
     @TruffleBoundary
-    private static StaticObject getEspressoModulePath(Meta meta, String jarName) {
-        Path espressoHome = HomeFinder.getInstance().getLanguageHomes().get(EspressoLanguage.ID);
-        Path hotswapJar = espressoHome.resolve("lib").resolve(jarName);
+    private static StaticObject getEspressoModulePath(EspressoContext context, Path jar) {
+        Meta meta = context.getMeta();
         // Paths.get(guestPath);
-        StaticObject guestPath = meta.toGuestString(hotswapJar.toFile().getAbsolutePath());
+        StaticObject guestPath = meta.toGuestString(jar.toFile().getAbsolutePath());
         StaticObject emptyArray = meta.java_nio_file_Path.allocateReferenceArray(0);
-        return (StaticObject) meta.java_nio_file_Paths_get.invokeDirect(StaticObject.NULL, guestPath, emptyArray);
+        return (StaticObject) meta.java_nio_file_Paths_get.invokeDirectStatic(guestPath, emptyArray);
     }
 
 }

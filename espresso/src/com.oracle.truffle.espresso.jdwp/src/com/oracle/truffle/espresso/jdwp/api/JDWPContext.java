@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.espresso.jdwp.impl.DebuggerController;
 
 /**
  * Interface that defines required methods for a guest language when implementing JDWP.
@@ -155,13 +156,14 @@ public interface JDWPContext {
     int getArrayLength(Object array);
 
     /**
-     * Returns the TypeTag constant for the input object. The TypeTag will be determined based on
-     * the declaring class of the object.
+     * Returns the tag constant for the component type of the input array. Note that all sub
+     * variants of the OBJECT tag constant is not used, e.g. if the component class of the array is
+     * j.l.String the generic OBJECT tag is returned and not the STRING tag.
      *
      * @param array must be a guest language array object
-     * @return TypeTag for the object
+     * @return the TypeTag for the component type of the array
      */
-    byte getTypeTag(Object array);
+    byte getArrayComponentTag(Object array);
 
     /**
      * Returns an unboxed host primitive type array of the array.
@@ -266,14 +268,6 @@ public interface JDWPContext {
      */
     boolean isValidClassLoader(Object object);
 
-    /**
-     * Converts an arbitrary host object to the corresponding guest object.
-     *
-     * @param object the host object to convert
-     * @return the guest object
-     */
-    Object toGuest(Object object);
-
     // temporarily needed until we get better exception-type based filtering in the Debug API
     Object getGuestException(Throwable exception);
 
@@ -333,14 +327,6 @@ public interface JDWPContext {
      * @param thread the thread to interrupt
      */
     void interruptThread(Object thread);
-
-    /**
-     * Returns all active child threads within the thread group.
-     *
-     * @param threadGroup the thread group that threads must belong to
-     * @return all active threads in the group
-     */
-    Object[] getChildrenThreads(Object threadGroup);
 
     /**
      * Returns the classes and interfaces directly nested within this type.Types further nested
@@ -429,10 +415,11 @@ public interface JDWPContext {
     /**
      * Returns the entry count for the monitor on the current thread.
      *
+     * @param monitorOwnerThread the owner thread of the monitor
      * @param monitor the monitor
      * @return entry count of monitor
      */
-    int getMonitorEntryCount(Object monitor);
+    int getMonitorEntryCount(Object monitorOwnerThread, Object monitor);
 
     /**
      * Returns all owned guest-language monitor object of the input call frames.
@@ -465,20 +452,6 @@ public interface JDWPContext {
      * @param frame
      */
     void clearFrameMonitors(CallFrame frame);
-
-    /**
-     * Aborts the context.
-     *
-     * @param exitCode the system exit code
-     */
-    void abort(int exitCode);
-
-    /**
-     * Determines if the current thread is a VM internal thread.
-     *
-     * @return true if current thread is a VM internal thread
-     */
-    boolean isSystemThread();
 
     /**
      * Returns the current BCI of the node.
@@ -514,4 +487,20 @@ public interface JDWPContext {
      */
     ModuleRef[] getAllModulesRefs();
 
+    /**
+     * Tests if the thread is a virtual thread.
+     */
+    boolean isVirtualThread(Object thread);
+
+    /**
+     * Tests if the current thread is blocked for debugging (suspends should not occur i.e. not
+     * being reported via stepping).
+     */
+    boolean isSingleSteppingDisabled();
+
+    Object allocateInstance(KlassRef klass);
+
+    void steppingInProgress(Thread t, boolean value);
+
+    void replaceController(DebuggerController newController);
 }

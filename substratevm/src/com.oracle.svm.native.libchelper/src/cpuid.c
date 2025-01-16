@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,12 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define NO_INLINE __declspec(noinline)
+#else
+#define NO_INLINE __attribute__((noinline))
+#endif
 
 #ifndef _WIN64
 #include <alloca.h>
@@ -59,6 +65,10 @@ int get_cpuid_count (unsigned int leaf, unsigned int subleaf, unsigned int *eax,
 
 int get_cpuid (unsigned int leaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
     return (get_cpuid_count(leaf, 0, eax, ebx, ecx, edx));
+}
+
+int get_cpuid_ecx_1 (unsigned int leaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
+    return (get_cpuid_count(leaf, 1, eax, ebx, ecx, edx));
 }
 
 #else
@@ -97,6 +107,10 @@ int get_cpuid_count (unsigned int leaf, unsigned int subleaf, unsigned int *eax,
 
 int get_cpuid (unsigned int leaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
     return (get_cpuid_count(leaf, 0, eax, ebx, ecx, edx));
+}
+
+int get_cpuid_ecx_1 (unsigned int leaf, unsigned int *eax, unsigned int *ebx, unsigned int *ecx, unsigned int *edx) {
+    return (get_cpuid_count(leaf, 1, eax, ebx, ecx, edx));
 }
 
 #endif
@@ -295,6 +309,10 @@ static void initialize_cpuinfo(CpuidInfo *_cpuid_info)
     _cpuid_info->sef_cpuid7_ebx.value = ebx;
     _cpuid_info->sef_cpuid7_ecx.value = ecx;
     _cpuid_info->sef_cpuid7_edx.value = edx;
+
+    get_cpuid_ecx_1(7, &eax, &ebx, &ecx, &edx);
+    _cpuid_info->sefsl1_cpuid7_eax.value = eax;
+    _cpuid_info->sefsl1_cpuid7_edx.value = edx;
   }
 
   // topology
@@ -381,8 +399,10 @@ static void initialize_cpuinfo(CpuidInfo *_cpuid_info)
   }
 }
 
-// ported from from vm_version_x86.hpp::feature_flags
-static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
+// ported from from vm_version_x86.cpp::feature_flags
+// NO_INLINE is necessary to avoid an unexpected behavior if compiling on Darwin
+// with Apple clang version 15.0.0 (included in Xcode 15.0).
+NO_INLINE static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
 {
   if (_cpuid_info->std_cpuid1_edx.bits.cmpxchg8 != 0)
     features->fCX8 = 1;
@@ -418,10 +438,16 @@ static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
   {
     features->fAVX = 1;
     features->fVZEROUPPER = 1;
+    if (_cpuid_info->sefsl1_cpuid7_eax.bits.sha512 != 0)
+      features->fSHA512 = 1;
     if (_cpuid_info->std_cpuid1_ecx.bits.f16c != 0)
       features->fF16C = 1;
     if (_cpuid_info->sef_cpuid7_ebx.bits.avx2 != 0)
       features->fAVX2 = 1;
+      if (_cpuid_info->sefsl1_cpuid7_eax.bits.avx_ifma != 0)
+        features->fAVX_IFMA = 1;
+    if (_cpuid_info->sef_cpuid7_ecx.bits.gfni != 0)
+      features->fGFNI = 1;
     if (_cpuid_info->sef_cpuid7_ebx.bits.avx512f != 0 &&
         _cpuid_info->xem_xcr0_eax.bits.opmask != 0 &&
         _cpuid_info->xem_xcr0_eax.bits.zmm512 != 0 &&
@@ -448,8 +474,6 @@ static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
         features->fAVX512_VPCLMULQDQ = 1;
       if (_cpuid_info->sef_cpuid7_ecx.bits.vaes != 0)
         features->fAVX512_VAES = 1;
-      if (_cpuid_info->sef_cpuid7_ecx.bits.gfni != 0)
-        features->fGFNI = 1;
       if (_cpuid_info->sef_cpuid7_ecx.bits.avx512_vnni != 0)
         features->fAVX512_VNNI = 1;
       if (_cpuid_info->sef_cpuid7_ecx.bits.avx512_bitalg != 0)
@@ -492,6 +516,9 @@ static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
     features->fRDTSCP = 1;
   if (_cpuid_info->sef_cpuid7_ecx.bits.rdpid != 0)
     features->fRDPID = 1;
+  if (_cpuid_info->sefsl1_cpuid7_edx.bits.apx_f != 0 &&
+      _cpuid_info->xem_xcr0_eax.bits.apx_f != 0)
+    features->fAPX_F = 1;
 
   // AMD|Hygon features.
   if (is_amd_family(_cpuid_info))
@@ -508,19 +535,16 @@ static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
   // Intel features.
   if (is_intel(_cpuid_info))
   {
-    if (_cpuid_info->ext_cpuid1_ecx.bits.lzcnt_intel != 0)
+    if (_cpuid_info->ext_cpuid1_ecx.bits.lzcnt != 0) {
       features->fLZCNT = 1;
-    // for Intel, ecx.bits.misalignsse bit (bit 8) indicates support for prefetchw
-    if (_cpuid_info->ext_cpuid1_ecx.bits.misalignsse != 0)
-    {
+    }
+    if (_cpuid_info->ext_cpuid1_ecx.bits.prefetchw != 0) {
       features->fAMD_3DNOW_PREFETCH = 1;
     }
-    if (_cpuid_info->sef_cpuid7_ebx.bits.clwb != 0)
-    {
+    if (_cpuid_info->sef_cpuid7_ebx.bits.clwb != 0) {
       features->fCLWB = 1;
     }
-    if (_cpuid_info->sef_cpuid7_edx.bits.serialize != 0)
-    {
+    if (_cpuid_info->sef_cpuid7_edx.bits.serialize != 0) {
       features->fSERIALIZE = 1;
     }
   }
@@ -528,11 +552,10 @@ static void set_cpufeatures(CPUFeatures *features, CpuidInfo *_cpuid_info)
   // ZX features.
   if (is_zx(_cpuid_info))
   {
-    if (_cpuid_info->ext_cpuid1_ecx.bits.lzcnt_intel != 0)
+    if (_cpuid_info->ext_cpuid1_ecx.bits.lzcnt != 0) {
       features->fLZCNT = 1;
-    // for ZX, ecx.bits.misalignsse bit (bit 8) indicates support for prefetchw
-    if (_cpuid_info->ext_cpuid1_ecx.bits.misalignsse != 0)
-    {
+    }
+    if (_cpuid_info->ext_cpuid1_ecx.bits.prefetchw != 0) {
       features->fAMD_3DNOW_PREFETCH = 1;
     }
   }
@@ -606,7 +629,7 @@ void determineCPUFeatures(CPUFeatures *features)
 #elif defined(__aarch64__)
 
 /*
- * The corresponding HotSpot code can be found in vm_version_bsd_aarch64.
+ * The corresponding HotSpot code can be found in vm_version_bsd_aarch64.cpp (218223e4a31d485935655cb3f186a752defd8fa8).
  */
 #if defined(__APPLE__)
 
@@ -623,29 +646,31 @@ static uint32_t cpu_has(const char* optional) {
 }
 
 void determineCPUFeatures(CPUFeatures* features) {
-  /*
-   * Note that Apple HW detection code is not accurate on older processors.
-   * All Apple devices have FP and ASIMD.
-   */
+  // All Apple devices have FP and ASIMD.
   features->fFP = 1;
   features->fASIMD = 1;
-  features->fEVTSTRM = 0;
-  features->fAES = 0;
-  features->fPMULL = 0;
-  features->fSHA1 = 0;
-  features->fSHA2 = 0;
-  features->fCRC32 = !!(cpu_has("hw.optional.armv8_crc32"));
-  features->fLSE = !!(cpu_has("hw.optional.armv8_1_atomics"));
+  // All Apple-darwin Arm processors have AES, PMULL, SHA1, and SHA2.
+  // For backward compatibility, do not check these CPU features as the
+  // corresponding string names are not available before xnu-8019.
+  features->fAES = 1;
+  features->fPMULL = 1;
+  features->fSHA1 = 1;
+  features->fSHA2 = 1;
+  // Checked in the Hotspot code.
+  features->fCRC32 =  !!(cpu_has("hw.optional.armv8_crc32"));
+  features->fLSE =    !!(cpu_has("hw.optional.arm.FEAT_LSE"))    | !!(cpu_has("hw.optional.armv8_1_atomics"));
+  features->fSHA512 = !!(cpu_has("hw.optional.arm.FEAT_SHA512")) | !!(cpu_has("hw.optional.armv8_2_sha512"));
+  features->fSHA3 =   !!(cpu_has("hw.optional.arm.FEAT_SHA3"))   | !!(cpu_has("hw.optional.armv8_2_sha3"));
+  // Not (yet) checked in the Hotspot code.
   features->fDCPOP = 0;
-  features->fSHA3 = 0;
-  features->fSHA512 = 0;
   features->fSVE = 0;
+  features->fSVEBITPERM = 0;
   features->fSVE2 = 0;
+  features->fEVTSTRM = 0;
   features->fSTXR_PREFETCH = 0;
   features->fA53MAC = 0;
   features->fDMB_ATOMICS = 0;
   features->fPACA = 0;
-  features->fSVEBITPERM = 0;
 }
 
 /*
@@ -781,9 +806,62 @@ void determineCPUFeatures(CPUFeatures* features) {
 }
 #endif
 
+#elif defined(__riscv)
+/*
+ * The corresponding HotSpot code can be found in vm_version_riscv and
+ * vm_version_linux_riscv.
+ */
+
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#include "riscv64cpufeatures.h"
+
+#ifndef HWCAP_ISA_I
+#define HWCAP_ISA_I  (1 << ('I' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_M
+#define HWCAP_ISA_M  (1 << ('M' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_A
+#define HWCAP_ISA_A  (1 << ('A' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_F
+#define HWCAP_ISA_F  (1 << ('F' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_D
+#define HWCAP_ISA_D  (1 << ('D' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_C
+#define HWCAP_ISA_C  (1 << ('C' - 'A'))
+#endif
+
+#ifndef HWCAP_ISA_V
+#define HWCAP_ISA_V  (1 << ('V' - 'A'))
+#endif
+
+/*
+ * Extracts the CPU features by reading the hwcaps
+ */
+void determineCPUFeatures(CPUFeatures* features) {
+
+  unsigned long auxv = getauxval(AT_HWCAP);
+  features->fI = !!(auxv & HWCAP_ISA_I);
+  features->fM = !!(auxv & HWCAP_ISA_M);
+  features->fA = !!(auxv & HWCAP_ISA_A);
+  features->fF = !!(auxv & HWCAP_ISA_F);
+  features->fD = !!(auxv & HWCAP_ISA_D);
+  features->fC = !!(auxv & HWCAP_ISA_C);
+  features->fV = !!(auxv & HWCAP_ISA_V);
+}
+
 #else
 /*
- * Dummy for non AMD64 and non AArch64
+ * Dummy for non AMD64, non AArch64 and non RISCV64
  */
 void determineCPUFeatures(void* features) {
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,122 +40,21 @@
  */
 package com.oracle.truffle.regex.tregex.nodes.dfa;
 
-import static com.oracle.truffle.regex.tregex.string.Encodings.Encoding;
-
 import java.util.Arrays;
 
 import com.oracle.truffle.api.CompilerAsserts;
-import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.regex.tregex.nodes.TRegexExecutorLocals;
 import com.oracle.truffle.regex.tregex.nodes.TRegexExecutorNode;
-import com.oracle.truffle.regex.tregex.parser.ast.InnerLiteral;
-import com.oracle.truffle.regex.tregex.string.AbstractString;
+import com.oracle.truffle.regex.tregex.nodes.input.InputOps;
+import com.oracle.truffle.regex.tregex.string.Encodings;
 import com.oracle.truffle.regex.tregex.util.DebugUtil;
 import com.oracle.truffle.regex.tregex.util.json.Json;
 import com.oracle.truffle.regex.tregex.util.json.JsonArray;
 import com.oracle.truffle.regex.tregex.util.json.JsonValue;
 
 public class DFAStateNode extends DFAAbstractStateNode {
-
-    /**
-     * This call is used when all except a very small set of code points will loop back to the
-     * current DFA state. The
-     * {@link #execute(TRegexDFAExecutorNode, Object, int, int, Encoding, boolean)} method will
-     * search for the given small set of code points in an optimized, possibly vectorized loop.
-     */
-    public abstract static class IndexOfCall {
-
-        public abstract int execute(TRegexDFAExecutorNode executor, Object input, int preLoopIndex, int maxIndex, Encoding encoding, boolean tString);
-
-        public abstract int encodedLength();
-    }
-
-    public abstract static class IndexOfAnyCall extends IndexOfCall {
-
-        @Override
-        public int encodedLength() {
-            return 1;
-        }
-    }
-
-    /**
-     * Optimized search for a set of up to 4 {@code int} values.
-     */
-    public static final class IndexOfAnyIntCall extends IndexOfAnyCall {
-
-        @CompilationFinal(dimensions = 1) private final int[] ints;
-
-        public IndexOfAnyIntCall(int[] ints) {
-            this.ints = ints;
-        }
-
-        @Override
-        public int execute(TRegexDFAExecutorNode executor, Object input, int fromIndex, int maxIndex, Encoding encoding, boolean tString) {
-            return executor.getIndexOfNode().execute(input, fromIndex, maxIndex, ints, encoding);
-        }
-
-    }
-
-    /**
-     * Optimized search for a set of up to 4 {@code char} values.
-     */
-    public static final class IndexOfAnyCharCall extends IndexOfAnyCall {
-
-        @CompilationFinal(dimensions = 1) private final char[] chars;
-
-        public IndexOfAnyCharCall(char[] chars) {
-            this.chars = chars;
-        }
-
-        @Override
-        public int execute(TRegexDFAExecutorNode executor, Object input, int fromIndex, int maxIndex, Encoding encoding, boolean tString) {
-            return executor.getIndexOfNode().execute(input, fromIndex, maxIndex, chars, encoding);
-        }
-
-    }
-
-    /**
-     * Optimized search for a set of up to 4 {@code byte} values.
-     */
-    public static final class IndexOfAnyByteCall extends IndexOfAnyCall {
-
-        @CompilationFinal(dimensions = 1) private final byte[] bytes;
-
-        public IndexOfAnyByteCall(byte[] bytes) {
-            this.bytes = bytes;
-        }
-
-        @Override
-        public int execute(TRegexDFAExecutorNode executor, Object input, int fromIndex, int maxIndex, Encoding encoding, boolean tString) {
-            return executor.getIndexOfNode().execute(input, fromIndex, maxIndex, bytes, encoding);
-        }
-
-    }
-
-    /**
-     * Optimized search for a substring.
-     */
-    public static final class IndexOfStringCall extends IndexOfCall {
-
-        private final int literalLength;
-        private final InnerLiteral literal;
-
-        public IndexOfStringCall(AbstractString str, AbstractString mask) {
-            this.literalLength = str.encodedLength();
-            this.literal = new InnerLiteral(str, mask, 0);
-        }
-
-        @Override
-        public int execute(TRegexDFAExecutorNode executor, Object input, int fromIndex, int maxIndex, Encoding encoding, boolean tString) {
-            return executor.getIndexOfStringNode().execute(input, fromIndex, maxIndex, literal.getLiteralContent(tString), literal.getMaskContent(tString), encoding);
-        }
-
-        @Override
-        public int encodedLength() {
-            return literalLength;
-        }
-    }
 
     private static final byte FLAG_FINAL_STATE = 1;
     private static final byte FLAG_ANCHORED_FINAL_STATE = 1 << 1;
@@ -164,22 +63,24 @@ public class DFAStateNode extends DFAAbstractStateNode {
 
     private final byte flags;
     private final short loopTransitionIndex;
-    protected final IndexOfCall indexOfCall;
+    private final short indexOfNodeId;
+    private final byte indexOfIsFast;
     private final Matchers matchers;
     private final DFASimpleCG simpleCG;
 
     DFAStateNode(DFAStateNode nodeSplitCopy, short copyID) {
-        this(copyID, nodeSplitCopy.flags, nodeSplitCopy.loopTransitionIndex, nodeSplitCopy.indexOfCall,
-                        Arrays.copyOf(nodeSplitCopy.getSuccessors(), nodeSplitCopy.getSuccessors().length),
+        this(copyID, nodeSplitCopy.flags, nodeSplitCopy.loopTransitionIndex, nodeSplitCopy.indexOfNodeId,
+                        nodeSplitCopy.indexOfIsFast, Arrays.copyOf(nodeSplitCopy.getSuccessors(), nodeSplitCopy.getSuccessors().length),
                         nodeSplitCopy.getMatchers(), nodeSplitCopy.simpleCG);
     }
 
-    public DFAStateNode(short id, byte flags, short loopTransitionIndex, IndexOfCall indexOfCall, short[] successors, Matchers matchers, DFASimpleCG simpleCG) {
+    public DFAStateNode(short id, byte flags, short loopTransitionIndex, short indexOfNodeId, byte indexOfIsFast, short[] successors, Matchers matchers, DFASimpleCG simpleCG) {
         super(id, successors);
         assert id > 0;
         this.flags = flags;
         this.loopTransitionIndex = loopTransitionIndex;
-        this.indexOfCall = indexOfCall;
+        this.indexOfNodeId = indexOfNodeId;
+        this.indexOfIsFast = indexOfIsFast;
         this.matchers = matchers;
         this.simpleCG = simpleCG;
     }
@@ -255,11 +156,21 @@ public class DFAStateNode extends DFAAbstractStateNode {
         return (AllTransitionsInOneTreeMatcher) matchers;
     }
 
+    public boolean hasIndexOfNodeId() {
+        return indexOfNodeId >= 0;
+    }
+
+    public int getIndexOfNodeId() {
+        return indexOfNodeId;
+    }
+
     /**
-     * Returns {@code true} if this state has a {@link IndexOfCall}.
+     * Returns {@code true} if this state has a {@code TruffleString.ByteIndexOfCodePointSetNode}.
      */
-    boolean canDoIndexOf() {
-        return hasLoopToSelf() && indexOfCall != null;
+    boolean canDoIndexOf(TruffleString.CodeRange codeRange) {
+        CompilerAsserts.partialEvaluationConstant(codeRange);
+        CompilerAsserts.partialEvaluationConstant(codeRange.ordinal());
+        return hasLoopToSelf() && hasIndexOfNodeId() && (indexOfIsFast & (1 << codeRange.ordinal())) != 0;
     }
 
     /**
@@ -272,19 +183,20 @@ public class DFAStateNode extends DFAAbstractStateNode {
 
     /**
      * Gets called after every call to
-     * {@link IndexOfCall#execute(TRegexDFAExecutorNode, Object, int, int, Encoding, boolean)},
+     * {@link InputOps#indexOf(TruffleString, int, int, TruffleString.CodePointSet, Encodings.Encoding, TruffleString.ByteIndexOfCodePointSetNode)}
      * which we call an {@code indexOf}-operation.
      *
      * @param preLoopIndex the starting index of the {@code indexOf}-operation.
      * @param postLoopIndex the index found by the {@code indexOf}-operation. If the {@code indexOf}
      *            -operation did not find a match, this value is equal to
      *            {@link TRegexDFAExecutorLocals#getMaxIndex()}.
+     * @param codeRange
      */
-    void afterIndexOf(TRegexDFAExecutorLocals locals, TRegexDFAExecutorNode executor, final int preLoopIndex, int postLoopIndex) {
+    void afterIndexOf(TRegexDFAExecutorLocals locals, TRegexDFAExecutorNode executor, final int preLoopIndex, int postLoopIndex, TruffleString.CodeRange codeRange) {
         locals.setIndex(postLoopIndex);
         if (simpleCG != null && locals.getIndex() > preLoopIndex) {
             int curIndex = locals.getIndex();
-            executor.inputSkipReverse(locals);
+            executor.inputSkipReverse(locals, codeRange);
             applySimpleCGTransition(simpleCG.getTransitions()[getLoopToSelf()], executor, locals);
             locals.setIndex(curIndex);
         }
@@ -296,9 +208,12 @@ public class DFAStateNode extends DFAAbstractStateNode {
      */
     private void checkFinalState(TRegexDFAExecutorLocals locals, TRegexDFAExecutorNode executor) {
         CompilerAsserts.partialEvaluationConstant(this);
+        CompilerAsserts.partialEvaluationConstant(simpleCG);
         if (isFinalState()) {
-            storeResult(locals, executor, false);
-            if (simpleCG != null) {
+            if (simpleCG == null) {
+                storeResult(locals, executor, false);
+            } else if (!(isAnchoredFinalState() && executor.inputAtEnd(locals))) {
+                storeResult(locals, executor, false);
                 applySimpleCGFinalTransition(simpleCG.getTransitionToFinalState(), executor, locals);
             }
         }
@@ -348,11 +263,12 @@ public class DFAStateNode extends DFAAbstractStateNode {
     }
 
     void applySimpleCGTransition(DFASimpleCGTransition transition, TRegexDFAExecutorNode executor, TRegexDFAExecutorLocals locals) {
-        transition.apply(locals.getCGData().results, locals.getIndex(), executor.getProperties().tracksLastGroup());
+        int index = executor.isForward() ? locals.getIndex() : locals.getNextIndex();
+        transition.apply(locals.getCGData().results, index, executor.getProperties().tracksLastGroup(), executor.isForward());
     }
 
     void applySimpleCGFinalTransition(DFASimpleCGTransition transition, TRegexDFAExecutorNode executor, TRegexDFAExecutorLocals locals) {
-        transition.applyFinal(locals.getCGData(), locals.getIndex(), executor.getProperties().isSimpleCGMustCopy(), executor.getProperties().tracksLastGroup());
+        transition.applyFinal(locals.getCGData(), locals.getIndex(), executor.getProperties().isSimpleCGMustCopy(), executor.getProperties().tracksLastGroup(), executor.isForward());
     }
 
     @TruffleBoundary

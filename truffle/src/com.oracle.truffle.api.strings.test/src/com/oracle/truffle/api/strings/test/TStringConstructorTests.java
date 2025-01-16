@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -66,8 +66,9 @@ public class TStringConstructorTests extends TStringTestBase {
     @Test
     public void testFromCodePointInvalid() throws Exception {
         forAllEncodingsAndInvalidCodePoints((TruffleString.Encoding encoding, int codepoint) -> {
-            if (!(isUTF(encoding) && codepoint <= 0xffff && Character.isSurrogate((char) codepoint))) {
-                Assert.assertNull(fromCodePointUncached(codepoint, encoding));
+            Assert.assertNull(fromCodePointUncached(codepoint, encoding, false));
+            if ((isUTF16(encoding) || isUTF32(encoding)) && codepoint <= 0xffff && Character.isSurrogate((char) codepoint)) {
+                Assert.assertNotNull(fromCodePointUncached(codepoint, encoding, true));
             }
         });
     }
@@ -193,10 +194,7 @@ public class TStringConstructorTests extends TStringTestBase {
                 strings[6] = strings[2].asMutableTruffleStringUncached(encoding);
                 strings[7] = strings[4].asTruffleStringUncached(encoding);
                 if (isUTF16(encoding)) {
-                    char[] charArray = new char[array.length / 2];
-                    for (int i = 0; i < charArray.length; i++) {
-                        charArray[i] = (char) TStringTestUtil.readValue(array, 1, i);
-                    }
+                    char[] charArray = TStringTestUtil.toCharArrayPunned(array);
                     strings[8] = fromCharArrayUTF16Uncached(charArray, 0, charArray.length);
                 } else if (isUTF32(encoding)) {
                     strings[8] = fromIntArrayUTF32Uncached(codepoints, 0, codepoints.length);

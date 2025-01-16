@@ -39,6 +39,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.graalvm.nativeimage.AnnotationAccess;
@@ -47,9 +48,12 @@ import org.graalvm.nativeimage.impl.AnnotationExtractor;
 import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.infrastructure.OriginalFieldProvider;
 import com.oracle.graal.pointsto.infrastructure.OriginalMethodProvider;
-import com.oracle.graal.pointsto.util.GraalAccess;
+import com.oracle.graal.pointsto.infrastructure.WrappedElement;
+import com.oracle.graal.pointsto.meta.BaseLayerElement;
+import com.oracle.graal.pointsto.meta.BaseLayerField;
+import com.oracle.graal.pointsto.meta.BaseLayerMethod;
+import com.oracle.graal.pointsto.meta.BaseLayerType;
 import com.oracle.svm.hosted.annotation.AnnotationMetadata.AnnotationExtractionError;
-import com.oracle.svm.util.AnnotationWrapper;
 import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.internal.reflect.ConstantPool;
@@ -74,8 +78,9 @@ import sun.reflect.annotation.AnnotationParser;
  *
  * The {@link SubstrateAnnotationExtractor} is tightly coupled with {@link AnnotationAccess}, which
  * provides implementations of {@link AnnotatedElement#isAnnotationPresent(Class)} and
- * {@link AnnotatedElement#getAnnotation(Class)}. {@link AnnotatedElement#getAnnotations()} should
- * in principle not be used during Native Image generation.
+ * {@link AnnotatedElement#getAnnotation(Class)}. {@link AnnotatedElement#getAnnotations()} must
+ * never be used during Native Image generation because it initializes all annotation classes and
+ * their dependencies.
  */
 public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     private final Map<Class<?>, AnnotationValue[]> annotationCache = new ConcurrentHashMap<>();
@@ -104,6 +109,17 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     private static final Field recordComponentTypeAnnotations = recordComponentClass == null ? null : ReflectionUtil.lookupField(recordComponentClass, "typeAnnotations");
     private static final Method recordComponentGetDeclaringRecord = recordComponentClass == null ? null : ReflectionUtil.lookupMethod(recordComponentClass, "getDeclaringRecord");
     private static final Method packageGetPackageInfo = ReflectionUtil.lookupMethod(Package.class, "getPackageInfo");
+
+    public static AnnotationValue[] prepareInjectedAnnotations(Annotation... annotations) {
+        if (annotations == null || annotations.length == 0) {
+            return NO_ANNOTATIONS;
+        }
+        AnnotationValue[] result = new AnnotationValue[annotations.length];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = new AnnotationValue(Objects.requireNonNull(annotations[i]));
+        }
+        return result;
+    }
 
     @SuppressWarnings("unchecked")
     @Override
@@ -150,7 +166,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     @SuppressWarnings("unchecked")
     @Override
     public Class<? extends Annotation>[] getAnnotationTypes(AnnotatedElement element) {
-        return Arrays.stream(getAnnotationData(element, false)).map(AnnotationValue::getType).filter(t -> t != null).toArray(Class[]::new);
+        return Arrays.stream(getAnnotationData(element, false)).map(AnnotationValue::getType).filter(Objects::nonNull).toArray(Class[]::new);
     }
 
     public AnnotationValue[] getDeclaredAnnotationData(AnnotatedElement element) {
@@ -158,41 +174,53 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     }
 
     private AnnotationValue[] getAnnotationData(AnnotatedElement element, boolean declaredOnly) {
-        AnnotatedElement root = getRoot(element);
-        AnnotatedElement secondaryRoot = getSecondaryRoot(element);
-        List<Annotation> injectedAnnotations = getInjectedAnnotations(element);
-        List<Class<? extends Annotation>> ignoredAnnotations = getIgnoredAnnotations(element);
+        AnnotatedElement cur = element;
+        while (cur instanceof WrappedElement) {
+            cur = ((WrappedElement) cur).getWrapped();
+        }
+        AnnotationValue[] result = NO_ANNOTATIONS;
+        while (cur instanceof AnnotationWrapper wrapper) {
+            result = concat(result, wrapper.getInjectedAnnotations());
+            cur = wrapper.getAnnotationRoot();
+        }
 
-        List<AnnotationValue> data = new ArrayList<>();
-        for (Annotation annotation : injectedAnnotations) {
-            data.add(new AnnotationValue(annotation));
+        AnnotatedElement root = findRoot(cur);
+        if (root instanceof BaseLayerElement baseLayerElement) {
+            result = Arrays.stream(baseLayerElement.getBaseLayerAnnotations()).map(AnnotationValue::new).toList().toArray(new AnnotationValue[0]);
+        } else if (root != null) {
+            result = concat(result, declaredOnly ? getDeclaredAnnotationDataFromRoot(root) : getAnnotationDataFromRoot(root));
         }
-        if (root != null) {
-            data.addAll(Arrays.asList(declaredOnly ? getDeclaredAnnotationDataFromRoot(root) : getAnnotationDataFromRoot(root)));
+        return result;
+    }
+
+    private static AnnotationValue[] concat(AnnotationValue[] a1, AnnotationValue[] a2) {
+        if (a2 == null || a2.length == 0) {
+            return a1;
+        } else if (a1 == null || a1.length == 0) {
+            return a2;
+        } else {
+            AnnotationValue[] result = Arrays.copyOf(a1, a1.length + a2.length, AnnotationValue[].class);
+            System.arraycopy(a2, 0, result, a1.length, a2.length);
+            return result;
         }
-        if (secondaryRoot != null) {
-            data.addAll(Arrays.asList(declaredOnly ? getDeclaredAnnotationDataFromRoot(secondaryRoot) : getAnnotationDataFromRoot(secondaryRoot)));
-        }
-        if (ignoredAnnotations.size() > 0) {
-            data.removeIf(annotation -> ignoredAnnotations.contains(annotation.type));
-        }
-        return data.toArray(NO_ANNOTATIONS);
     }
 
     private AnnotationValue[] getAnnotationDataFromRoot(AnnotatedElement rootElement) {
-        if (!(rootElement instanceof Class<?>)) {
+        if (!(rootElement instanceof Class<?> clazz)) {
             return getDeclaredAnnotationDataFromRoot(rootElement);
         }
 
-        Class<?> clazz = (Class<?>) rootElement;
+        AnnotationValue[] existing = annotationCache.get(clazz);
+        if (existing != null) {
+            return existing;
+        }
+
         List<AnnotationValue> inheritedAnnotations = new ArrayList<>();
-        if (!annotationCache.containsKey(clazz)) {
-            Class<?> superClass = clazz.getSuperclass();
-            if (superClass != null) {
-                for (AnnotationValue superclassAnnotation : getAnnotationDataFromRoot(superClass)) {
-                    if (hasAnnotation(superclassAnnotation.type, Inherited.class)) {
-                        inheritedAnnotations.add(superclassAnnotation);
-                    }
+        Class<?> superClass = clazz.getSuperclass();
+        if (superClass != null) {
+            for (AnnotationValue superclassAnnotation : getAnnotationDataFromRoot(superClass)) {
+                if (hasAnnotation(superclassAnnotation.type, Inherited.class)) {
+                    inheritedAnnotations.add(superclassAnnotation);
                 }
             }
         }
@@ -238,7 +266,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     }
 
     public AnnotationValue[][] getParameterAnnotationData(AnnotatedElement element) {
-        AnnotatedElement root = getRoot(element);
+        AnnotatedElement root = findRoot(unwrap(element));
         return root != null ? getParameterAnnotationDataFromRoot((Executable) root) : NO_PARAMETER_ANNOTATIONS;
     }
 
@@ -271,7 +299,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     }
 
     public TypeAnnotationValue[] getTypeAnnotationData(AnnotatedElement element) {
-        AnnotatedElement root = getRoot(element);
+        AnnotatedElement root = findRoot(unwrap(element));
         return root != null ? getTypeAnnotationDataFromRoot(root) : NO_TYPE_ANNOTATIONS;
     }
 
@@ -301,7 +329,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
     }
 
     public AnnotationMemberValue getAnnotationDefaultData(AnnotatedElement element) {
-        AnnotatedElement root = getRoot(element);
+        AnnotatedElement root = findRoot(unwrap(element));
         return root != null ? getAnnotationDefaultDataFromRoot((Method) root) : null;
     }
 
@@ -331,10 +359,10 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
             } else if (recordComponentClass != null && recordComponentClass.isInstance(rootElement)) {
                 return (byte[]) recordComponentAnnotations.get(rootElement);
             } else {
-                throw new AnnotationExtractionError("Unexpected annotated element type: " + rootElement.getClass());
+                throw new AnnotationExtractionError(rootElement, "Unexpected annotated element type: " + rootElement.getClass());
             }
         } catch (InvocationTargetException | IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(rootElement, e);
         }
     }
 
@@ -345,10 +373,10 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
             } else if (rootElement instanceof Constructor<?>) {
                 return (byte[]) constructorParameterAnnotations.get(rootElement);
             } else {
-                throw new AnnotationExtractionError("Unexpected annotated element type: " + rootElement.getClass());
+                throw new AnnotationExtractionError(rootElement, "Unexpected annotated element type: " + rootElement.getClass());
             }
         } catch (IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(rootElement, e);
         }
     }
 
@@ -363,10 +391,10 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
             } else if (recordComponentClass != null && recordComponentClass.isInstance(rootElement)) {
                 return (byte[]) recordComponentTypeAnnotations.get(rootElement);
             } else {
-                throw new AnnotationExtractionError("Unexpected annotated element type: " + rootElement.getClass());
+                throw new AnnotationExtractionError(rootElement, "Unexpected annotated element type: " + rootElement.getClass());
             }
         } catch (InvocationTargetException | IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(rootElement, e);
         }
     }
 
@@ -374,7 +402,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
         try {
             return (byte[]) methodAnnotationDefault.get(method);
         } catch (IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(method, e);
         }
     }
 
@@ -383,7 +411,7 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
         try {
             return (ConstantPool) classGetConstantPool.invoke(container);
         } catch (InvocationTargetException | IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(rootElement, e);
         }
     }
 
@@ -398,83 +426,48 @@ public class SubstrateAnnotationExtractor implements AnnotationExtractor {
             try {
                 return (Class<?>) recordComponentGetDeclaringRecord.invoke(rootElement);
             } catch (IllegalAccessException | InvocationTargetException e) {
-                throw new AnnotationExtractionError(e);
+                throw new AnnotationExtractionError(rootElement, e);
             }
         } else {
-            throw new AnnotationExtractionError("Unexpected annotated element type: " + rootElement.getClass());
+            throw new AnnotationExtractionError(rootElement, "Unexpected annotated element type: " + rootElement.getClass());
         }
     }
 
-    private static AnnotatedElement getRoot(AnnotatedElement element) {
+    private static AnnotatedElement unwrap(AnnotatedElement element) {
+        AnnotatedElement cur = element;
+        while (cur instanceof WrappedElement) {
+            cur = ((WrappedElement) cur).getWrapped();
+        }
+        while (cur instanceof AnnotationWrapper) {
+            cur = ((AnnotationWrapper) cur).getAnnotationRoot();
+        }
+        return cur;
+    }
+
+    private static AnnotatedElement findRoot(AnnotatedElement element) {
+        assert !(element instanceof WrappedElement || element instanceof AnnotationWrapper);
         try {
-            if (element instanceof Package) {
-                return (Class<?>) packageGetPackageInfo.invoke(element);
-            } else if (element instanceof AnnotationWrapper) {
-                return getRoot(((AnnotationWrapper) element).getAnnotationRoot());
-            } else if (element instanceof ResolvedJavaType) {
-                return OriginalClassProvider.getJavaClass(GraalAccess.getOriginalSnippetReflection(), (ResolvedJavaType) element);
-            } else if (element instanceof ResolvedJavaMethod) {
-                return OriginalMethodProvider.getJavaMethod(GraalAccess.getOriginalSnippetReflection(), (ResolvedJavaMethod) element);
-            } else if (element instanceof ResolvedJavaField) {
-                return OriginalFieldProvider.getJavaField(GraalAccess.getOriginalSnippetReflection(), (ResolvedJavaField) element);
+            if (element instanceof BaseLayerType || element instanceof BaseLayerMethod || element instanceof BaseLayerField) {
+                return element;
+            } else if (element instanceof ResolvedJavaType type) {
+                return OriginalClassProvider.getJavaClass(type);
+            } else if (element instanceof ResolvedJavaMethod method) {
+                return OriginalMethodProvider.getJavaMethod(method);
+            } else if (element instanceof ResolvedJavaField field) {
+                return OriginalFieldProvider.getJavaField(field);
+            } else if (element instanceof Package packageObject) {
+                return (Class<?>) packageGetPackageInfo.invoke(packageObject);
+            } else {
+                return element;
             }
         } catch (InvocationTargetException e) {
             Throwable targetException = e.getTargetException();
             if (targetException instanceof LinkageError) {
                 throw (LinkageError) targetException;
             }
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(element, e);
         } catch (IllegalAccessException e) {
-            throw new AnnotationExtractionError(e);
+            throw new AnnotationExtractionError(element, e);
         }
-        return element;
     }
-
-    private static AnnotatedElement getSecondaryRoot(AnnotatedElement element) {
-        if (element instanceof AnnotationWrapper) {
-            return getRoot(((AnnotationWrapper) element).getSecondaryAnnotationRoot());
-        }
-        return null;
-    }
-
-    private static List<Annotation> getInjectedAnnotations(AnnotatedElement element) {
-        List<Annotation> injectedAnnotations = new ArrayList<>();
-        if (element instanceof AnnotationWrapper) {
-            AnnotationWrapper wrapper = (AnnotationWrapper) element;
-            Annotation[] wrapperInjectedAnnotations = wrapper.getInjectedAnnotations();
-            if (wrapperInjectedAnnotations != null) {
-                injectedAnnotations.addAll(Arrays.asList(wrapperInjectedAnnotations));
-            }
-            AnnotatedElement root = wrapper.getAnnotationRoot();
-            if (root != null) {
-                injectedAnnotations.addAll(getInjectedAnnotations(root));
-            }
-            AnnotatedElement secondaryRoot = wrapper.getSecondaryAnnotationRoot();
-            if (secondaryRoot != null) {
-                injectedAnnotations.addAll(getInjectedAnnotations(secondaryRoot));
-            }
-        }
-        return injectedAnnotations;
-    }
-
-    private static List<Class<? extends Annotation>> getIgnoredAnnotations(AnnotatedElement element) {
-        List<Class<? extends Annotation>> ignoredAnnotations = new ArrayList<>();
-        if (element instanceof AnnotationWrapper) {
-            AnnotationWrapper wrapper = (AnnotationWrapper) element;
-            Class<? extends Annotation>[] wrapperIgnoredAnnotations = wrapper.getIgnoredAnnotations();
-            if (wrapperIgnoredAnnotations != null) {
-                ignoredAnnotations.addAll(Arrays.asList(wrapperIgnoredAnnotations));
-            }
-            AnnotatedElement root = wrapper.getAnnotationRoot();
-            if (root != null) {
-                ignoredAnnotations.addAll(getIgnoredAnnotations(root));
-            }
-            AnnotatedElement secondaryRoot = wrapper.getSecondaryAnnotationRoot();
-            if (secondaryRoot != null) {
-                ignoredAnnotations.addAll(getIgnoredAnnotations(secondaryRoot));
-            }
-        }
-        return ignoredAnnotations;
-    }
-
 }

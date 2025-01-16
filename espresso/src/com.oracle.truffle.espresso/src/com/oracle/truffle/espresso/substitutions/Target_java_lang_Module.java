@@ -28,15 +28,15 @@ import static com.oracle.truffle.espresso.runtime.Classpath.JAVA_BASE;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.espresso.EspressoLanguage;
 import com.oracle.truffle.espresso.meta.Meta;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.vm.ModulesHelperVM;
 
 @EspressoSubstitutions
 public final class Target_java_lang_Module {
 
     /*
-     * As of JDK 15+, The native signature for these VM methods changed. These substitutions
-     * bypasses the native linking of these methods to their 'JVM_*' counterparts.
+     * As of JDK 15+, The native signature for these VM methods changed. These substitutions bypass
+     * the native linking of these methods to their 'JVM_*' counterparts.
      */
 
     @Substitution
@@ -80,8 +80,8 @@ public final class Target_java_lang_Module {
     @TruffleBoundary
     public static void defineModule0(@JavaType(internalName = "Ljava/lang/Module;") StaticObject module,
                     boolean isOpen,
-                    @SuppressWarnings("unused") @JavaType(String.class) StaticObject version,
-                    @SuppressWarnings("unused") @JavaType(String.class) StaticObject location,
+                    @JavaType(String.class) StaticObject version,
+                    @JavaType(String.class) StaticObject location,
                     @JavaType(Object[].class) StaticObject pns,
                     @Inject EspressoLanguage language,
                     @Inject Meta meta,
@@ -100,13 +100,15 @@ public final class Target_java_lang_Module {
             throw meta.throwExceptionWithMessage(meta.java_lang_IllegalArgumentException, "module name cannot be null");
         }
         String hostName = meta.toHostString(guestName);
+        String hostVersion = meta.toHostString(version);
+        String hostLocation = meta.toHostString(location);
         String[] packages = toStringArray(language, pns, meta);
         if (hostName.equals(JAVA_BASE)) {
             profiler.profile(5);
-            meta.getVM().defineJavaBaseModule(module, packages, profiler);
+            meta.getVM().defineJavaBaseModule(module, hostVersion, hostLocation, packages, profiler);
         } else {
             profiler.profile(6);
-            meta.getVM().defineModule(module, hostName, isOpen, packages, profiler);
+            meta.getVM().defineModule(module, hostName, hostVersion, hostLocation, isOpen, packages, profiler);
         }
     }
 

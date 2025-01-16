@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,10 +31,15 @@ public interface GC {
     /** Cause a full collection. */
     void collectCompletely(GCCause cause);
 
+    /**
+     * Notify the GC that it might be a good time to do a collection. The final decision is up to
+     * the GC and its policy.
+     */
+    void collectionHint(boolean fullGC);
+
     /** Human-readable name. */
     String getName();
 
-    /** Issue an optional GC request. */
-    default void maybeCauseUserRequestedCollection(@SuppressWarnings("unused") GCCause cause, @SuppressWarnings("unused") boolean fullGC) {
-    }
+    /** Human-readable default heap size. */
+    String getDefaultMaxHeapSize();
 }

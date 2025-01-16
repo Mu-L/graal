@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,61 +40,485 @@
  */
 package com.oracle.truffle.regex.tregex.parser;
 
-import java.math.BigInteger;
-import java.util.EnumSet;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.IntPredicate;
+
+import com.oracle.truffle.regex.RegexSyntaxException.ErrorCode;
+import org.graalvm.collections.EconomicSet;
 
 import com.oracle.truffle.api.ArrayUtils;
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.regex.RegexFlags;
 import com.oracle.truffle.regex.RegexSource;
 import com.oracle.truffle.regex.RegexSyntaxException;
+import com.oracle.truffle.regex.charset.ClassSetContents;
+import com.oracle.truffle.regex.charset.ClassSetContentsAccumulator;
 import com.oracle.truffle.regex.charset.CodePointSet;
 import com.oracle.truffle.regex.charset.CodePointSetAccumulator;
-import com.oracle.truffle.regex.charset.Constants;
-import com.oracle.truffle.regex.charset.UnicodeProperties;
-import com.oracle.truffle.regex.errors.ErrorMessages;
+import com.oracle.truffle.regex.errors.JsErrorMessages;
+import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
+import com.oracle.truffle.regex.tregex.parser.flavors.ECMAScriptFlavor;
+import com.oracle.truffle.regex.tregex.string.Encodings;
 import com.oracle.truffle.regex.tregex.string.Encodings.Encoding;
+import com.oracle.truffle.regex.util.JavaStringUtil;
 import com.oracle.truffle.regex.util.TBitSet;
 
-public final class RegexLexer {
+public abstract class RegexLexer {
 
-    private static final TBitSet PREDEFINED_CHAR_CLASSES = TBitSet.valueOf('D', 'S', 'W', 'd', 's', 'w');
-    private static final TBitSet SYNTAX_CHARS = TBitSet.valueOf('$', '(', ')', '*', '+', '.', '/', '?', '[', '\\', ']', '^', '{', '|', '}');
-
-    private static final CodePointSet ID_START = UnicodeProperties.getProperty("ID_Start");
-    private static final CodePointSet ID_CONTINUE = UnicodeProperties.getProperty("ID_Continue");
-
-    private final RegexSource source;
-    private final String pattern;
-    private final RegexFlags flags;
+    protected static final TBitSet PREDEFINED_CHAR_CLASSES = TBitSet.valueOf('D', 'S', 'W', 'd', 's', 'w');
+    protected static final TBitSet DEFAULT_WHITESPACE = TBitSet.valueOf('\t', '\n', '\u000b', '\f', '\r', ' ');
+    public final RegexSource source;
+    /**
+     * The source of the input pattern.
+     */
+    protected final String pattern;
     private final Encoding encoding;
-    private Token lastToken;
+    private final CodePointSetAccumulator curCharClass = new CodePointSetAccumulator();
+    private boolean curCharClassInverted;
+    /**
+     * The index of the next character in {@link #pattern} to be parsed.
+     */
+    protected int position = 0;
+    // use a LinkedHashMap so that the order of capture groups is preserved
+    protected Map<String, List<Integer>> namedCaptureGroups = new LinkedHashMap<>();
     private int curStartIndex = 0;
-    private int index = 0;
+    private int curCharClassStartIndex = -1;
+    private int charClassCurAtomStartIndex = 0;
+    private int charClassEmitInvalidRangeAtoms = 0;
     private int nGroups = 1;
     private boolean identifiedAllGroups = false;
-    private Map<String, Integer> namedCaptureGroups = null;
-    private final CodePointSetAccumulator curCharClass = new CodePointSetAccumulator();
-    private final CodePointSetAccumulator charClassCaseFoldTmp = new CodePointSetAccumulator();
+    protected final CompilationBuffer compilationBuffer;
 
-    public RegexLexer(RegexSource source, RegexFlags flags) {
+    public RegexLexer(RegexSource source, CompilationBuffer compilationBuffer) {
         this.source = source;
         this.pattern = source.getPattern();
-        this.flags = flags;
         this.encoding = source.getEncoding();
+        this.compilationBuffer = compilationBuffer;
+    }
+
+    public CompilationBuffer getCompilationBuffer() {
+        return compilationBuffer;
+    }
+
+    /**
+     * Returns {@code true} if ignore-case mode is currently enabled.
+     */
+    protected abstract boolean featureEnabledIgnoreCase();
+
+    /**
+     * Returns {@code true} if {@code \A} and {@code \Z} position assertions are supported.
+     */
+    protected abstract boolean featureEnabledAZPositionAssertions();
+
+    /**
+     * Returns {@code true} if {@code \z} position assertion is supported.
+     */
+    protected abstract boolean featureEnabledZLowerCaseAssertion();
+
+    /**
+     * Returns {@code true} if empty minimum values in bounded quantifiers (e.g. {@code {,1}}) are
+     * allowed and treated as zero.
+     */
+    protected abstract boolean featureEnabledBoundedQuantifierEmptyMin();
+
+    /**
+     * Returns {@code true} if possessive quantifiers ({@code +} suffix) are allowed.
+     */
+    protected abstract boolean featureEnabledPossessiveQuantifiers();
+
+    /**
+     * Returns {@code true} if the first character in a character class must be interpreted as part
+     * of the character set, even if it is the closing bracket {@code ']'}.
+     */
+    protected abstract boolean featureEnabledCharClassFirstBracketIsLiteral();
+
+    /**
+     * Try to parse ranges with pre-defined inner character classes, e.g. {@code [\w-a]}.
+     */
+    protected abstract boolean featureEnabledCCRangeWithPredefCharClass();
+
+    /**
+     * Returns {@code true} if nested character classes are supported. This is required for
+     * {@link #featureEnabledPOSIXCharClasses()} .
+     */
+    protected abstract boolean featureEnabledNestedCharClasses();
+
+    /**
+     * Returns {@code true} if POSIX character classes, character equivalence classes, and the POSIX
+     * Collating Element Operator are supported. Requires
+     * {@link #featureEnabledNestedCharClasses()}.
+     */
+    protected abstract boolean featureEnabledPOSIXCharClasses();
+
+    /**
+     * Returns the POSIX character class associated to the given name.
+     */
+    protected abstract CodePointSet getPOSIXCharClass(String name);
+
+    /**
+     * Checks if the given string is a valid collation element.
+     */
+    protected abstract void validatePOSIXCollationElement(String sequence);
+
+    /**
+     * Checks if the given string is a valid equivalence class.
+     */
+    protected abstract void validatePOSIXEquivalenceClass(String sequence);
+
+    /**
+     * Returns {@code true} if forward references are allowed.
+     */
+    protected abstract boolean featureEnabledForwardReferences();
+
+    /**
+     * Returns {@code true} if group comments (e.g. {@code (# ... )}) are supported.
+     */
+    protected abstract boolean featureEnabledGroupComments();
+
+    /**
+     * Returns {@code true} if line comments (e.g. {@code # ... }) are supported.
+     */
+    protected abstract boolean featureEnabledLineComments();
+
+    /**
+     * Returns {@code true} if white space in the pattern is ignored. This is relevant only if line
+     * comments are not supported.
+     */
+    protected abstract boolean featureEnabledIgnoreWhiteSpace();
+
+    /**
+     * The set of codepoints to consider as whitespace in comments and "ignore white space" mode.
+     */
+    protected abstract TBitSet getWhitespace();
+
+    /**
+     * Returns {@code true} if octal escapes (e.g. {@code \012}) are supported.
+     */
+    protected abstract boolean featureEnabledOctalEscapes();
+
+    /**
+     * Returns {@code true} if any constructs that alter a capture group's function, such as
+     * non-capturing groups {@code (?:)} or look-around assertions {@code (?=)}, are supported. If
+     * this flag is {@code false}, groups starting with a question mark {@code (?} do not have any
+     * special meaning.
+     */
+    protected abstract boolean featureEnabledSpecialGroups();
+
+    /**
+     * Returns {@code true} if unicode property escapes (e.g. {@code \p{...}}) are supported.
+     */
+    protected abstract boolean featureEnabledUnicodePropertyEscapes();
+
+    /**
+     * Returns {@code true} if class set expressions (e.g. {@code [[\w\q{abc|xyz}]--[a-cx-z]]}) are
+     * supported.
+     */
+    protected abstract boolean featureEnabledClassSetExpressions();
+
+    /**
+     * Updates a character set by expanding it to the set of characters that case fold to the same
+     * characters as the characters currently in the set. This is done by case folding the set and
+     * then "unfolding" it by finding all inverse case fold mappings.
+     */
+    protected abstract void caseFoldUnfold(CodePointSetAccumulator charClass);
+
+    /**
+     * Case folds an atom in a class set expression. This maps the elements of the expression into
+     * their case folded variant.
+     */
+    protected abstract ClassSetContents caseFoldClassSetAtom(ClassSetContents classSetContents);
+
+    /**
+     * Returns the complement of a class set element. In ECMAScript, this behavior can vary with the
+     * flags.
+     */
+    protected abstract CodePointSet complementClassSet(CodePointSet codePointSet);
+
+    /**
+     * Returns the code point set represented by the dot operator.
+     */
+    protected abstract CodePointSet getDotCodePointSet();
+
+    /**
+     * Returns the set of all codepoints a group identifier may begin with.
+     */
+    protected abstract CodePointSet getIdStart();
+
+    /**
+     * Returns the set of all codepoints a group identifier may continue with.
+     */
+    protected abstract CodePointSet getIdContinue();
+
+    /**
+     * Returns the maximum number of digits to parse when parsing a back-reference.
+     */
+    protected abstract int getMaxBackReferenceDigits();
+
+    /**
+     * Returns {@code true} iff the given character is a predefined character class when preceded
+     * with a backslash (e.g. \d).
+     */
+    protected boolean isPredefCharClass(char c) {
+        return PREDEFINED_CHAR_CLASSES.get(c);
+    }
+
+    /**
+     * Returns the CodePointSet associated with the given predefined character class (e.g.
+     * {@code \d}).
+     * <p>
+     * Note that the CodePointSet returned by this function has already been case-folded and
+     * negated.
+     */
+    protected abstract CodePointSet getPredefinedCharClass(char c);
+
+    /**
+     * The maximum value allowed while parsing bounded quantifiers. Larger values will cause a call
+     * to {@link #handleBoundedQuantifierOverflow(long, long)}.
+     */
+    protected abstract long boundedQuantifierMaxValue();
+
+    /**
+     * Handle {@code {2,1}}.
+     */
+    protected abstract RegexSyntaxException handleBoundedQuantifierOutOfOrder();
+
+    /**
+     * Handle missing {@code }} or minimum value in bounded quantifiers.
+     */
+    protected abstract Token handleBoundedQuantifierEmptyOrMissingMin();
+
+    /**
+     * Handle non-digit characters in bounded quantifiers.
+     */
+    protected abstract Token handleBoundedQuantifierInvalidCharacter();
+
+    /**
+     * Handle integer overflows in quantifier bounds, e.g. {@code {2147483649}}. If this method
+     * returns a non-null value, it will be returned instead of the current quantifier.
+     */
+    protected abstract Token handleBoundedQuantifierOverflow(long min, long max);
+
+    /**
+     * Handle integer overflows in quantifier bounds, e.g. {@code {2147483649}}. If this method
+     * returns a non-null value, it will be returned instead of the current quantifier. This method
+     * is called when no explicit {@code max} value is present.
+     */
+    protected abstract Token handleBoundedQuantifierOverflowMin(long min, long max);
+
+    /**
+     * Handle out of order character class range elements, e.g. {@code [b-a]}.
+     */
+    protected abstract RegexSyntaxException handleCCRangeOutOfOrder(int startPos);
+
+    /**
+     * Handle non-codepoint character class range elements, e.g. {@code [\w-a]}.
+     */
+    protected abstract void handleCCRangeWithPredefCharClass(int startPos, ClassSetContents firstAtom, ClassSetContents secondAtom);
+
+    /**
+     * Handle complement of class set expressions containing strings, e.g. {@code [^\q{abc}]} or
+     * {@code \P{RGI_Emoji}}.
+     */
+    protected abstract RegexSyntaxException handleComplementOfStringSet();
+
+    protected abstract void handleGroupRedefinition(String name, int newId, int oldId);
+
+    /**
+     * Handle incomplete hex escapes, e.g. {@code \x1}.
+     */
+    protected abstract void handleIncompleteEscapeX();
+
+    /**
+     * Handle group references to non-existent groups.
+     */
+    protected abstract Token handleInvalidBackReference(int reference);
+
+    protected abstract RegexSyntaxException handleInvalidCharInCharClass();
+
+    /**
+     * Handle groups starting with {@code (?} and invalid next char.
+     */
+    protected abstract RegexSyntaxException handleInvalidGroupBeginQ();
+
+    /**
+     * Handle class set expressions with mixed set operators in the same nested set.
+     */
+    protected abstract RegexSyntaxException handleMixedClassSetOperators(ClassSetOperator leftOperator, ClassSetOperator rightOperator);
+
+    /**
+     * Handle missing operands in class set expressions, e.g. {@code [\s&&]} or {@code [\w--]}.
+     */
+    protected abstract RegexSyntaxException handleMissingClassSetOperand(ClassSetOperator operator);
+
+    /**
+     * Handle octal values larger than 255.
+     */
+    protected abstract void handleOctalOutOfRange();
+
+    /**
+     * Handle character ranges as operands in class set expressions with operators other than union.
+     */
+    protected abstract RegexSyntaxException handleRangeAsClassSetOperand(ClassSetOperator operator);
+
+    /**
+     * Handle unfinished escape (e.g. {@code \}).
+     */
+    protected abstract void handleUnfinishedEscape();
+
+    /**
+     * Handle unfinished group comment {@code (#...)}.
+     */
+    protected abstract void handleUnfinishedGroupComment();
+
+    /**
+     * Handle unfinished group with question mark {@code (?}.
+     */
+    protected abstract RegexSyntaxException handleUnfinishedGroupQ();
+
+    /**
+     * Handle unfinished range in class set expression {@code [a-]}.
+     */
+    protected abstract RegexSyntaxException handleUnfinishedRangeInClassSet();
+
+    /**
+     * Handle unmatched {@code }}.
+     */
+    protected abstract void handleUnmatchedRightBrace();
+
+    /**
+     * Handle unmatched {@code [}.
+     */
+    protected abstract RegexSyntaxException handleUnmatchedLeftBracket();
+
+    /**
+     * Handle unmatched {@code ]}.
+     */
+    protected abstract void handleUnmatchedRightBracket();
+
+    /**
+     * Checks whether {@code codepoint} can appear as an unescaped literal class set character.
+     */
+    protected abstract void checkClassSetCharacter(int codePoint) throws RegexSyntaxException;
+
+    /**
+     * Parse the next codepoint in a group name and return it.
+     */
+    protected abstract int parseCodePointInGroupName() throws RegexSyntaxException;
+
+    /**
+     * Parse any escape sequence starting with {@code \} and the argument {@code c}.
+     */
+    protected abstract Token parseCustomEscape(char c);
+
+    /**
+     * Parse an escape character sequence (inside character class, or other escapes have already
+     * been tried) starting with {@code \} and the argument {code c}.
+     */
+    protected abstract int parseCustomEscapeChar(char c, boolean inCharClass);
+
+    /**
+     * Parse an escape character sequence (inside character class, or other escapes have already
+     * been tried) starting with {@code \} and the code point {@code c}.This method is called after
+     * all other means of parsing the escape sequence have been exhausted.
+     */
+    protected abstract int parseCustomEscapeCharFallback(int c, boolean inCharClass);
+
+    /**
+     * Parse group starting with {@code (?}.
+     */
+    protected abstract Token parseCustomGroupBeginQ(char charAfterQuestionMark);
+
+    /**
+     * Parse group starting with {@code (<}.
+     */
+    protected abstract Token parseGroupLt();
+
+    /* input string access */
+
+    protected boolean findChars(char... chars) {
+        if (atEnd()) {
+            return false;
+        }
+        int i = ArrayUtils.indexOf(pattern, position, pattern.length(), chars);
+        if (i < 0) {
+            position = pattern.length();
+            return false;
+        }
+        position = i;
+        return true;
+    }
+
+    protected void advance() {
+        advance(1);
+    }
+
+    protected void retreat() {
+        advance(-1);
     }
 
     public boolean hasNext() {
-        return !atEnd();
+        if (!inCharacterClass()) {
+            if (featureEnabledLineComments()) {
+                int p;
+                do {
+                    p = position;
+                    skipWhitespace();
+                    if (consumingLookahead("#")) {
+                        skipComment('\n');
+                    } else if (featureEnabledGroupComments() && consumingLookahead("(?#")) {
+                        if (!skipComment(')')) {
+                            handleUnfinishedGroupComment();
+                        }
+                    }
+                } while (p != position);
+            } else if (featureEnabledIgnoreWhiteSpace()) {
+                skipWhitespace();
+            }
+            if (featureEnabledGroupComments()) {
+                while (consumingLookahead("(?#")) {
+                    if (!skipComment(')')) {
+                        handleUnfinishedGroupComment();
+                    }
+                }
+            }
+        }
+        if (atEnd()) {
+            if (inCharacterClass()) {
+                throw handleUnmatchedLeftBracket();
+            }
+            return false;
+        }
+        return true;
+    }
+
+    private boolean skipComment(char terminator) {
+        while (findChars('\\', terminator)) {
+            if (consumeChar() == '\\' && !atEnd()) {
+                advance();
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void skipWhitespace() {
+        while (!atEnd()) {
+            char curChar = curChar();
+            if (!getWhitespace().get(curChar)) {
+                break;
+            }
+            advance();
+        }
     }
 
     public Token next() throws RegexSyntaxException {
-        curStartIndex = index;
+        curStartIndex = position;
         Token t = getNext();
-        setSourceSection(t, curStartIndex, index);
-        lastToken = t;
+        t.setPosition(curStartIndex);
+        setSourceSection(t, curStartIndex, position);
         return t;
     }
 
@@ -103,6 +527,118 @@ public final class RegexLexer {
      */
     public int getLastTokenPosition() {
         return curStartIndex;
+    }
+
+    public int getLastCharacterClassBeginPosition() {
+        return curCharClassStartIndex - 1;
+    }
+
+    protected int getLastAtomPosition() {
+        return Math.max(curStartIndex, charClassCurAtomStartIndex);
+    }
+
+    protected char curChar() {
+        return pattern.charAt(position);
+    }
+
+    protected char prevChar() {
+        return pattern.charAt(position - 1);
+    }
+
+    protected char consumeChar() {
+        final char c = pattern.charAt(position);
+        advance();
+        return c;
+    }
+
+    protected void advance(int len) {
+        position += len;
+    }
+
+    protected boolean lookahead(String match) {
+        if (pattern.length() - position < match.length()) {
+            return false;
+        }
+        return pattern.regionMatches(position, match, 0, match.length());
+    }
+
+    protected boolean lookahead(IntPredicate predicate, int length) {
+        if (pattern.length() - position < length) {
+            return false;
+        }
+        for (int i = position; i < position + length; i++) {
+            if (!predicate.test(pattern.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    protected boolean consumingLookahead(char character) {
+        if (atEnd()) {
+            return false;
+        }
+        if (curChar() == character) {
+            advance();
+            return true;
+        }
+        return false;
+    }
+
+    protected boolean consumingLookahead(String match) {
+        final boolean matches = lookahead(match);
+        if (matches) {
+            position += match.length();
+        }
+        return matches;
+    }
+
+    protected boolean consumingLookahead(IntPredicate predicate, int length) {
+        final boolean matches = lookahead(predicate, length);
+        if (matches) {
+            position += length;
+        }
+        return matches;
+    }
+
+    protected boolean lookbehind(char c) {
+        if (position < 1) {
+            return false;
+        }
+        return pattern.charAt(position - 1) == c;
+    }
+
+    protected int count(IntPredicate predicate) {
+        return count(predicate, position, pattern.length());
+    }
+
+    protected int countUpTo(IntPredicate predicate, int max) {
+        return count(predicate, position, (int) Math.min(((long) position) + max, pattern.length()));
+    }
+
+    protected int countFrom(IntPredicate predicate, int fromIndex) {
+        return count(predicate, fromIndex, pattern.length());
+    }
+
+    protected int count(IntPredicate predicate, int fromIndex, int toIndex) {
+        for (int i = fromIndex; i < toIndex; i++) {
+            if (!predicate.test(pattern.charAt(i))) {
+                return i - fromIndex;
+            }
+        }
+        return toIndex - fromIndex;
+    }
+
+    protected boolean atEnd() {
+        return position >= pattern.length();
+    }
+
+    public boolean inCharacterClass() {
+        return curCharClassStartIndex >= 0;
+    }
+
+    public boolean isCurCharClassInverted() {
+        return curCharClassInverted;
     }
 
     /**
@@ -115,70 +651,21 @@ public final class RegexLexer {
      *            {@link RegexSource#getPattern()}.
      */
     private void setSourceSection(Token t, int startIndex, int endIndex) {
-        if (source.getOptions().isDumpAutomataWithSourceSections()) {
+        if (source.getOptions().isDumpAutomataWithSourceSections() && t.kind != Token.Kind.charClassEnd) {
             // RegexSource#getSource() prepends a slash ('/') to the pattern, so we have to add an
             // offset of 1 here.
             t.setSourceSection(source.getSource().createSection(startIndex + 1, endIndex - startIndex));
         }
     }
 
-    /* input string access */
-
-    private char curChar() {
-        return pattern.charAt(index);
+    /**
+     * Get the number of capture groups parsed <em>so far</em>.
+     */
+    protected int getNumberOfParsedGroups() {
+        return nGroups;
     }
 
-    private char consumeChar() {
-        final char c = pattern.charAt(index);
-        advance();
-        return c;
-    }
-
-    private boolean findChars(char... chars) {
-        if (atEnd()) {
-            return false;
-        }
-        int i = ArrayUtils.indexOf(pattern, index, pattern.length(), chars);
-        if (i < 0) {
-            index = pattern.length();
-            return false;
-        }
-        index = i;
-        return true;
-    }
-
-    private void advance() {
-        advance(1);
-    }
-
-    private void retreat() {
-        advance(-1);
-    }
-
-    private void advance(int len) {
-        index += len;
-    }
-
-    private boolean lookahead(String match) {
-        if (pattern.length() - index < match.length()) {
-            return false;
-        }
-        return pattern.regionMatches(index, match, 0, match.length());
-    }
-
-    private boolean consumingLookahead(String match) {
-        final boolean matches = lookahead(match);
-        if (matches) {
-            advance(match.length());
-        }
-        return matches;
-    }
-
-    private boolean atEnd() {
-        return index >= pattern.length();
-    }
-
-    public int numberOfCaptureGroups() throws RegexSyntaxException {
+    public int totalNumberOfCaptureGroups() throws RegexSyntaxException {
         if (!identifiedAllGroups) {
             identifyCaptureGroups();
             identifiedAllGroups = true;
@@ -186,7 +673,12 @@ public final class RegexLexer {
         return nGroups;
     }
 
-    public Map<String, Integer> getNamedCaptureGroups() throws RegexSyntaxException {
+    public int numberOfCaptureGroupsSoFar() {
+        assert !identifiedAllGroups;
+        return nGroups;
+    }
+
+    public Map<String, List<Integer>> getNamedCaptureGroups() throws RegexSyntaxException {
         if (!identifiedAllGroups) {
             identifyCaptureGroups();
             identifiedAllGroups = true;
@@ -200,8 +692,8 @@ public final class RegexLexer {
      * This method is a way to check whether we are parsing the goal symbol Pattern[~U, +N] or
      * Pattern[~U, ~N] (see the ECMAScript RegExp grammar).
      */
-    private boolean hasNamedCaptureGroups() throws RegexSyntaxException {
-        return getNamedCaptureGroups() != null;
+    protected boolean hasNamedCaptureGroups() throws RegexSyntaxException {
+        return !getNamedCaptureGroups().isEmpty();
     }
 
     private void registerCaptureGroup() {
@@ -210,26 +702,39 @@ public final class RegexLexer {
         }
     }
 
-    private void registerNamedCaptureGroup(String name) {
+    protected void registerNamedCaptureGroup(String name) {
         if (!identifiedAllGroups) {
-            if (namedCaptureGroups == null) {
-                namedCaptureGroups = new HashMap<>();
+            List<Integer> groupsWithSameName = namedCaptureGroups.get(name);
+            if (groupsWithSameName != null) {
+                handleGroupRedefinition(name, nGroups, groupsWithSameName.get(0));
+                groupsWithSameName.add(nGroups);
+            } else {
+                groupsWithSameName = new ArrayList<>();
+                groupsWithSameName.add(nGroups);
+                namedCaptureGroups.put(name, groupsWithSameName);
             }
-            if (namedCaptureGroups.containsKey(name)) {
-                throw syntaxError(ErrorMessages.MULTIPLE_GROUPS_SAME_NAME);
-            }
-            namedCaptureGroups.put(name, nGroups);
         }
         registerCaptureGroup();
     }
 
+    protected int getSingleNamedGroupNumber(String name) {
+        List<Integer> groups = namedCaptureGroups.get(name);
+        assert groups.size() == 1;
+        return groups.get(0);
+    }
+
+    /**
+     * Only call this from languages which do not support comments. Also, must not be called from
+     * languages that disallow forward references (and therefore need {@link #nGroups} to represent
+     * the number of capture groups found *so far*). Currently, only being called from JS.
+     */
     private void identifyCaptureGroups() throws RegexSyntaxException {
         // We are counting capture groups, so we only care about '(' characters and special
         // characters which can cancel the meaning of '(' - those include '\' for escapes, '[' for
         // character classes (where '(' stands for a literal '(') and any characters after the '('
         // which might turn into a non-capturing group or a look-around assertion.
         boolean insideCharClass = false;
-        final int restoreIndex = index;
+        final int restoreIndex = position;
         while (findChars('\\', '[', ']', '(')) {
             switch (consumeChar()) {
                 case '\\':
@@ -251,46 +756,46 @@ public final class RegexLexer {
                     throw CompilerDirectives.shouldNotReachHere();
             }
         }
-        index = restoreIndex;
+        position = restoreIndex;
     }
 
-    private Token charClass(int codePoint) {
-        if (flags.isIgnoreCase()) {
-            curCharClass.clear();
-            curCharClass.appendRange(codePoint, codePoint);
-            return charClass(false);
-        } else {
-            return Token.createCharClass(CodePointSet.create(codePoint), true);
-        }
+    protected Token literalChar(int codePoint) {
+        return Token.createLiteralCharacter(codePoint);
     }
 
     private Token charClass(CodePointSet codePointSet) {
-        if (flags.isIgnoreCase()) {
-            curCharClass.clear();
-            curCharClass.addSet(codePointSet);
-            return charClass(false);
+        if (featureEnabledIgnoreCase()) {
+            return Token.createCharClass(caseFoldUnfold(codePointSet), codePointSet.matchesSingleChar());
         } else {
             return Token.createCharClass(codePointSet);
         }
     }
 
-    private Token charClass(boolean invert) {
-        boolean wasSingleChar = !invert && curCharClass.matchesSingleChar();
-        if (flags.isIgnoreCase()) {
-            CaseFoldTable.CaseFoldingAlgorithm caseFolding = flags.isUnicode() ? CaseFoldTable.CaseFoldingAlgorithm.ECMAScriptUnicode : CaseFoldTable.CaseFoldingAlgorithm.ECMAScriptNonUnicode;
-            CaseFoldTable.applyCaseFold(curCharClass, charClassCaseFoldTmp, caseFolding);
-        }
-        CodePointSet cps = curCharClass.toCodePointSet();
-        return Token.createCharClass(invert ? cps.createInverse(encoding) : cps, wasSingleChar);
+    protected CodePointSet caseFoldUnfold(CodePointSet codePointSet) {
+        curCharClass.clear();
+        curCharClass.addSet(codePointSet);
+        caseFoldUnfold(curCharClass);
+        return curCharClass.toCodePointSet();
     }
 
     /* lexer */
 
     private Token getNext() throws RegexSyntaxException {
         final char c = consumeChar();
+        if (inCharacterClass()) {
+            if (c == ']' && (!featureEnabledCharClassFirstBracketIsLiteral() || position != curCharClassStartIndex + (curCharClassInverted ? 2 : 1))) {
+                Token ccEnd = Token.createCharacterClassEnd();
+                if (source.getOptions().isDumpAutomataWithSourceSections()) {
+                    ccEnd.setSourceSection(source.getSource().createSection(curCharClassStartIndex, position - curCharClassStartIndex + 1));
+                }
+                curCharClassStartIndex = -1;
+                return ccEnd;
+            }
+            return Token.createCharacterClassAtom(parseCharClassAtom(c));
+        }
         switch (c) {
             case '.':
-                return Token.createCharClass(flags.isDotAll() ? Constants.DOT_ALL : Constants.DOT);
+                return Token.createCharClass(getDotCodePointSet());
             case '^':
                 return Token.createCaret();
             case '$':
@@ -301,14 +806,8 @@ public final class RegexLexer {
             case '?':
                 return parseQuantifier(c);
             case '}':
-                if (flags.isUnicode()) {
-                    // In ECMAScript regular expressions, syntax characters such as '}' and ']'
-                    // cannot be used as atomic patterns. However, Annex B relaxes this condition
-                    // and allows the use of unmatched '}' and ']', which then match themselves.
-                    // Neverthelesss, in Unicode mode, we should still be strict.
-                    throw syntaxError(ErrorMessages.UNMATCHED_RIGHT_BRACE);
-                }
-                return charClass(c);
+                handleUnmatchedRightBrace();
+                return literalChar(c);
             case '|':
                 return Token.createAlternation();
             case '(':
@@ -316,118 +815,123 @@ public final class RegexLexer {
             case ')':
                 return Token.createGroupEnd();
             case '[':
-                return parseCharClass();
-            case ']':
-                if (flags.isUnicode()) {
-                    throw syntaxError(ErrorMessages.UNMATCHED_RIGHT_BRACKET);
+                if (featureEnabledClassSetExpressions()) {
+                    return Token.createClassSetExpression(parseClassSetExpression());
                 }
-                return charClass(c);
+                curCharClassStartIndex = position;
+                curCharClassInverted = consumingLookahead("^");
+                return Token.createCharacterClassBegin();
+            case ']':
+                handleUnmatchedRightBracket();
+                return literalChar(c);
             case '\\':
                 return parseEscape();
             default:
-                if (flags.isUnicode() && Character.isHighSurrogate(c)) {
-                    return charClass(finishSurrogatePair(c));
-                }
-                return charClass(c);
+                return literalChar(toCodePoint(c));
         }
     }
 
     private Token parseEscape() throws RegexSyntaxException {
         if (atEnd()) {
-            throw syntaxError(ErrorMessages.ENDS_WITH_UNFINISHED_ESCAPE_SEQUENCE);
+            handleUnfinishedEscape();
         }
         final char c = consumeChar();
-        if ('1' <= c && c <= '9') {
-            final int restoreIndex = index;
-            final int backRefNumber = parseInteger(c - '0');
-            if (backRefNumber < numberOfCaptureGroups()) {
-                return Token.createBackReference(backRefNumber);
-            } else if (flags.isUnicode()) {
-                throw syntaxError(ErrorMessages.MISSING_GROUP_FOR_BACKREFERENCE);
-            }
-            index = restoreIndex;
+        Token custom = parseCustomEscape(c);
+        if (custom != null) {
+            return custom;
         }
-        switch (c) {
-            case 'k':
-                if (flags.isUnicode() || hasNamedCaptureGroups()) {
-                    if (atEnd()) {
-                        throw syntaxError(ErrorMessages.ENDS_WITH_UNFINISHED_ESCAPE_SEQUENCE);
-                    }
-                    if (consumeChar() != '<') {
-                        throw syntaxError(ErrorMessages.MISSING_GROUP_NAME);
-                    }
-                    String groupName = parseGroupName();
-                    // backward reference
-                    if (namedCaptureGroups != null && namedCaptureGroups.containsKey(groupName)) {
-                        return Token.createBackReference(namedCaptureGroups.get(groupName));
-                    }
-                    // possible forward reference
-                    Map<String, Integer> allNamedCaptureGroups = getNamedCaptureGroups();
-                    if (allNamedCaptureGroups != null && allNamedCaptureGroups.containsKey(groupName)) {
-                        return Token.createBackReference(allNamedCaptureGroups.get(groupName));
-                    }
-                    throw syntaxError(ErrorMessages.MISSING_GROUP_FOR_BACKREFERENCE);
-                } else {
-                    return charClass(c);
+        if ('1' <= c && c <= '9') {
+            final int restoreIndex = position;
+            final int backRefNumber = parseIntSaturated(c - '0', countDecimalDigits(getMaxBackReferenceDigits() - 1), Integer.MAX_VALUE);
+            if (backRefNumber < (featureEnabledForwardReferences() ? totalNumberOfCaptureGroups() : nGroups)) {
+                return Token.createBackReference(backRefNumber, false);
+            } else {
+                Token replacement = handleInvalidBackReference(backRefNumber);
+                if (replacement != null) {
+                    return replacement;
                 }
-            case 'b':
-                return Token.createWordBoundary();
-            case 'B':
-                return Token.createNonWordBoundary();
-            default:
-                // Here we differentiate the case when parsing one of the six basic pre-defined
-                // character classes (\w, \W, \d, \D, \s, \S) and Unicode character property
-                // escapes. Both result in sets of characters, but in the former case, we can skip
-                // the case-folding step in the `charClass` method and call `Token::createCharClass`
-                // directly.
-                if (isPredefCharClass(c)) {
-                    return Token.createCharClass(parsePredefCharClass(c));
-                } else if (flags.isUnicode() && (c == 'p' || c == 'P')) {
-                    return charClass(parseUnicodeCharacterProperty(c == 'P'));
-                } else {
-                    return charClass(parseEscapeChar(c, false));
-                }
+            }
+            position = restoreIndex;
+        }
+        if (featureEnabledAZPositionAssertions()) {
+            if (c == 'A') {
+                return Token.createA();
+            } else if (c == 'Z') {
+                return Token.createZ();
+            } else if (featureEnabledZLowerCaseAssertion() && c == 'z') {
+                return Token.createZLowerCase();
+            }
+        }
+        // Here we differentiate the case when parsing one of the six basic pre-defined
+        // character classes (\w, \W, \d, \D, \s, \S) and Unicode character property
+        // escapes. Both result in sets of characters, but in the former case, we can skip
+        // the case-folding step in the `charClass` method and call `Token::createCharClass`
+        // directly.
+        if (isPredefCharClass(c)) {
+            return Token.createCharClass(getPredefinedCharClass(c));
+        } else if (featureEnabledUnicodePropertyEscapes() && (c == 'p' || c == 'P')) {
+            ClassSetContents unicodePropertyContents = parseUnicodeCharacterProperty(c == 'P');
+            if (featureEnabledClassSetExpressions()) {
+                return Token.createClassSetExpression(unicodePropertyContents);
+            } else {
+                assert unicodePropertyContents.isCodePointSetOnly();
+                return charClass(unicodePropertyContents.getCodePointSet());
+            }
+        } else {
+            return literalChar(parseEscapeChar(c, false));
         }
     }
 
     private Token parseGroupBegin() throws RegexSyntaxException {
-        if (consumingLookahead("?=")) {
-            return Token.createLookAheadAssertionBegin(false);
-        } else if (consumingLookahead("?!")) {
-            return Token.createLookAheadAssertionBegin(true);
-        } else if (consumingLookahead("?<=")) {
-            return Token.createLookBehindAssertionBegin(false);
-        } else if (consumingLookahead("?<!")) {
-            return Token.createLookBehindAssertionBegin(true);
-        } else if (consumingLookahead("?:")) {
-            return Token.createNonCaptureGroupBegin();
-        } else if (consumingLookahead("?<")) {
-            String groupName = parseGroupName();
-            registerNamedCaptureGroup(groupName);
-            return Token.createCaptureGroupBegin();
+        if (featureEnabledSpecialGroups() && consumingLookahead("?")) {
+            if (atEnd()) {
+                throw handleUnfinishedGroupQ();
+            }
+            char c = consumeChar();
+            Token custom = parseCustomGroupBeginQ(c);
+            if (custom != null) {
+                return custom;
+            }
+            switch (c) {
+                case '=':
+                    return Token.createLookAheadAssertionBegin(false);
+                case '!':
+                    return Token.createLookAheadAssertionBegin(true);
+                case ':':
+                    return Token.createNonCaptureGroupBegin();
+                case '<':
+                    if (consumingLookahead("=")) {
+                        return Token.createLookBehindAssertionBegin(false);
+                    } else if (consumingLookahead("!")) {
+                        return Token.createLookBehindAssertionBegin(true);
+                    } else {
+                        return parseGroupLt();
+                    }
+                default:
+                    throw handleInvalidGroupBeginQ();
+            }
         } else {
             registerCaptureGroup();
             return Token.createCaptureGroupBegin();
         }
     }
 
-    private int parseCodePointInGroupName() throws RegexSyntaxException {
-        if (consumingLookahead("\\u")) {
-            final int unicodeEscape = parseUnicodeEscapeChar(true);
-            if (unicodeEscape < 0) {
-                throw syntaxError(ErrorMessages.INVALID_UNICODE_ESCAPE);
-            } else {
-                return unicodeEscape;
-            }
+    protected enum ParseGroupNameResultState {
+        empty,
+        unterminated,
+        invalidStart,
+        invalidRest,
+        valid;
+    }
+
+    public static final class ParseGroupNameResult {
+        public final ParseGroupNameResultState state;
+        public final String groupName;
+
+        ParseGroupNameResult(ParseGroupNameResultState state, String groupName) {
+            this.state = state;
+            this.groupName = groupName;
         }
-        if (atEnd()) {
-            throw syntaxError(ErrorMessages.UNTERMINATED_GROUP_NAME);
-        }
-        if (consumingLookahead(">")) {
-            return -1;
-        }
-        final char c = consumeChar();
-        return Character.isHighSurrogate(c) ? finishSurrogatePair(c) : c;
     }
 
     /**
@@ -436,391 +940,548 @@ public final class RegexLexer {
      *
      * @return the StringValue of the {@code RegExpIdentifierName}
      */
-    private String parseGroupName() throws RegexSyntaxException {
-        StringBuilder groupName = new StringBuilder();
+    protected ParseGroupNameResult parseGroupName(char terminator) throws RegexSyntaxException {
+        StringBuilder sb = new StringBuilder();
+        if (atEnd() || curChar() == terminator) {
+            return new ParseGroupNameResult(ParseGroupNameResultState.empty, "");
+        }
         int codePoint = parseCodePointInGroupName();
-        if (codePoint == -1) {
-            throw syntaxError(ErrorMessages.EMPTY_GROUP_NAME);
+        boolean validFirstChar = getIdStart().contains(codePoint);
+        boolean validRest = true;
+        sb.appendCodePoint(codePoint);
+        while (!atEnd() && curChar() != terminator) {
+            codePoint = parseCodePointInGroupName();
+            validRest &= getIdContinue().contains(codePoint);
+            sb.appendCodePoint(codePoint);
         }
-        if (!(ID_START.contains(codePoint) || codePoint == '$' || codePoint == '_')) {
-            throw syntaxError(ErrorMessages.INVALID_GROUP_NAME_START);
+        String groupName = sb.toString();
+        if (!consumingLookahead(terminator)) {
+            return new ParseGroupNameResult(ParseGroupNameResultState.unterminated, groupName);
         }
-        groupName.appendCodePoint(codePoint);
-        while ((codePoint = parseCodePointInGroupName()) != -1) {
-            if (!(ID_CONTINUE.contains(codePoint) || codePoint == '$' || codePoint == '\u200c' || codePoint == '\u200d')) {
-                throw syntaxError(ErrorMessages.INVALID_GROUP_NAME_PART);
-            }
-            groupName.appendCodePoint(codePoint);
+        if (!validFirstChar) {
+            return new ParseGroupNameResult(ParseGroupNameResultState.invalidStart, groupName);
         }
-        return groupName.toString();
+        if (!validRest) {
+            return new ParseGroupNameResult(ParseGroupNameResultState.invalidRest, groupName);
+        }
+        return new ParseGroupNameResult(ParseGroupNameResultState.valid, groupName);
     }
-
-    private static final EnumSet<Token.Kind> QUANTIFIER_PREV = EnumSet.of(Token.Kind.charClass, Token.Kind.groupEnd, Token.Kind.backReference);
 
     private Token parseQuantifier(char c) throws RegexSyntaxException {
-        int min;
-        int max = -1;
-        boolean greedy;
-        if (c == '{') {
-            final int resetIndex = index;
-            BigInteger literalMin = parseDecimal();
-            if (literalMin.compareTo(BigInteger.ZERO) < 0) {
-                return countedRepetitionSyntaxError(resetIndex);
+        final long min;
+        final long max;
+        final boolean braces = c == '{';
+        if (braces) {
+            if (lookahead("}")) {
+                return handleBoundedQuantifierEmptyOrMissingMin();
             }
-            min = literalMin.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) <= 0 ? literalMin.intValue() : -1;
+            final int resetIndex = position;
+            final int lengthMin = countDecimalDigits();
+            if (lengthMin == 0) {
+                if (featureEnabledBoundedQuantifierEmptyMin()) {
+                    min = 0;
+                } else {
+                    return handleBoundedQuantifierEmptyOrMissingMin();
+                }
+            } else {
+                min = parseIntSaturated(0, lengthMin, -1, boundedQuantifierMaxValue());
+            }
             if (consumingLookahead(",}")) {
-                greedy = !consumingLookahead("?");
+                max = -1;
+                if (min == -1 || min > Integer.MAX_VALUE) {
+                    Token ret = handleBoundedQuantifierOverflowMin(min, max);
+                    if (ret != null) {
+                        return ret;
+                    }
+                }
             } else if (consumingLookahead("}")) {
                 max = min;
-                greedy = !consumingLookahead("?");
-            } else {
-                BigInteger literalMax;
-                if (!consumingLookahead(",") || (literalMax = parseDecimal()).compareTo(BigInteger.ZERO) < 0 || !consumingLookahead("}")) {
-                    return countedRepetitionSyntaxError(resetIndex);
+                if (min == -1 || min > Integer.MAX_VALUE) {
+                    Token ret = handleBoundedQuantifierOverflowMin(min, max);
+                    if (ret != null) {
+                        return ret;
+                    }
                 }
-                max = literalMax.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) <= 0 ? literalMax.intValue() : -1;
-                greedy = !consumingLookahead("?");
-                if (literalMin.compareTo(literalMax) > 0) {
-                    throw syntaxError(ErrorMessages.QUANTIFIER_OUT_OF_ORDER);
+            } else {
+                if (!consumingLookahead(",")) {
+                    return handleBoundedQuantifierInvalidCharacter();
+                }
+                final int lengthMax = countDecimalDigits();
+                max = parseIntSaturated(0, lengthMax, -1, boundedQuantifierMaxValue());
+                if (!consumingLookahead("}")) {
+                    return handleBoundedQuantifierInvalidCharacter();
+                }
+                if (min == -1 || max == -1 || min > Integer.MAX_VALUE || max > Integer.MAX_VALUE) {
+                    Token ret = handleBoundedQuantifierOverflow(min, max);
+                    if (ret != null) {
+                        return ret;
+                    }
+                }
+                if (isQuantifierOutOfOrder(min, max, resetIndex, lengthMin, lengthMax)) {
+                    throw handleBoundedQuantifierOutOfOrder();
                 }
             }
         } else {
-            greedy = !consumingLookahead("?");
             min = c == '+' ? 1 : 0;
-            if (c == '?') {
-                max = 1;
-            }
+            max = c == '?' ? 1 : -1;
         }
-        if (lastToken == null) {
-            throw syntaxError(ErrorMessages.QUANTIFIER_WITHOUT_TARGET);
+        boolean greedy = true;
+        boolean possessive = false;
+        if (consumingLookahead('?')) {
+            greedy = false;
+        } else if (featureEnabledPossessiveQuantifiers() && consumingLookahead('+')) {
+            possessive = true;
         }
-        if (lastToken.kind == Token.Kind.quantifier) {
-            throw syntaxError(ErrorMessages.QUANTIFIER_ON_QUANTIFIER);
-        }
-        if (!QUANTIFIER_PREV.contains(lastToken.kind)) {
-            throw syntaxError(ErrorMessages.QUANTIFIER_WITHOUT_TARGET);
-        }
-        return Token.createQuantifier(min, max, greedy);
+
+        return Token.createQuantifier((int) min, (int) max, greedy, possessive, !braces);
     }
 
-    private Token countedRepetitionSyntaxError(int resetIndex) throws RegexSyntaxException {
-        if (flags.isUnicode()) {
-            throw syntaxError(ErrorMessages.INCOMPLETE_QUANTIFIER);
+    private boolean isQuantifierOutOfOrder(long parsedMin, long parsedMax, int startMin, int lengthMin, int lengthMax) {
+        if (Long.compareUnsigned(parsedMin, parsedMax) > 0) {
+            return true;
+        } else if (parsedMin == -1 && parsedMax == -1) {
+            int startMax = startMin + lengthMin + 1;
+            int nZerosMin = countZeros(startMin);
+            int nZerosMax = countZeros(startMax);
+            int lengthMinTrunc = lengthMin - nZerosMin;
+            int lengthMaxTrunc = lengthMax - nZerosMax;
+            return lengthMinTrunc > lengthMaxTrunc || lengthMinTrunc == lengthMaxTrunc &&
+                            pattern.substring(startMin + nZerosMin, startMin + lengthMin).compareTo(pattern.substring(startMax + nZerosMax, startMax + lengthMax)) > 0;
         }
-        index = resetIndex;
-        return charClass('{');
+        return false;
     }
 
-    private Token parseCharClass() throws RegexSyntaxException {
-        final boolean invert = consumingLookahead("^");
-        curCharClass.clear();
-        while (!atEnd()) {
-            final char c = consumeChar();
-            if (c == ']') {
-                return charClass(invert);
-            }
-            parseCharClassRange(c);
-        }
-        throw syntaxError(ErrorMessages.UNMATCHED_LEFT_BRACKET);
+    protected int parseIntSaturated(int firstDigit, int length, int returnOnOverflow) {
+        return (int) parseIntSaturated(firstDigit, length, returnOnOverflow, Integer.MAX_VALUE);
     }
 
-    private CodePointSet parseCharClassAtomPredefCharClass(char c) throws RegexSyntaxException {
-        if (c == '\\') {
-            if (atEnd()) {
-                throw syntaxError(ErrorMessages.ENDS_WITH_UNFINISHED_ESCAPE_SEQUENCE);
-            }
-            if (isEscapeCharClass(curChar())) {
-                return parseEscapeCharClass(consumeChar());
-            }
-        }
-        return null;
-    }
-
-    private int parseCharClassAtomCodePoint(char c) throws RegexSyntaxException {
-        if (c == '\\') {
-            assert !atEnd();
-            assert !isEscapeCharClass(curChar());
-            return parseEscapeChar(consumeChar(), true);
-        } else if (flags.isUnicode() && Character.isHighSurrogate(c)) {
-            return finishSurrogatePair(c);
-        } else {
-            return c;
-        }
-    }
-
-    private void parseCharClassRange(char c) throws RegexSyntaxException {
-        CodePointSet firstAtomCC = parseCharClassAtomPredefCharClass(c);
-        int firstAtomCP = firstAtomCC == null ? parseCharClassAtomCodePoint(c) : -1;
-        if (consumingLookahead("-")) {
-            if (atEnd() || lookahead("]")) {
-                addCharClassAtom(firstAtomCC, firstAtomCP);
-                curCharClass.addRange('-', '-');
-            } else {
-                char nextC = consumeChar();
-                CodePointSet secondAtomCC = parseCharClassAtomPredefCharClass(nextC);
-                int secondAtomCP = secondAtomCC == null ? parseCharClassAtomCodePoint(nextC) : -1;
-                // Runtime Semantics: CharacterRangeOrUnion(firstAtom, secondAtom)
-                if (firstAtomCC != null || secondAtomCC != null) {
-                    if (flags.isUnicode()) {
-                        throw syntaxError(ErrorMessages.INVALID_CHARACTER_CLASS);
-                    } else {
-                        addCharClassAtom(firstAtomCC, firstAtomCP);
-                        addCharClassAtom(secondAtomCC, secondAtomCP);
-                        curCharClass.addRange('-', '-');
-                    }
-                } else {
-                    if (secondAtomCP < firstAtomCP) {
-                        throw syntaxError(ErrorMessages.CHAR_CLASS_RANGE_OUT_OF_ORDER);
-                    } else {
-                        curCharClass.addRange(firstAtomCP, secondAtomCP);
-                    }
-                }
-            }
-        } else {
-            addCharClassAtom(firstAtomCC, firstAtomCP);
-        }
-    }
-
-    private void addCharClassAtom(CodePointSet preDefCharClass, int codePoint) {
-        if (preDefCharClass != null) {
-            curCharClass.addSet(preDefCharClass);
-        } else {
-            curCharClass.addRange(codePoint, codePoint);
-        }
-    }
-
-    private CodePointSet parseEscapeCharClass(char c) throws RegexSyntaxException {
-        if (isPredefCharClass(c)) {
-            return parsePredefCharClass(c);
-        } else if (flags.isUnicode() && (c == 'p' || c == 'P')) {
-            return parseUnicodeCharacterProperty(c == 'P');
-        } else {
-            throw CompilerDirectives.shouldNotReachHere();
-        }
-    }
-
-    // Note that the CodePointSet returned by this function has already been
-    // case-folded and negated.
-    private CodePointSet parsePredefCharClass(char c) {
-        switch (c) {
-            case 's':
-                if (source.getOptions().isU180EWhitespace()) {
-                    return Constants.LEGACY_WHITE_SPACE;
-                } else {
-                    return Constants.WHITE_SPACE;
-                }
-            case 'S':
-                if (source.getOptions().isU180EWhitespace()) {
-                    return Constants.LEGACY_NON_WHITE_SPACE;
-                } else {
-                    return Constants.NON_WHITE_SPACE;
-                }
-            case 'd':
-                return Constants.DIGITS;
-            case 'D':
-                return Constants.NON_DIGITS;
-            case 'w':
-                if (flags.isUnicode() && flags.isIgnoreCase()) {
-                    return Constants.WORD_CHARS_UNICODE_IGNORE_CASE;
-                } else {
-                    return Constants.WORD_CHARS;
-                }
-            case 'W':
-                if (flags.isUnicode() && flags.isIgnoreCase()) {
-                    return Constants.NON_WORD_CHARS_UNICODE_IGNORE_CASE;
-                } else {
-                    return Constants.NON_WORD_CHARS;
-                }
-            default:
-                throw CompilerDirectives.shouldNotReachHere();
-        }
-    }
-
-    private CodePointSet parseUnicodeCharacterProperty(boolean invert) throws RegexSyntaxException {
-        if (!consumingLookahead("{")) {
-            throw syntaxError(ErrorMessages.INVALID_UNICODE_PROPERTY);
-        }
-        int namePos = index;
-        while (!atEnd() && curChar() != '}') {
-            advance();
-        }
-        if (!consumingLookahead("}")) {
-            throw syntaxError(ErrorMessages.ENDS_WITH_UNFINISHED_UNICODE_PROPERTY);
-        }
-        try {
-            CodePointSet propertySet = encoding.getFullSet().createIntersection(UnicodeProperties.getProperty(pattern.substring(namePos, index - 1)), curCharClass.getTmp());
-            return invert ? propertySet.createInverse(encoding) : propertySet;
-        } catch (IllegalArgumentException e) {
-            throw syntaxError(e.getMessage());
-        }
-    }
-
-    /**
-     * Parse a {@code RegExpUnicodeEscapeSequence}, assuming that the prefix '&#92;u' has already
-     * been read.
-     * 
-     * @param unicodeMode whether we are in Unicode mode, which allows '&#92;u{...} escapes and
-     *            treats surrogate pairs as single code points
-     *
-     * @return the code point of the escaped character, or -1 if the escape was malformed
-     */
-    private int parseUnicodeEscapeChar(boolean unicodeMode) throws RegexSyntaxException {
-        if (unicodeMode && consumingLookahead("{")) {
-            final int value = parseHex(1, Integer.MAX_VALUE, 0x10ffff, ErrorMessages.INVALID_UNICODE_ESCAPE);
-            if (!consumingLookahead("}")) {
-                throw syntaxError(ErrorMessages.INVALID_UNICODE_ESCAPE);
-            }
-            return value;
-        } else {
-            final int value = parseHex(4, 4, 0xffff, ErrorMessages.INVALID_UNICODE_ESCAPE);
-            if (unicodeMode && Character.isHighSurrogate((char) value)) {
-                final int resetIndex = index;
-                if (consumingLookahead("\\u") && !lookahead("{")) {
-                    final char lead = (char) value;
-                    final char trail = (char) parseHex(4, 4, 0xffff, ErrorMessages.INVALID_UNICODE_ESCAPE);
-                    if (Character.isLowSurrogate(trail)) {
-                        return Character.toCodePoint(lead, trail);
-                    } else {
-                        index = resetIndex;
-                    }
-                } else {
-                    index = resetIndex;
-                }
-            }
-            return value;
-        }
-    }
-
-    private int parseEscapeChar(char c, boolean inCharClass) throws RegexSyntaxException {
-        if (inCharClass && c == 'b') {
-            return '\b';
-        }
-        switch (c) {
-            case '0':
-                if (flags.isUnicode() && !atEnd() && isDecimal(curChar())) {
-                    throw syntaxError(ErrorMessages.INVALID_ESCAPE);
-                }
-                if (!flags.isUnicode() && !atEnd() && isOctal(curChar())) {
-                    return parseOctal(0);
-                }
-                return '\0';
-            case 't':
-                return '\t';
-            case 'n':
-                return '\n';
-            case 'v':
-                return '\u000B';
-            case 'f':
-                return '\f';
-            case 'r':
-                return '\r';
-            case 'c':
-                if (atEnd()) {
-                    retreat();
-                    return escapeCharSyntaxError('\\', ErrorMessages.INVALID_CONTROL_CHAR_ESCAPE);
-                }
-                final char controlLetter = curChar();
-                if (!flags.isUnicode() && (isDecimal(controlLetter) || controlLetter == '_') && inCharClass) {
-                    advance();
-                    return controlLetter % 32;
-                }
-                if (!('a' <= controlLetter && controlLetter <= 'z' || 'A' <= controlLetter && controlLetter <= 'Z')) {
-                    retreat();
-                    return escapeCharSyntaxError('\\', ErrorMessages.INVALID_CONTROL_CHAR_ESCAPE);
-                }
-                advance();
-                return Character.toUpperCase(controlLetter) - ('A' - 1);
-            case 'u':
-                final int unicodeEscape = parseUnicodeEscapeChar(flags.isUnicode());
-                return unicodeEscape < 0 ? c : unicodeEscape;
-            case 'x':
-                final int value = parseHex(2, 2, 0xff, ErrorMessages.INVALID_ESCAPE);
-                return value < 0 ? c : value;
-            case '-':
-                if (!inCharClass) {
-                    return escapeCharSyntaxError(c, ErrorMessages.INVALID_ESCAPE);
-                }
-                return c;
-            default:
-                if (!flags.isUnicode() && isOctal(c)) {
-                    return parseOctal(c - '0');
-                }
-                if (!SYNTAX_CHARS.get(c)) {
-                    return escapeCharSyntaxError(c, ErrorMessages.INVALID_ESCAPE);
-                }
-                return c;
-        }
-    }
-
-    private int finishSurrogatePair(char c) {
-        assert Character.isHighSurrogate(c);
-        if (!atEnd() && Character.isLowSurrogate(curChar())) {
-            final char lead = c;
-            final char trail = consumeChar();
-            return Character.toCodePoint(lead, trail);
-        } else {
-            return c;
-        }
-    }
-
-    private char escapeCharSyntaxError(char c, String msg) throws RegexSyntaxException {
-        if (flags.isUnicode()) {
-            throw syntaxError(msg);
-        }
-        return c;
-    }
-
-    private BigInteger parseDecimal() {
-        if (atEnd() || !isDecimal(curChar())) {
-            return BigInteger.valueOf(-1);
-        }
-        return parseDecimal(BigInteger.ZERO);
-    }
-
-    private BigInteger parseDecimal(BigInteger firstDigit) {
-        BigInteger ret = firstDigit;
-        while (!atEnd() && isDecimal(curChar())) {
-            ret = ret.multiply(BigInteger.TEN);
-            ret = ret.add(BigInteger.valueOf(consumeChar() - '0'));
-        }
-        return ret;
-    }
-
-    /**
-     * Parses a non-negative decimal integer. The value of the integer is clamped to
-     * {@link Integer#MAX_VALUE}. For all {@code i} in {0,1,..,9}, {@code parseInteger(i)} is
-     * equivalent to
-     * {@code parseDecimal(BigInteger.valueOf(i)).max(BigInteger.valueOf(Integer.MAX_VALUE)}.
-     * {@link #parseInteger(int)} should be faster than {@link #parseDecimal(java.math.BigInteger)}
-     * because it does not have to go through {@link BigInteger}s.
-     */
-    private int parseInteger(int firstDigit) {
-        int ret = firstDigit;
-        // First, we consume all of the decimal digits that make up the integer.
-        final int initialIndex = index;
-        while (!atEnd() && isDecimal(curChar())) {
-            advance();
-        }
-        final int terminalIndex = index;
-        // Then, we parse the integer, stopping once we reach the limit Integer.MAX_VALUE.
-        for (int i = initialIndex; i < terminalIndex; i++) {
+    protected long parseIntSaturated(int firstDigit, int length, int returnOnOverflow, long maxValue) {
+        int fromIndex = position;
+        position += length;
+        long ret = firstDigit;
+        for (int i = fromIndex; i < fromIndex + length; i++) {
             int nextDigit = pattern.charAt(i) - '0';
-            if (ret > Integer.MAX_VALUE / 10) {
-                return Integer.MAX_VALUE;
+            if (ret > maxValue / 10) {
+                return returnOnOverflow;
             }
             ret *= 10;
-            if (ret > Integer.MAX_VALUE - nextDigit) {
-                return Integer.MAX_VALUE;
+            if (ret > maxValue - nextDigit) {
+                return returnOnOverflow;
             }
             ret += nextDigit;
         }
         return ret;
     }
 
-    private int parseOctal(int firstDigit) {
+    protected int countDecimalDigits() {
+        return count(RegexLexer::isDecimalDigit);
+    }
+
+    private int countDecimalDigits(int maxLength) {
+        return countUpTo(RegexLexer::isDecimalDigit, maxLength);
+    }
+
+    private int countZeros(int fromIndex) {
+        return countFrom((c) -> c == '0', fromIndex);
+    }
+
+    protected ClassSetContents parseCharClassAtomPredefCharClass(char c) throws RegexSyntaxException {
+        if (c == '\\') {
+            if (atEnd()) {
+                handleUnfinishedEscape();
+            }
+            if (isEscapeCharClass(curChar())) {
+                ClassSetContents contents = parseEscapeCharClass(consumeChar());
+                assert featureEnabledClassSetExpressions() || contents.isCodePointSetOnly();
+                return contents;
+            }
+        } else if (featureEnabledNestedCharClasses() && c == '[') {
+            if (atEnd()) {
+                throw handleUnmatchedLeftBracket();
+            }
+            if (featureEnabledPOSIXCharClasses()) {
+                return parsePOSIXCharClassElement();
+            }
+        }
+        return null;
+    }
+
+    private ClassSetContents parsePOSIXCharClassElement() {
+        int resetIndex = position;
+        char delim = consumeChar();
+        if (delim == ':' || delim == '.' || delim == '=') {
+            int end = pattern.indexOf(getPosixCharClassEndStr(delim), position);
+            if (end >= 0) {
+                String name = pattern.substring(position, end);
+                position = end + 2;
+                switch (delim) {
+                    case ':':
+                        return ClassSetContents.createCharacterClass(getPOSIXCharClass(name));
+                    case '.':
+                        if (JavaStringUtil.isSingleCodePoint(name)) {
+                            return ClassSetContents.createPOSIXCollationElement(name.codePointAt(0));
+                        } else {
+                            validatePOSIXCollationElement(name);
+                            return ClassSetContents.createPOSIXCollationElement(name);
+                        }
+                    case '=':
+                        if (JavaStringUtil.isSingleCodePoint(name)) {
+                            return ClassSetContents.createPOSIXCollationEquivalenceClass(name.codePointAt(0));
+                        } else {
+                            validatePOSIXEquivalenceClass(name);
+                            return ClassSetContents.createPOSIXCollationEquivalenceClass(name);
+                        }
+                    default:
+                        throw CompilerDirectives.shouldNotReachHere();
+                }
+            }
+        }
+        position = resetIndex;
+        return ClassSetContents.createCharacter('[');
+    }
+
+    private static String getPosixCharClassEndStr(char delim) {
+        switch (delim) {
+            case ':':
+                return ":]";
+            case '.':
+                return ".]";
+            case '=':
+                return "=]";
+            default:
+                throw CompilerDirectives.shouldNotReachHere();
+        }
+    }
+
+    protected int parseCharClassAtomCodePoint(char c) throws RegexSyntaxException {
+        if (c == '\\') {
+            assert !atEnd();
+            assert !isEscapeCharClass(curChar());
+            return parseEscapeChar(consumeChar(), true);
+        } else {
+            int codePoint = toCodePoint(c);
+            if (featureEnabledClassSetExpressions()) {
+                checkClassSetCharacter(codePoint);
+            }
+            return codePoint;
+        }
+    }
+
+    private ClassSetContents parseCharClassAtomInner(char c) throws RegexSyntaxException {
+        ClassSetContents cc = parseCharClassAtomPredefCharClass(c);
+        if (cc != null) {
+            return cc;
+        }
+        return ClassSetContents.createCharacter(parseCharClassAtomCodePoint(c));
+    }
+
+    private ClassSetContents parseCharClassAtom(char c) throws RegexSyntaxException {
+        int startPos = position - 1;
+        charClassCurAtomStartIndex = position - 1;
+        ClassSetContents firstAtom = parseCharClassAtomInner(c);
+        if (charClassEmitInvalidRangeAtoms > 0) {
+            charClassEmitInvalidRangeAtoms--;
+            return firstAtom;
+        }
+        if ((firstAtom.isAllowedInRange() || featureEnabledCCRangeWithPredefCharClass()) && consumingLookahead("-")) {
+            if (atEnd() || lookahead("]")) {
+                position--;
+                return firstAtom;
+            } else {
+                char nextC = consumeChar();
+                charClassCurAtomStartIndex = position - 1;
+                ClassSetContents secondAtom = parseCharClassAtomInner(nextC);
+                // Runtime Semantics: CharacterRangeOrUnion(firstAtom, secondAtom)
+                boolean invalidAtom = !firstAtom.isAllowedInRange() || !secondAtom.isAllowedInRange();
+                if (invalidAtom || secondAtom.getCodePoint() < firstAtom.getCodePoint()) {
+                    if (invalidAtom) {
+                        handleCCRangeWithPredefCharClass(startPos, firstAtom, secondAtom);
+                    } else {
+                        throw handleCCRangeOutOfOrder(startPos);
+                    }
+                    // no syntax error thrown, so we have to emit the range as three separate atoms
+                    position = charClassCurAtomStartIndex - 1;
+                    charClassEmitInvalidRangeAtoms = 2;
+                    return firstAtom;
+                } else {
+                    return ClassSetContents.createRange(firstAtom.getCodePoint(), secondAtom.getCodePoint());
+                }
+            }
+        } else {
+            return firstAtom;
+        }
+    }
+
+    private ClassSetContents parseEscapeCharClass(char c) throws RegexSyntaxException {
+        if (isPredefCharClass(c)) {
+            return ClassSetContents.createCharacterClass(getPredefinedCharClass(c));
+        } else if (featureEnabledUnicodePropertyEscapes() && (c == 'p' || c == 'P')) {
+            return parseUnicodeCharacterProperty(c == 'P');
+        } else {
+            throw CompilerDirectives.shouldNotReachHere();
+        }
+    }
+
+    public enum ClassSetOperator {
+        Union("implicit union"),
+        Intersection("&&"),
+        Difference("--");
+
+        private final String repr;
+
+        ClassSetOperator(String repr) {
+            this.repr = repr;
+        }
+
+        @Override
+        public String toString() {
+            return repr;
+        }
+    }
+
+    protected ClassSetContents parseClassSetExpression() throws RegexSyntaxException {
+        final boolean invert = consumingLookahead("^");
+        ClassSetContentsAccumulator curClassSet = new ClassSetContentsAccumulator();
+        ClassSetOperator operator = null;
+        boolean firstOperandIsRange = false;
+        int startPos = position;
+        while (!atEnd()) {
+            if (curChar() == ']' && (!featureEnabledCharClassFirstBracketIsLiteral() || position != startPos)) {
+                advance();
+                if (invert && curClassSet.mayContainStrings()) {
+                    throw handleComplementOfStringSet();
+                }
+                if (invert) {
+                    assert !curClassSet.mayContainStrings() && curClassSet.isCodePointSetOnly();
+                    return ClassSetContents.createCharacterClass(complementClassSet(curClassSet.getCodePointSet()));
+                } else {
+                    EconomicSet<String> stringsCopy = EconomicSet.create(curClassSet.getStrings().size());
+                    stringsCopy.addAll(curClassSet.getStrings());
+                    return ClassSetContents.createClass(curClassSet.getCodePointSet(), stringsCopy, curClassSet.mayContainStrings());
+                }
+            }
+
+            boolean atStart = position == startPos;
+            ClassSetOperator newOperator = parseClassSetOperator();
+            if (atStart) {
+                if (newOperator != ClassSetOperator.Union) {
+                    throw handleMissingClassSetOperand(newOperator);
+                }
+            } else {
+                if (operator == null) {
+                    // first operator
+                    operator = newOperator;
+                    if (firstOperandIsRange && operator != ClassSetOperator.Union) {
+                        throw handleRangeAsClassSetOperand(operator);
+                    }
+                } else if (operator != newOperator) {
+                    throw handleMixedClassSetOperators(operator, newOperator);
+                }
+            }
+
+            if (atEnd()) {
+                break;
+            }
+            if (curChar() == ']') {
+                throw handleMissingClassSetOperand(newOperator);
+            }
+
+            ClassSetContents operand = parseClassSetOperandOrRange();
+            if (operand.isRange() && operator != null && operator != ClassSetOperator.Union) {
+                throw handleRangeAsClassSetOperand(operator);
+            }
+            if (operator == null) {
+                // first operand
+                curClassSet.addAll(operand);
+                firstOperandIsRange = operand.isRange();
+            } else {
+                switch (operator) {
+                    case Union -> curClassSet.addAll(operand);
+                    case Intersection -> curClassSet.retainAll(operand);
+                    case Difference -> curClassSet.removeAll(operand, encoding);
+                }
+            }
+        }
+        throw handleUnmatchedLeftBracket();
+    }
+
+    private ClassSetOperator parseClassSetOperator() {
+        if (consumingLookahead("&&")) {
+            if (lookahead("&")) {
+                throw handleInvalidCharInCharClass();
+            }
+            return ClassSetOperator.Intersection;
+        } else if (consumingLookahead("--")) {
+            return ClassSetOperator.Difference;
+        } else {
+            return ClassSetOperator.Union;
+        }
+    }
+
+    private ClassSetContents parseClassSetOperandOrRange() {
+        int startPos = position;
+        charClassCurAtomStartIndex = position;
+        char c = consumeChar();
+        ClassSetContents contents = parseClassSetStrings(c);
+        if (contents != null) {
+            return caseFoldClassSetAtom(contents);
+        }
+        contents = parseCharClassAtomPredefCharClass(c);
+        if (contents != null) {
+            return contents;
+        }
+        if (c == '[') {
+            return parseClassSetExpression();
+        } else {
+            int firstCodePoint = parseCharClassAtomCodePoint(c);
+            if (lookahead("-") && !lookahead("--")) {
+                advance();
+                if (atEnd()) {
+                    throw handleUnmatchedLeftBracket();
+                }
+                if (curChar() == ']') {
+                    throw handleUnfinishedRangeInClassSet();
+                }
+                int secondCodePoint = parseCharClassAtomCodePoint(consumeChar());
+                if (secondCodePoint < firstCodePoint) {
+                    throw handleCCRangeOutOfOrder(startPos);
+                }
+                return caseFoldClassSetAtom(ClassSetContents.createRange(firstCodePoint, secondCodePoint));
+            } else {
+                return caseFoldClassSetAtom(ClassSetContents.createCharacter(firstCodePoint));
+            }
+        }
+    }
+
+    private ClassSetContents parseClassSetStrings(char c) {
+        if (c == '\\' && consumingLookahead("q{")) {
+            EconomicSet<String> strings = EconomicSet.create();
+            CodePointSetAccumulator singleCodePoints = new CodePointSetAccumulator();
+            do {
+                String string = parseClassSetString();
+                if (string.codePointCount(0, string.length()) == 1) {
+                    singleCodePoints.addCodePoint(string.codePointAt(0));
+                } else {
+                    strings.add(string);
+                }
+                if (atEnd()) {
+                    throw syntaxError(JsErrorMessages.UNTERMINATED_STRING_SET, ErrorCode.InvalidCharacterClass);
+                }
+            } while (consumingLookahead('|'));
+            if (atEnd()) {
+                throw syntaxError(JsErrorMessages.UNTERMINATED_STRING_SET, ErrorCode.InvalidCharacterClass);
+            }
+            assert curChar() == '}';
+            advance();
+            return ClassSetContents.createStrings(singleCodePoints.toCodePointSet(), strings);
+        } else {
+            return null;
+        }
+    }
+
+    private String parseClassSetString() {
+        StringBuilder sb = new StringBuilder();
+        while (!atEnd() && curChar() != '|' && curChar() != '}') {
+            if (consumingLookahead('\\')) {
+                if (atEnd()) {
+                    handleUnfinishedEscape();
+                }
+                sb.appendCodePoint(parseEscapeChar(consumeChar(), true));
+            } else {
+                sb.append(consumeChar());
+            }
+        }
+        return sb.toString();
+    }
+
+    protected ClassSetContents parseUnicodeCharacterProperty(boolean invert) throws RegexSyntaxException {
+        if (!consumingLookahead("{")) {
+            throw syntaxError(JsErrorMessages.INVALID_UNICODE_PROPERTY, ErrorCode.InvalidCharacterClass);
+        }
+        int namePos = position;
+        while (!atEnd() && curChar() != '}') {
+            advance();
+        }
+        if (!consumingLookahead("}")) {
+            throw syntaxError(JsErrorMessages.ENDS_WITH_UNFINISHED_UNICODE_PROPERTY, ErrorCode.InvalidCharacterClass);
+        }
+        try {
+            String propertyName = pattern.substring(namePos, position - 1);
+            if (featureEnabledClassSetExpressions()) {
+                ClassSetContents property = ECMAScriptFlavor.UNICODE.getPropertyOfStrings(propertyName);
+                if (invert) {
+                    if (property.mayContainStrings()) {
+                        throw handleComplementOfStringSet();
+                    }
+                    assert property.isCodePointSetOnly();
+                    property = caseFoldClassSetAtom(property);
+                    return ClassSetContents.createCharacterClass(complementClassSet(property.getCodePointSet()));
+                } else {
+                    return caseFoldClassSetAtom(property);
+                }
+            } else {
+                CodePointSet propertySet = ECMAScriptFlavor.UNICODE.getProperty(propertyName);
+                return ClassSetContents.createCharacterClass(invert ? propertySet.createInverse(encoding) : propertySet);
+            }
+        } catch (IllegalArgumentException e) {
+            throw syntaxError(e.getMessage(), ErrorCode.InvalidCharacterClass);
+        }
+    }
+
+    private int parseEscapeChar(char c, boolean inCharClass) throws RegexSyntaxException {
+        int custom = parseCustomEscapeChar(c, inCharClass);
+        if (custom >= 0) {
+            return custom;
+        }
+        switch (c) {
+            case 'b':
+                assert inCharClass;
+                return '\b';
+            case 'f':
+                return '\f';
+            case 'n':
+                return '\n';
+            case 'r':
+                return '\r';
+            case 't':
+                return '\t';
+            case 'v':
+                return '\u000B';
+            case 'x':
+                if (!consumingLookahead(RegexLexer::isHexDigit, 2)) {
+                    handleIncompleteEscapeX();
+                    return c;
+                }
+                return Integer.parseInt(pattern, position - 2, position, 16);
+            default:
+                if (featureEnabledOctalEscapes() && isOctalDigit(c)) {
+                    return parseOctal(c - '0', 2);
+                }
+                return parseCustomEscapeCharFallback(toCodePoint(c), inCharClass);
+        }
+    }
+
+    private int toCodePoint(char c) {
+        if (encoding != Encodings.UTF_16_RAW && Character.isHighSurrogate(c)) {
+            return finishSurrogatePair(c);
+        }
+        return c;
+    }
+
+    protected int finishSurrogatePair(char c) {
+        assert Character.isHighSurrogate(c);
+        if (!atEnd() && Character.isLowSurrogate(curChar())) {
+            return Character.toCodePoint(c, consumeChar());
+        } else {
+            return c;
+        }
+    }
+
+    protected int parseOctal(int firstDigit, int maxDigits) {
         int ret = firstDigit;
-        for (int i = 0; !atEnd() && isOctal(curChar()) && i < 2; i++) {
+        for (int i = 0; !atEnd() && isOctalDigit(curChar()) && i < maxDigits; i++) {
             if (ret * 8 > 255) {
+                handleOctalOutOfRange();
                 return ret;
             }
             ret *= 8;
@@ -829,59 +1490,54 @@ public final class RegexLexer {
         return ret;
     }
 
-    private int parseHex(int minDigits, int maxDigits, int maxValue, String errorMsg) throws RegexSyntaxException {
+    protected int parseHex(int minDigits, int maxDigits, int maxValue, Runnable handleTooFewDigits, Runnable handleValueTooLarge) {
         int ret = 0;
-        int initialIndex = index;
+        int initialIndex = position;
         for (int i = 0; i < maxDigits; i++) {
-            if (atEnd() || !isHex(curChar())) {
+            if (atEnd() || !isHexDigit(curChar())) {
                 if (i < minDigits) {
-                    if (flags.isUnicode()) {
-                        throw syntaxError(errorMsg);
-                    } else {
-                        index = initialIndex;
-                        return -1;
-                    }
+                    handleTooFewDigits.run();
+                    position = initialIndex;
+                    return -1;
                 } else {
                     break;
                 }
             }
-            final char c = consumeChar();
+            final int c = consumeChar() | 0x20;
             ret *= 16;
             if (c >= 'a') {
                 ret += c - ('a' - 10);
-            } else if (c >= 'A') {
-                ret += c - ('A' - 10);
             } else {
                 ret += c - '0';
             }
             if (ret > maxValue) {
-                throw syntaxError(errorMsg);
+                handleValueTooLarge.run();
             }
         }
         return ret;
     }
 
-    private static boolean isDecimal(char c) {
+    private boolean isEscapeCharClass(char c) {
+        return isPredefCharClass(c) || (featureEnabledUnicodePropertyEscapes() && (c == 'p' || c == 'P'));
+    }
+
+    public RegexSyntaxException syntaxError(String msg, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(source, msg, getLastAtomPosition(), errorCode);
+    }
+
+    public static boolean isDecimalDigit(int c) {
         return '0' <= c && c <= '9';
     }
 
-    private static boolean isOctal(char c) {
+    public static boolean isOctalDigit(int c) {
         return '0' <= c && c <= '7';
     }
 
-    private static boolean isHex(char c) {
+    public static boolean isHexDigit(int c) {
         return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F';
     }
 
-    private static boolean isPredefCharClass(char c) {
-        return PREDEFINED_CHAR_CLASSES.get(c);
-    }
-
-    private boolean isEscapeCharClass(char c) {
-        return isPredefCharClass(c) || (flags.isUnicode() && (c == 'p' || c == 'P'));
-    }
-
-    private RegexSyntaxException syntaxError(String msg) {
-        return RegexSyntaxException.createPattern(source, msg, curStartIndex);
+    public static boolean isAscii(int c) {
+        return Integer.compareUnsigned(c, 128) < 0;
     }
 }

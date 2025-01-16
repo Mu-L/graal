@@ -28,34 +28,20 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryUsage;
 
-import javax.management.MBeanNotificationInfo;
-import javax.management.NotificationEmitter;
-import javax.management.NotificationFilter;
-import javax.management.NotificationListener;
 import javax.management.ObjectName;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
-import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.SubstrateGCOptions;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.code.CodeInfo;
-import com.oracle.svm.core.code.CodeInfoAccess;
-import com.oracle.svm.core.code.RuntimeCodeCache.CodeInfoVisitor;
 import com.oracle.svm.core.code.RuntimeCodeInfoMemory;
 
 import sun.management.Util;
 
-public abstract class AbstractMemoryMXBean implements MemoryMXBean, NotificationEmitter {
-    protected static final long UNDEFINED_MEMORY_USAGE = -1L;
-
-    private final MemoryMXBeanCodeInfoVisitor codeInfoVisitor;
+public abstract class AbstractMemoryMXBean extends AbstractMXBean implements MemoryMXBean {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public AbstractMemoryMXBean() {
-        this.codeInfoVisitor = new MemoryMXBeanCodeInfoVisitor();
     }
 
     @Override
@@ -72,9 +58,8 @@ public abstract class AbstractMemoryMXBean implements MemoryMXBean, Notification
 
     @Override
     public MemoryUsage getNonHeapMemoryUsage() {
-        codeInfoVisitor.reset();
-        RuntimeCodeInfoMemory.singleton().walkRuntimeMethodsUninterruptibly(codeInfoVisitor);
-        long used = codeInfoVisitor.getRuntimeCodeInfoSize().rawValue();
+        RuntimeCodeInfoMemory.SizeCounters counters = RuntimeCodeInfoMemory.singleton().getSizeCounters();
+        long used = counters.totalSize().rawValue();
         return new MemoryUsage(UNDEFINED_MEMORY_USAGE, used, used, UNDEFINED_MEMORY_USAGE);
     }
 
@@ -91,46 +76,5 @@ public abstract class AbstractMemoryMXBean implements MemoryMXBean, Notification
     @Override
     public void gc() {
         System.gc();
-    }
-
-    @Override
-    public void removeNotificationListener(NotificationListener listener, NotificationFilter filter, Object handback) {
-    }
-
-    @Override
-    public void addNotificationListener(NotificationListener listener, NotificationFilter filter, Object handback) {
-    }
-
-    @Override
-    public void removeNotificationListener(NotificationListener listener) {
-    }
-
-    @Override
-    public MBeanNotificationInfo[] getNotificationInfo() {
-        return new MBeanNotificationInfo[0];
-    }
-
-    private static final class MemoryMXBeanCodeInfoVisitor implements CodeInfoVisitor {
-        private UnsignedWord runtimeCodeInfoSize;
-
-        @Platforms(Platform.HOSTED_ONLY.class)
-        MemoryMXBeanCodeInfoVisitor() {
-            reset();
-        }
-
-        public UnsignedWord getRuntimeCodeInfoSize() {
-            return runtimeCodeInfoSize;
-        }
-
-        public void reset() {
-            runtimeCodeInfoSize = WordFactory.zero();
-        }
-
-        @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-        @Override
-        public <T extends CodeInfo> boolean visitCode(T codeInfo) {
-            runtimeCodeInfoSize = runtimeCodeInfoSize.add(CodeInfoAccess.getCodeAndDataMemorySize(codeInfo)).add(CodeInfoAccess.getNativeMetadataSize(codeInfo));
-            return true;
-        }
     }
 }

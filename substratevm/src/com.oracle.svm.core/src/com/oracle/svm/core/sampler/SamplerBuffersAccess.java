@@ -25,77 +25,84 @@
 
 package com.oracle.svm.core.sampler;
 
-import static com.oracle.svm.core.jfr.JfrStackTraceRepository.JfrStackTraceTableEntryStatus.FAILED;
-import static com.oracle.svm.core.jfr.JfrStackTraceRepository.JfrStackTraceTableEntryStatus.SERIALIZED;
-import static com.oracle.svm.core.jfr.JfrStackTraceRepository.JfrStackTraceTableEntryStatus.SHOULD_SERIALIZE;
-
-import org.graalvm.nativeimage.StackValue;
-import org.graalvm.nativeimage.c.function.CodePointer;
-import org.graalvm.nativeimage.c.type.CIntPointer;
+import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.code.CodeInfo;
-import com.oracle.svm.core.code.CodeInfoAccess;
-import com.oracle.svm.core.code.CodeInfoQueryResult;
-import com.oracle.svm.core.code.CodeInfoTable;
-import com.oracle.svm.core.code.FrameInfoQueryResult;
-import com.oracle.svm.core.code.UntetheredCodeInfo;
-import com.oracle.svm.core.jfr.HasJfrSupport;
-import com.oracle.svm.core.jfr.JfrStackTraceRepository;
+import com.oracle.svm.core.jfr.JfrThreadLocal;
 import com.oracle.svm.core.jfr.SubstrateJVM;
-import com.oracle.svm.core.jfr.events.ExecutionSampleEvent;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.core.thread.VMOperation;
+import com.oracle.svm.core.thread.VMThreads;
 
-/**
- * Used to access the pool of {@link SamplerBuffer}s.
- */
 public final class SamplerBuffersAccess {
+
+    @Platforms(Platform.HOSTED_ONLY.class)
     private SamplerBuffersAccess() {
     }
 
-    @Uninterruptible(reason = "All code that accesses a sampler buffer must be uninterruptible.")
-    public static void processSamplerBuffers() {
-        if (!HasJfrSupport.get()) {
-            /*
-             * This method will become reachable on WINDOWS during the building of JFR tests via
-             * com.oracle.svm.core.jfr.JfrChunkWriter.closeFile, and it will fail during
-             * InvocationPlugin call if we do not have this check.
-             * 
-             * Note that although we are building the JFR tests for Windows as well, they will not
-             * be executed because of guard in com.oracle.svm.test.jfr.JfrTest.checkForJFR.
-             *
-             * Once we have support for Windows, this check will become obsolete.
-             */
-            return;
-        }
+    @Uninterruptible(reason = "Prevent JFR recording.")
+    public static void processActiveBuffers() {
+        assert VMOperation.isInProgressAtSafepoint();
 
-        SubstrateSigprofHandler.singleton().setSignalHandlerGloballyDisabled(true);
-        while (true) {
-            /* Pop top buffer from stack of full buffers. */
-            SamplerBuffer buffer = SubstrateSigprofHandler.singleton().fullBuffers().popBuffer();
-            if (buffer.isNull()) {
-                /* No buffers to process. */
-                SubstrateSigprofHandler.singleton().setSignalHandlerGloballyDisabled(false);
-                return;
-            }
-
-            /* Process the buffer. */
-            processSamplerBuffer(buffer);
-            if (buffer.getFreeable()) {
-                SamplerBufferAccess.free(buffer);
-            } else {
-                SubstrateSigprofHandler.singleton().availableBuffers().pushBuffer(buffer);
+        for (IsolateThread thread = VMThreads.firstThread(); thread.isNonNull(); thread = VMThreads.nextThread(thread)) {
+            SamplerBuffer buffer = JfrThreadLocal.getSamplerBuffer(thread);
+            if (buffer.isNonNull()) {
+                serializeStackTraces(buffer);
+                assert JfrThreadLocal.getSamplerBuffer(thread) == buffer;
             }
         }
     }
 
-    @Uninterruptible(reason = "All code that accesses a sampler buffer must be uninterruptible.")
-    public static void processSamplerBuffer(SamplerBuffer buffer) {
-        Pointer end = buffer.getPos();
-        Pointer current = SamplerBufferAccess.getDataStart(buffer);
+    /**
+     * The raw instruction pointer stack traces are decoded to Java-level stack trace information,
+     * which is then serialized into a buffer. This method may be called by different threads:
+     * <ul>
+     * <li>The JFR recorder thread processes full buffers periodically.</li>
+     * <li>When the JFR epoch changes, all buffers that belong to the current epoch need to be
+     * processed within the VM operation that changes the epoch.</li>
+     * </ul>
+     */
+    @Uninterruptible(reason = "Prevent JFR recording and epoch change.")
+    public static void processFullBuffers(boolean useSafepointChecks) {
+        while (true) {
+            SamplerBuffer buffer = SubstrateJVM.getSamplerBufferPool().popFullBuffer();
+            if (buffer.isNull()) {
+                /* No more buffers. */
+                break;
+            }
+
+            serializeStackTraces(buffer);
+            SubstrateJVM.getSamplerBufferPool().releaseBuffer(buffer);
+
+            /* Do a safepoint check if the caller requested one. */
+            if (useSafepointChecks) {
+                safepointCheck();
+            }
+        }
+
+        SubstrateJVM.getSamplerBufferPool().adjustBufferCount();
+    }
+
+    @Uninterruptible(reason = "The callee explicitly does a safepoint check.", calleeMustBe = false)
+    private static void safepointCheck() {
+        safepointCheck0();
+    }
+
+    private static void safepointCheck0() {
+    }
+
+    @Uninterruptible(reason = "Prevent JFR recording and epoch change.")
+    private static void serializeStackTraces(SamplerBuffer rawStackTraceBuffer) {
+        assert rawStackTraceBuffer.isNonNull();
+
+        Pointer end = rawStackTraceBuffer.getPos();
+        Pointer current = SamplerBufferAccess.getDataStart(rawStackTraceBuffer);
         while (current.belowThan(end)) {
+            Pointer entryStart = current;
+            assert entryStart.unsignedRemainder(Long.BYTES).equal(0);
+
             /* Sample hash. */
             int sampleHash = current.readInt(0);
             current = current.add(Integer.BYTES);
@@ -104,90 +111,37 @@ public final class SamplerBuffersAccess {
             boolean isTruncated = current.readInt(0) == 1;
             current = current.add(Integer.BYTES);
 
-            /* Sample size. */
+            /* Sample size, excluding the header and the end marker. */
             int sampleSize = current.readInt(0);
+            current = current.add(Integer.BYTES);
+
+            /* Padding. */
             current = current.add(Integer.BYTES);
 
             /* Tick. */
             long sampleTick = current.readLong(0);
             current = current.add(Long.BYTES);
 
+            /* Event thread. */
+            long threadId = current.readLong(0);
+            current = current.add(Long.BYTES);
+
             /* Thread state. */
             long threadState = current.readLong(0);
             current = current.add(Long.BYTES);
 
-            CIntPointer status = StackValue.get(CIntPointer.class);
-            JfrStackTraceRepository stackTraceRepo = SubstrateJVM.getStackTraceRepo();
-            stackTraceRepo.acquireLock();
-            try {
-                long stackTraceId = stackTraceRepo.getStackTraceId(current, current.add(sampleSize), sampleHash, status, true);
-                boolean serialized = JfrStackTraceRepository.JfrStackTraceTableEntryStatus.get(status, SERIALIZED);
-                boolean failed = JfrStackTraceRepository.JfrStackTraceTableEntryStatus.get(status, FAILED);
-                if (serialized || failed) {
-                    /*
-                     * Sample/Stack is already there or there is not enough memory to operate, skip
-                     * the rest of the data.
-                     */
-                    current = current.add(sampleSize);
-                    long endMarker = current.readLong(0);
-                    if (endMarker == SamplerSampleWriter.SAMPLE_EVENT_DATA_END && serialized) {
-                        ExecutionSampleEvent.writeExecutionSample(sampleTick, buffer.getOwner(), stackTraceId, threadState);
-                    }
-                    current = current.add(SamplerSampleWriter.END_MARKER_SIZE);
-                } else {
-                    assert JfrStackTraceRepository.JfrStackTraceTableEntryStatus.get(status, SHOULD_SERIALIZE);
-                    /* Sample is not there. Start walking a stacktrace. */
-                    stackTraceRepo.serializeStackTraceHeader(stackTraceId, isTruncated, sampleSize / SamplerSampleWriter.IP_SIZE);
-                    while (current.belowThan(end)) {
-                        long ip = current.readLong(0);
-                        /* Check if we hit any of the end markers. */
-                        if (ip == SamplerSampleWriter.JFR_STACK_TRACE_END || ip == SamplerSampleWriter.SAMPLE_EVENT_DATA_END) {
-                            if (ip == SamplerSampleWriter.SAMPLE_EVENT_DATA_END) {
-                                ExecutionSampleEvent.writeExecutionSample(sampleTick, buffer.getOwner(), stackTraceId, threadState);
-                            }
-                            current = current.add(SamplerSampleWriter.END_MARKER_SIZE);
-                            break;
-                        } else {
-                            visitFrame(ip);
-                            current = current.add(SamplerSampleWriter.IP_SIZE);
-                        }
-                    }
-                }
-            } finally {
-                stackTraceRepo.releaseLock();
-            }
+            assert current.subtract(entryStart).equal(SamplerSampleWriter.getHeaderSize());
+
+            current = serializeStackTrace(current, end, sampleSize, sampleHash, isTruncated, sampleTick, threadId, threadState);
         }
-        SamplerBufferAccess.reinitialize(buffer);
+
+        SamplerBufferAccess.reinitialize(rawStackTraceBuffer);
     }
 
-    @Uninterruptible(reason = "The handle should only be accessed from uninterruptible code to prevent that the GC frees the CodeInfo.", callerMustBe = true)
-    private static void visitFrame(long address) {
-        CodePointer ip = WordFactory.pointer(address);
-        UntetheredCodeInfo untetheredInfo = CodeInfoTable.lookupCodeInfo(ip);
-        if (untetheredInfo.isNull()) {
-            /* Unknown frame. Must not happen for AOT-compiled code. */
-            VMError.shouldNotReachHere("Stack walk must walk only frames of known code.");
-        }
-
-        Object tether = CodeInfoAccess.acquireTether(untetheredInfo);
-        CodeInfo tetheredCodeInfo = CodeInfoAccess.convert(untetheredInfo, tether);
-        try {
-            visitFrameInterruptibly(tetheredCodeInfo, ip);
-        } finally {
-            CodeInfoAccess.releaseTether(untetheredInfo, tether);
-        }
-    }
-
-    @Uninterruptible(reason = "CodeInfo is tethered, so safepoints are allowed.", calleeMustBe = false)
-    private static void visitFrameInterruptibly(CodeInfo codeInfo, CodePointer ip) {
-        CodeInfoQueryResult queryResult = CodeInfoTable.lookupCodeInfoQueryResult(codeInfo, ip);
-        VMError.guarantee(queryResult != null);
-        FrameInfoQueryResult frameInfoQueryResult = queryResult.getFrameInfo();
-        if (frameInfoQueryResult != null) {
-            SubstrateJVM.getStackTraceRepo().serializeStackTraceElement(frameInfoQueryResult);
-        } else {
-            /* We don't have information about native code. */
-            SubstrateJVM.getStackTraceRepo().serializeUnknownStackTraceElement();
-        }
+    @Uninterruptible(reason = "Wraps the call to the possibly interruptible serializer.", calleeMustBe = false)
+    private static Pointer serializeStackTrace(Pointer rawStackTrace, Pointer bufferEnd, int sampleSize, int sampleHash,
+                    boolean isTruncated, long sampleTick, long threadId, long threadState) {
+        return SamplerStackTraceSerializer.singleton().serializeStackTrace(rawStackTrace, bufferEnd, sampleSize,
+                        sampleHash, isTruncated, sampleTick, threadId, threadState);
     }
 }

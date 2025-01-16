@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,25 +24,10 @@
  */
 package com.oracle.svm.core.graal.code;
 
-import static com.oracle.svm.core.util.VMError.unimplemented;
+import static com.oracle.svm.core.util.VMError.intentionallyUnimplemented;
 
 import java.lang.reflect.Method;
 
-import org.graalvm.compiler.code.CompilationResult;
-import org.graalvm.compiler.core.common.CompilationIdentifier;
-import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
-import org.graalvm.compiler.core.target.Backend;
-import org.graalvm.compiler.lir.LIRFrameState;
-import org.graalvm.compiler.nodes.CallTargetNode;
-import org.graalvm.compiler.nodes.IndirectCallTargetNode;
-import org.graalvm.compiler.nodes.LoweredCallTargetNode;
-import org.graalvm.compiler.nodes.NamedLocationIdentity;
-import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.spi.CoreProviders;
-import org.graalvm.compiler.options.OptionValues;
-import org.graalvm.compiler.phases.BasePhase;
-import org.graalvm.compiler.phases.tiers.SuitesProvider;
-import org.graalvm.compiler.phases.util.Providers;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.LocationIdentity;
@@ -56,6 +41,21 @@ import com.oracle.svm.core.nodes.CFunctionPrologueDataNode;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
 import com.oracle.svm.core.util.VMError;
 
+import jdk.graal.compiler.code.CompilationResult;
+import jdk.graal.compiler.core.common.CompilationIdentifier;
+import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
+import jdk.graal.compiler.core.target.Backend;
+import jdk.graal.compiler.lir.LIRFrameState;
+import jdk.graal.compiler.nodes.CallTargetNode;
+import jdk.graal.compiler.nodes.IndirectCallTargetNode;
+import jdk.graal.compiler.nodes.LoweredCallTargetNode;
+import jdk.graal.compiler.nodes.NamedLocationIdentity;
+import jdk.graal.compiler.nodes.ValueNode;
+import jdk.graal.compiler.nodes.spi.CoreProviders;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.phases.BasePhase;
+import jdk.graal.compiler.phases.tiers.SuitesProvider;
+import jdk.graal.compiler.phases.util.Providers;
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.RegisterConfig;
 import jdk.vm.ci.code.RegisterValue;
@@ -65,11 +65,21 @@ public abstract class SubstrateBackend extends Backend {
     private static final LocationIdentity JIT_VTABLE_IDENTITY = NamedLocationIdentity.mutable("DynamicHub.vtable@jit");
 
     public enum SubstrateMarkId implements CompilationResult.MarkId {
+        /**
+         * Marks the start of the prologue in case the prologue instructions are not the first
+         * instructions in the compilation.
+         */
+        PROLOGUE_START(true),
+        PROLOGUE_PUSH_RBP(true),
         PROLOGUE_DECD_RSP(true),
+        PROLOGUE_SET_FRAME_POINTER(true),
         PROLOGUE_SAVED_REGS(true),
         PROLOGUE_END(true),
+        FRAME_POINTER_SPILLED(true),
+        FRAME_POINTER_RELOADED(true),
         EPILOGUE_START(false),
         EPILOGUE_INCD_RSP(true),
+        EPILOGUE_POP_RBP(true),
         EPILOGUE_END(true);
 
         final boolean isMarkAfter;
@@ -81,11 +91,6 @@ public abstract class SubstrateBackend extends Backend {
         @Override
         public String getName() {
             return name();
-        }
-
-        @Override
-        public boolean isMarkAfter() {
-            return isMarkAfter;
         }
     }
 
@@ -145,11 +150,11 @@ public abstract class SubstrateBackend extends Backend {
 
     @Override
     public SuitesProvider getSuites() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     public CompilationResult newCompilationResult(CompilationIdentifier compilationIdentifier, String name) {
-        return new CompilationResult(compilationIdentifier, name) {
+        return new SharedCompilationResult(compilationIdentifier, name) {
             @Override
             public void close(OptionValues options) {
                 /*
@@ -161,7 +166,7 @@ public abstract class SubstrateBackend extends Backend {
     }
 
     @Override
-    public RegisterAllocationConfig newRegisterAllocationConfig(RegisterConfig registerConfig, String[] allocationRestrictedTo) {
+    public RegisterAllocationConfig newRegisterAllocationConfig(RegisterConfig registerConfig, String[] allocationRestrictedTo, Object stub) {
         RegisterConfig registerConfigNonNull = registerConfig == null ? getCodeCache().getRegisterConfig() : registerConfig;
         return new RegisterAllocationConfig(registerConfigNonNull, allocationRestrictedTo);
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.api.test.wrapper;
 
+import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -49,17 +50,19 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.EnvironmentAccess;
 import org.graalvm.polyglot.PolyglotAccess;
+import org.graalvm.polyglot.SandboxPolicy;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.APIAccess;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractEngineDispatch;
+import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractHostAccess;
+import org.graalvm.polyglot.io.IOAccess;
 
 import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.library.Message;
 import com.oracle.truffle.api.library.ReflectionLibrary;
-import org.graalvm.polyglot.io.IOAccess;
 
 /**
  * This class simulates a host to guest remote boundary. All parameters are designed to be easily
@@ -82,10 +85,11 @@ final class HostEntryPoint {
         this.guestEntry = new GuestEntryPoint(this);
     }
 
-    public long remoteCreateEngine() {
+    public long remoteCreateEngine(SandboxPolicy sandboxPolicy) {
         // host access needs to be replaced
-        GuestHostLanguage hostLanguage = new GuestHostLanguage(guestPolyglot, guestPolyglot.createHostAccess());
-        Object engine = guestPolyglot.buildEngine(new String[0], null, null, null, new HashMap<>(), true, false, false, null, null, hostLanguage, false, false, null);
+        GuestHostLanguage hostLanguage = new GuestHostLanguage(guestPolyglot, (AbstractHostAccess) guestPolyglot.createHostAccess());
+        Object engine = guestPolyglot.buildEngine(new String[0], sandboxPolicy, OutputStream.nullOutputStream(), OutputStream.nullOutputStream(), null, new HashMap<>(), false, false, null, null,
+                        hostLanguage, false, false, null);
         return guestToHost(engine);
     }
 
@@ -116,28 +120,28 @@ final class HostEntryPoint {
         return type.cast(idToGuestObject.get(id));
     }
 
-    public long remoteCreateContext(long engineId) {
+    public long remoteCreateContext(long engineId, SandboxPolicy sandboxPolicy, String tmpDir) {
         Engine engine = unmarshall(Engine.class, engineId);
-        Object receiver = api.getReceiver(engine);
-        AbstractEngineDispatch dispatch = api.getDispatch(engine);
-        Context remoteContext = dispatch.createContext(receiver, null, null, null, false, null, PolyglotAccess.NONE, false,
+        Object receiver = api.getEngineReceiver(engine);
+        AbstractEngineDispatch dispatch = api.getEngineDispatch(engine);
+        Context remoteContext = dispatch.createContext(receiver, engine, sandboxPolicy, null, null, null, false, null, PolyglotAccess.NONE, false,
                         false, false, false, false, null, new HashMap<>(), new HashMap<>(),
                         new String[0], IOAccess.NONE, null,
                         false, null, EnvironmentAccess.NONE,
-                        null, null, null, null, null, true, false);
+                        null, null, null, null, tmpDir, null, true, false, false);
         return guestToHost(remoteContext);
     }
 
     public long remoteEval(long contextId, String languageId, String characters) {
         Context context = unmarshall(Context.class, contextId);
         Value v = context.eval(languageId, characters);
-        return guestToHost(api.getReceiver(v));
+        return guestToHost(api.getValueReceiver(v));
     }
 
     public long remoteGetBindings(long contextId, String languageId) {
         Context context = unmarshall(Context.class, contextId);
         Value v = context.getBindings(languageId);
-        return guestToHost(api.getReceiver(v));
+        return guestToHost(api.getValueReceiver(v));
     }
 
     public Object remoteMessage(long contextId, long receiverId, Message message, Object[] args) {
@@ -219,8 +223,8 @@ final class HostEntryPoint {
 
     public void shutdown(long engineId) {
         Engine engine = unmarshall(Engine.class, engineId);
-        Object receiver = api.getReceiver(engine);
-        AbstractEngineDispatch dispatch = api.getDispatch(engine);
+        Object receiver = api.getEngineReceiver(engine);
+        AbstractEngineDispatch dispatch = api.getEngineDispatch(engine);
         dispatch.shutdown(receiver);
     }
 

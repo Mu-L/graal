@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2016, 2022, Oracle and/or its affiliates.
+# Copyright (c) 2016, 2023, Oracle and/or its affiliates.
 #
 # All rights reserved.
 #
@@ -164,8 +164,8 @@ class SulongBenchmarkSuite(VmBenchmarkSuite):
         return []
 
     def flakySuccessPatterns(self):
-        # bzip2 is known to have a compiler error during OSR compilation, which would trigger failurePatterns
-        return [re.compile(r'bzip2')]  # GR-38646
+        # bzip2 is known to have a compiler error during OSR compilation, but peak numbers are still valid
+        return [re.compile(r'Compilation of sendMTFValues<OSR@\d+> failed')]  # GR-38646
 
     def rules(self, out, benchmarks, bmSuiteArgs):
         if self.use_polybench:
@@ -530,7 +530,9 @@ class SulongVm(CExecutionEnvironmentMixin, GuestVm):
         launcher_args = [
             '--experimental-options',
             '--engine.CompilationFailureAction=Diagnose',
-            '--engine.TreatPerformanceWarningsAsErrors=call,instanceof,store',
+            '--compiler.TreatPerformanceWarningsAsErrors=call,instanceof,store',
+            # GR-38646 - Known GraphTooBigBailoutException
+            '--engine.CompileOnly=~_ZN3UCI4initERNSt3__13mapINS0_12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEENS_6OptionENS_19CaseInsensitiveLessENS5_INS0_4pairIKS7_S8_EEEEEE,~sendMTFValues<OSR'
         ]
         return launcher_args + args
 

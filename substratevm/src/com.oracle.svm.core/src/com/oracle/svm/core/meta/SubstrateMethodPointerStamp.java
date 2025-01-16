@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,11 +24,11 @@
  */
 package com.oracle.svm.core.meta;
 
-import org.graalvm.compiler.core.common.LIRKind;
-import org.graalvm.compiler.core.common.spi.LIRKindTool;
-import org.graalvm.compiler.core.common.type.AbstractPointerStamp;
-import org.graalvm.compiler.core.common.type.Stamp;
-import org.graalvm.compiler.debug.GraalError;
+import jdk.graal.compiler.core.common.LIRKind;
+import jdk.graal.compiler.core.common.spi.LIRKindTool;
+import jdk.graal.compiler.core.common.type.AbstractPointerStamp;
+import jdk.graal.compiler.core.common.type.Stamp;
+import jdk.graal.compiler.debug.GraalError;
 
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.JavaConstant;
@@ -50,6 +50,10 @@ public class SubstrateMethodPointerStamp extends AbstractPointerStamp {
         return METHOD_NON_NULL;
     }
 
+    public static SubstrateMethodPointerStamp methodAlwaysNull() {
+        return METHOD_ALWAYS_NULL;
+    }
+
     @Override
     protected AbstractPointerStamp copyWith(boolean newNonNull, boolean newAlwaysNull) {
         if (newNonNull) {
@@ -64,7 +68,7 @@ public class SubstrateMethodPointerStamp extends AbstractPointerStamp {
 
     @Override
     public ResolvedJavaType javaType(MetaAccessProvider metaAccess) {
-        throw GraalError.shouldNotReachHere("pointer has no Java type");
+        throw GraalError.shouldNotReachHere("pointer has no Java type"); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override

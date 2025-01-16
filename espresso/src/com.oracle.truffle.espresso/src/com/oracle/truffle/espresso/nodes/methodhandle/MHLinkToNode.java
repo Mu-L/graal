@@ -32,25 +32,25 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.DirectCallNode;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.IndirectCallNode;
-import com.oracle.truffle.espresso.descriptors.Signatures;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Type;
+import com.oracle.truffle.espresso.classfile.JavaKind;
+import com.oracle.truffle.espresso.classfile.descriptors.Signatures;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol.Type;
 import com.oracle.truffle.espresso.impl.Field;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.meta.EspressoError;
-import com.oracle.truffle.espresso.meta.JavaKind;
 import com.oracle.truffle.espresso.nodes.quick.invoke.InvokeDynamicCallSiteNode;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.MethodHandleIntrinsics;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * Performs the actual job of an invocation:
  * <li>Obtain the trailing MemberName from the arguments, and extract its payload.
  * <li>Perform method lookup if needed on the given receiver.
  * <li>Execute the payload on the given arguments, stripped from the given MemberName
- * 
+ *
  * Note that there is a small overhead, as the method invoked is usually the actual payload (in
  * opposition to the other MH nodes, who usually either calls the type checkers, or performs type
  * checks on erased primitives), whose signature is not sub-workd erased. Unfortunately, the
@@ -82,7 +82,7 @@ public abstract class MHLinkToNode extends MethodHandleIntrinsicNode {
         Object[] basicArgs = unbasic(args, resolutionSeed.getMethod().getParsedSignature(), 0, argCount - 1, hasReceiver);
         // method might have been redefined or removed by redefinition
         if (!resolutionSeed.getRedefineAssumption().isValid()) {
-            if (resolutionSeed.getMethod().isRemovedByRedefition()) {
+            if (resolutionSeed.getMethod().isRemovedByRedefinition()) {
                 Klass receiverKlass = hasReceiver ? ((StaticObject) basicArgs[0]).getKlass() : resolutionSeed.getMethod().getDeclaringKlass();
                 resolutionSeed = EspressoContext.get(this).getClassRedefinition().handleRemovedMethod(resolutionSeed.getMethod(), receiverKlass).getMethodVersion();
             }
@@ -101,15 +101,15 @@ public abstract class MHLinkToNode extends MethodHandleIntrinsicNode {
 
     @SuppressWarnings("unused")
     @Specialization(limit = "INLINE_CACHE_SIZE_LIMIT", guards = {"inliningEnabled()", "canInline(target, cachedTarget)"})
-    Object executeCallDirect(Object[] args, Method.MethodVersion target,
+    Object doCallDirect(Object[] args, Method.MethodVersion target,
                     @Cached("target") Method.MethodVersion cachedTarget,
                     @Cached("create(target.getCallTarget())") DirectCallNode directCallNode) {
         hits.inc();
         return directCallNode.call(args);
     }
 
-    @Specialization(replaces = "executeCallDirect")
-    Object executeCallIndirect(Object[] args, Method.MethodVersion target,
+    @Specialization(replaces = "doCallDirect")
+    Object doCallIndirect(Object[] args, Method.MethodVersion target,
                     @Cached("create()") IndirectCallNode callNode) {
         miss.inc();
         return callNode.call(target.getCallTarget(), args);

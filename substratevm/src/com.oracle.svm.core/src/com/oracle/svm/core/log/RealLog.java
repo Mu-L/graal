@@ -27,8 +27,6 @@ package com.oracle.svm.core.log;
 
 import java.nio.charset.StandardCharsets;
 
-import org.graalvm.compiler.core.common.calc.UnsignedMath;
-import org.graalvm.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.LogHandler;
 import org.graalvm.nativeimage.c.type.CCharPointer;
@@ -36,16 +34,24 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.NeverInline;
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.jdk.BacktraceDecoder;
 import com.oracle.svm.core.jdk.JDKUtils;
+import com.oracle.svm.core.locks.VMMutex;
+import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.core.common.NumUtil;
+import jdk.graal.compiler.core.common.calc.UnsignedMath;
+import jdk.graal.compiler.word.Word;
 
 public class RealLog extends Log {
 
@@ -87,6 +93,14 @@ public class RealLog extends Log {
         return this;
     }
 
+    @Override
+    @NeverInline("Logging is always slow-path code")
+    @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
+    public Log string(String value, int maxLen) {
+        rawString(value, maxLen);
+        return this;
+    }
+
     private static final char[] NULL_CHARS = "null".toCharArray();
 
     @Override
@@ -105,7 +119,7 @@ public class RealLog extends Log {
         } else if ((offset < 0) || (offset > value.length) || (length < 0) || ((offset + length) > value.length) || ((offset + length) < 0)) {
             rawString("OUT OF BOUNDS");
         } else if (Heap.getHeap().isInImageHeap(value)) {
-            rawBytes(NonmovableArrays.addressOf(NonmovableArrays.fromImageHeap(value), offset), WordFactory.unsigned(length));
+            rawBytes(NonmovableArrays.addressOf(NonmovableArrays.fromImageHeap(value), offset), Word.unsigned(length));
         } else {
             rawBytes(value, offset, length);
         }
@@ -150,7 +164,7 @@ public class RealLog extends Log {
                 }
                 bytes.write(i, b);
             }
-            rawBytes(bytes, WordFactory.unsigned(chunkLength));
+            rawBytes(bytes, Word.unsigned(chunkLength));
 
             chunkOffset += chunkLength;
             inputLength -= chunkLength;
@@ -166,7 +180,7 @@ public class RealLog extends Log {
     @NeverInline("Logging is always slow-path code")
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
     public Log string(CCharPointer value) {
-        if (value.notEqual(WordFactory.nullPointer())) {
+        if (value.notEqual(Word.nullPointer())) {
             rawBytes(value, SubstrateUtil.strlen(value));
         } else {
             rawString("null");
@@ -175,12 +189,21 @@ public class RealLog extends Log {
     }
 
     @Override
+    @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
+    public Log string(CCharPointer bytes, int length) {
+        if (length == 0) {
+            return this;
+        }
+        return rawBytes(bytes, Word.unsigned(length));
+    }
+
+    @Override
     @NeverInline("Logging is always slow-path code")
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
     public Log character(char value) {
         CCharPointer bytes = UnsafeStackValue.get(CCharPointer.class);
         bytes.write((byte) value);
-        rawBytes(bytes, WordFactory.unsigned(1));
+        rawBytes(bytes, Word.unsigned(1));
         return this;
     }
 
@@ -260,7 +283,7 @@ public class RealLog extends Log {
             spaces(spaces);
         }
 
-        rawBytes(bytes.addressOf(charPos), WordFactory.unsigned(length));
+        rawBytes(bytes.addressOf(charPos), Word.unsigned(length));
 
         if (align == LEFT_ALIGN) {
             int spaces = fill - length;
@@ -288,6 +311,12 @@ public class RealLog extends Log {
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
     public Log signed(long value) {
         number(value, 10, true);
+        return this;
+    }
+
+    @Override
+    public Log signed(long value, int fill, int align) {
+        number(value, 10, true, fill, align);
         return this;
     }
 
@@ -360,8 +389,9 @@ public class RealLog extends Log {
         if (decimals > 0) {
             character('.');
 
-            long positiveNumerator = Math.abs(numerator);
-            long positiveDenominator = Math.abs(denominator);
+            // we don't care if overflow happens in these abs
+            long positiveNumerator = NumUtil.unsafeAbs(numerator);
+            long positiveDenominator = NumUtil.unsafeAbs(denominator);
 
             long remainder = positiveNumerator % positiveDenominator;
             for (int i = 0; i < decimals; i++) {
@@ -371,6 +401,12 @@ public class RealLog extends Log {
             }
         }
         return this;
+    }
+
+    @Override
+    @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
+    public Log rational(UnsignedWord numerator, long denominator, long decimals) {
+        return rational(numerator.rawValue(), denominator, decimals);
     }
 
     @Override
@@ -467,6 +503,11 @@ public class RealLog extends Log {
         return this;
     }
 
+    @Override
+    public int getIndentation() {
+        return indent;
+    }
+
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
     private static byte digit(long d) {
         return (byte) (d + (d < 10 ? '0' : 'a' - 10));
@@ -560,13 +601,19 @@ public class RealLog extends Log {
     }
 
     @Override
-    @NeverInline("Logging is always slow-path code")
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
     public Log hexdump(PointerBase from, int wordSize, int numWords) {
-        Pointer base = WordFactory.pointer(from.rawValue());
+        return hexdump(from, wordSize, numWords, 16);
+    }
+
+    @Override
+    @NeverInline("Logging is always slow-path code")
+    @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
+    public Log hexdump(PointerBase from, int wordSize, int numWords, int bytesPerLine) {
+        Pointer base = Word.pointer(from.rawValue());
         int sanitizedWordsize = wordSize > 0 ? Integer.highestOneBit(Math.min(wordSize, 8)) : 2;
         for (int offset = 0; offset < sanitizedWordsize * numWords; offset += sanitizedWordsize) {
-            if (offset % 16 == 0) {
+            if (offset % bytesPerLine == 0) {
                 zhex(base.add(offset));
                 string(":");
             }
@@ -585,7 +632,7 @@ public class RealLog extends Log {
                     zhex(base.readLong(offset));
                     break;
             }
-            if ((offset + sanitizedWordsize) % 16 == 0 && (offset + sanitizedWordsize) < sanitizedWordsize * numWords) {
+            if ((offset + sanitizedWordsize) % bytesPerLine == 0 && (offset + sanitizedWordsize) < sanitizedWordsize * numWords) {
                 newline();
             }
         }
@@ -608,31 +655,96 @@ public class RealLog extends Log {
             return this;
         }
 
-        /*
-         * We do not want to call getMessage(), since it can be overridden by subclasses of
-         * Throwable. So we access the raw detailMessage directly from the field in Throwable. That
-         * is better than printing nothing.
-         */
-        String detailMessage = JDKUtils.getRawMessage(t);
-        StackTraceElement[] stackTrace = JDKUtils.getRawStackTrace(t);
+        Throwable cur = t;
+        int maxCauses = 25;
+        for (int i = 0; i < maxCauses && cur != null; i++) {
+            if (i > 0) {
+                newline().string("Caused by: ");
+            }
 
-        string(t.getClass().getName()).string(": ").string(detailMessage);
-        if (stackTrace != null) {
-            int i;
-            for (i = 0; i < stackTrace.length && i < maxFrames; i++) {
-                StackTraceElement element = stackTrace[i];
-                if (element != null) {
-                    newline();
-                    string("    at ").string(element.getClassName()).string(".").string(element.getMethodName());
-                    string("(").string(element.getFileName()).string(":").signed(element.getLineNumber()).string(")");
+            /*
+             * We do not want to call getMessage(), since it can be overridden by subclasses of
+             * Throwable. So we access the raw detailMessage directly from the field in Throwable.
+             * That is better than printing nothing.
+             */
+            String detailMessage = JDKUtils.getRawMessage(cur);
+
+            string(cur.getClass().getName()).string(": ").string(detailMessage);
+            if (!JDKUtils.isStackTraceValid(cur)) {
+                /*
+                 * We accept that there might be a race with concurrent calls to
+                 * `Throwable#fillInStackTrace`, which changes `Throwable#backtrace`. We accept that
+                 * and the code can deal with that. Worst case we don't get a stack trace.
+                 */
+                int remaining = printBacktraceLocked(cur, maxFrames);
+                printRemainingFramesCount(remaining);
+            } else {
+                StackTraceElement[] stackTrace = JDKUtils.getRawStackTrace(cur);
+                if (stackTrace != null) {
+                    int j;
+                    for (j = 0; j < stackTrace.length && j < maxFrames; j++) {
+                        StackTraceElement element = stackTrace[j];
+                        if (element != null) {
+                            printJavaFrame(element.getClassName(), element.getMethodName(), element.getFileName(), element.getLineNumber());
+                        }
+                    }
+                    int remaining = stackTrace.length - j;
+                    printRemainingFramesCount(remaining);
                 }
             }
-            int remaining = stackTrace.length - i;
-            if (remaining > 0) {
-                newline().string("    ... ").unsigned(remaining).string(" more");
+
+            cur = JDKUtils.getRawCause(cur);
+        }
+
+        return this;
+    }
+
+    private static final VMMutex BACKTRACE_PRINTER_MUTEX = new VMMutex("RealLog.backTracePrinterMutex");
+    private final BacktracePrinter backtracePrinter = new BacktracePrinter();
+
+    private int printBacktraceLocked(Throwable t, int maxFrames) {
+        if (VMOperation.isInProgress()) {
+            if (BACKTRACE_PRINTER_MUTEX.hasOwner()) {
+                /*
+                 * The FrameInfoCursor is locked. We cannot safely print the stack trace. Do nothing
+                 * and accept that we will not get a stack track.
+                 */
+                return 0;
             }
         }
+        BACKTRACE_PRINTER_MUTEX.lock();
+        try {
+            Object backtrace = JDKUtils.getBacktrace(t);
+            return backtracePrinter.printBacktrace((long[]) backtrace, maxFrames);
+        } finally {
+            BACKTRACE_PRINTER_MUTEX.unlock();
+        }
+    }
+
+    private void printJavaFrame(String className, String methodName, String fileName, int lineNumber) {
         newline();
-        return this;
+        string("    at ").string(className).string(".").string(methodName);
+        string("(").string(fileName).string(":").signed(lineNumber).string(")");
+    }
+
+    private void printRemainingFramesCount(int remaining) {
+        if (remaining > 0) {
+            newline().string("    ... ").unsigned(remaining).string(" more");
+        }
+    }
+
+    private final class BacktracePrinter extends BacktraceDecoder {
+
+        protected int printBacktrace(long[] backtrace, int maxFramesProcessed) {
+            return visitBacktrace(backtrace, maxFramesProcessed, SubstrateOptions.maxJavaStackTraceDepth());
+        }
+
+        @Override
+        @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate when logging.")
+        protected void processSourceReference(Class<?> sourceClass, String sourceMethodName, int sourceLineNumber) {
+            String sourceClassName = sourceClass != null ? sourceClass.getName() : "";
+            String sourceFileName = sourceClass != null ? DynamicHub.fromClass(sourceClass).getSourceFileName() : null;
+            printJavaFrame(sourceClassName, sourceMethodName, sourceFileName, sourceLineNumber);
+        }
     }
 }

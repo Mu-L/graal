@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -44,6 +44,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
@@ -54,6 +55,17 @@ final class ArrayBasedStaticShape<T> extends StaticShape<T> {
     @SuppressWarnings("rawtypes") //
     private static final Class[] PRIMITIVE_TYPES = new Class[]{long.class, double.class, int.class, float.class, short.class, char.class, byte.class, boolean.class};
     private static final int N_PRIMITIVES = PRIMITIVE_TYPES.length;
+
+    // Initialized by TruffleBaseFeature$StaticObjectArrayBasedSupport and used to patch the offsets
+    // and the indexes used to store primitive values. The keys are factory instances (they store
+    // the length of the primitive byte[]) and the primitive byte[] (they need to be resized).
+    // Initially, values are the same as the corresponding keys. Once a replacement is computed, it
+    // is stored as value. We can use an equality-based map because generated factory instances to
+    // not override `equals()` and `hashCode()`.
+    //
+    // Cleared and set to null by TruffleBaseFeature to avoid leaking objects and calls to
+    // `ImageInfo.inImageBuildtimeCode()` in code that might be PE'd.
+    static ConcurrentHashMap<Object, Object> replacements;
 
     @CompilationFinal(dimensions = 1) //
     private final StaticShape<T>[] superShapes;
@@ -80,8 +92,15 @@ final class ArrayBasedStaticShape<T> extends StaticShape<T> {
             ArrayBasedPropertyLayout propertyLayout = new ArrayBasedPropertyLayout(generator, parentPropertyLayout, staticProperties);
             ArrayBasedStaticShape<T> shape = new ArrayBasedStaticShape<>(parentShape, generatedStorageClass, propertyLayout, checkShapes);
             T factory = generatedFactoryClass.cast(
-                            generatedFactoryClass.getConstructor(ArrayBasedStaticShape.class, int.class, int.class).newInstance(shape, propertyLayout.getPrimitiveArraySize(),
-                                            propertyLayout.getObjectArraySize()));
+                            generatedFactoryClass.getConstructor(
+                                            ArrayBasedStaticShape.class,
+                                            int.class,
+                                            int.class,
+                                            boolean.class).newInstance(
+                                                            shape,
+                                                            propertyLayout.getPrimitiveArraySize(),
+                                                            propertyLayout.getObjectArraySize(),
+                                                            replacements != null));
             shape.setFactory(factory);
             return shape;
         } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | InvocationTargetException e) {
@@ -92,7 +111,7 @@ final class ArrayBasedStaticShape<T> extends StaticShape<T> {
     @Override
     @SuppressWarnings("cast")
     Object getStorage(Object obj, boolean primitive) {
-        Object receiverObject = cast(obj, storageClass, false);
+        Object receiverObject = checkedCast(obj, storageClass);
         if (safetyChecks) {
             checkShape(receiverObject);
         } else {

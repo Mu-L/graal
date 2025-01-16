@@ -28,10 +28,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+
+import org.graalvm.shadowed.org.json.JSONObject;
 import org.junit.After;
 import org.junit.Test;
-
-import com.oracle.truffle.tools.utils.json.JSONObject;
 
 import org.graalvm.polyglot.Source;
 
@@ -88,6 +88,9 @@ public class SLInspectProfileTest {
         tester.sendMessage("{\"id\":4,\"method\":\"Profiler.start\"}");
         assertEquals("{\"result\":{},\"id\":4}", tester.getMessages(true).trim());
         assertTrue(tester.shouldWaitForClose());
+        tester.sendMessage("{\"id\":10,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
+        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":10}\n" +
+                        "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source).get();
         tester.sendMessage("{\"id\":5,\"method\":\"Profiler.stop\"}");
         JSONObject json = new JSONObject(tester.getMessages(true).trim());
@@ -118,6 +121,9 @@ public class SLInspectProfileTest {
         assertTrue(tester.shouldWaitForClose());
         tester.sendMessage("{\"id\":4,\"method\":\"Profiler.takePreciseCoverage\"}");
         assertEquals("{\"result\":{\"result\":[]},\"id\":4}", tester.getMessages(true).trim());
+        tester.sendMessage("{\"id\":10,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
+        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":10}\n" +
+                        "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source).get();
         tester.sendMessage("{\"id\":5,\"method\":\"Profiler.takePreciseCoverage\"}");
         assertEquals("{\"result\":{\"result\":[{\"scriptId\":\"1\",\"functions\":["
@@ -149,6 +155,9 @@ public class SLInspectProfileTest {
         assertTrue(tester.shouldWaitForClose());
         tester.sendMessage("{\"id\":4,\"method\":\"Profiler.takePreciseCoverage\"}");
         assertEquals("{\"result\":{\"result\":[]},\"id\":4}", tester.getMessages(true).trim());
+        tester.sendMessage("{\"id\":10,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
+        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":10}\n" +
+                        "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source).get();
         tester.sendMessage("{\"id\":5,\"method\":\"Profiler.takePreciseCoverage\"}");
         assertEquals("{\"result\":{\"result\":[{\"scriptId\":\"1\",\"functions\":["
@@ -180,6 +189,9 @@ public class SLInspectProfileTest {
         assertTrue(tester.shouldWaitForClose());
         tester.sendMessage("{\"id\":4,\"method\":\"Profiler.takeTypeProfile\"}");
         assertEquals("{\"result\":{\"result\":[]},\"id\":4}", tester.getMessages(true).trim());
+        tester.sendMessage("{\"id\":10,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
+        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":10}\n" +
+                        "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source).get();
         tester.sendMessage("{\"id\":5,\"method\":\"Profiler.takeTypeProfile\"}");
         assertEquals("{\"result\":{\"result\":[{\"scriptId\":\"1\",\"entries\":["

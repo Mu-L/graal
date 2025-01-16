@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,23 +24,32 @@
  */
 package com.oracle.svm.core.jdk;
 
+import static java.util.Locale.Category.DISPLAY;
+import static java.util.Locale.Category.FORMAT;
+
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.function.Supplier;
 
-import org.graalvm.compiler.api.replacements.Fold;
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
 import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.c.type.CCharPointerPointer;
+import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.impl.RuntimeSystemPropertiesSupport;
 
+import com.oracle.svm.core.LibCHelper;
 import com.oracle.svm.core.VM;
 import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.headers.LibCSupport;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.api.replacements.Fold;
+import jdk.graal.compiler.debug.GraalError;
 
 /**
  * This class maintains the system properties at run time.
@@ -56,6 +65,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
     /** System properties that are taken from the VM hosting the image generator. */
     private static final String[] HOSTED_PROPERTIES = {
                     "java.version",
+                    "java.version.date",
                     ImageInfo.PROPERTY_IMAGE_KIND_KEY,
                     /*
                      * We do not support cross-compilation for now. Separator might also be cached
@@ -65,6 +75,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
                     /* For our convenience for now. */
                     "file.encoding", "sun.jnu.encoding", "native.encoding", "stdout.encoding", "stderr.encoding",
                     "java.class.version",
+                    "java.runtime.version",
                     "java.specification.name",
                     "java.specification.vendor",
                     "java.specification.version",
@@ -72,6 +83,13 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
                     "java.vm.specification.vendor",
                     "java.vm.specification.version"
     };
+
+    /* The list of field positions in locale_props_t (see locale_str.h). */
+    private static final int LANGUAGE_POSITION = 0;
+    private static final int SCRIPT_POSITION = LANGUAGE_POSITION + 1;
+    private static final int COUNTRY_POSITION = SCRIPT_POSITION + 1;
+    private static final int VARIANT_POSITION = COUNTRY_POSITION + 1;
+    private static final int EXTENSION_POSITION = VARIANT_POSITION + 1;
 
     /** System properties that are lazily computed at run time on first access. */
     private final Map<String, Supplier<String>> lazyRuntimeValues;
@@ -96,6 +114,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
+    @SuppressWarnings("this-escape")
     protected SystemPropertiesSupport() {
         properties = new Properties();
         savedProperties = new HashMap<>();
@@ -109,13 +128,17 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
             }
         }
 
+        initializeProperty("java.runtime.name", "GraalVM Runtime Environment");
+
+        VM vm = ImageSingletons.lookup(VM.class);
+        initializeProperty("java.vendor", vm.vendor);
+        initializeProperty("java.vendor.url", vm.vendorUrl);
+        initializeProperty("java.vendor.version", vm.vendorVersion);
+        assert vm.info.equals(vm.info.toLowerCase(Locale.ROOT)) : "java.vm.info should not contain uppercase characters";
+        initializeProperty("java.vm.info", vm.info);
         initializeProperty("java.vm.name", "Substrate VM");
-        initializeProperty("java.runtime.name", ImageSingletons.lookup(VM.class).runtimeName);
-        initializeProperty("java.vm.vendor", ImageSingletons.lookup(VM.class).vendor);
-        initializeProperty("java.vm.version", ImageSingletons.lookup(VM.class).version);
-        initializeProperty("java.runtime.version", ImageSingletons.lookup(VM.class).version);
-        initializeProperty("java.vendor", ImageSingletons.lookup(VM.class).vendor);
-        initializeProperty("java.vendor.url", ImageSingletons.lookup(VM.class).vendorUrl);
+        initializeProperty("java.vm.vendor", vm.vendor);
+        initializeProperty("java.vm.version", vm.version);
 
         initializeProperty("java.class.path", "");
         initializeProperty("java.endorsed.dirs", "");
@@ -124,13 +147,6 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
 
         initializeProperty(ImageInfo.PROPERTY_IMAGE_CODE_KEY, ImageInfo.PROPERTY_IMAGE_CODE_VALUE_RUNTIME);
 
-        if (JavaVersionUtil.JAVA_SPEC <= 11) {
-            /* AWT system properties are no longer used after JDK 11. */
-            initializeProperty("awt.toolkit", System.getProperty("awt.toolkit"));
-            initializeProperty("java.awt.graphicsenv", System.getProperty("java.awt.graphicsenv"));
-            initializeProperty("java.awt.printerjob", System.getProperty("java.awt.printerjob"));
-        }
-
         lazyRuntimeValues = new HashMap<>();
         lazyRuntimeValues.put("user.name", this::userName);
         lazyRuntimeValues.put("user.home", this::userHome);
@@ -138,6 +154,21 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
         lazyRuntimeValues.put("java.io.tmpdir", this::javaIoTmpDir);
         lazyRuntimeValues.put("java.library.path", this::javaLibraryPath);
         lazyRuntimeValues.put("os.version", this::osVersionValue);
+        lazyRuntimeValues.put(UserSystemProperty.USER_LANGUAGE, () -> postProcessLocale(UserSystemProperty.USER_LANGUAGE, parseLocale(DISPLAY).language(), null));
+        lazyRuntimeValues.put(UserSystemProperty.USER_LANGUAGE_DISPLAY, () -> postProcessLocale(UserSystemProperty.USER_LANGUAGE, parseLocale(DISPLAY).language(), DISPLAY));
+        lazyRuntimeValues.put(UserSystemProperty.USER_LANGUAGE_FORMAT, () -> postProcessLocale(UserSystemProperty.USER_LANGUAGE, parseLocale(FORMAT).language(), FORMAT));
+        lazyRuntimeValues.put(UserSystemProperty.USER_SCRIPT, () -> postProcessLocale(UserSystemProperty.USER_SCRIPT, parseLocale(DISPLAY).script(), null));
+        lazyRuntimeValues.put(UserSystemProperty.USER_SCRIPT_DISPLAY, () -> postProcessLocale(UserSystemProperty.USER_SCRIPT, parseLocale(DISPLAY).script(), DISPLAY));
+        lazyRuntimeValues.put(UserSystemProperty.USER_SCRIPT_FORMAT, () -> postProcessLocale(UserSystemProperty.USER_SCRIPT, parseLocale(FORMAT).script(), FORMAT));
+        lazyRuntimeValues.put(UserSystemProperty.USER_COUNTRY, () -> postProcessLocale(UserSystemProperty.USER_COUNTRY, parseLocale(DISPLAY).country(), null));
+        lazyRuntimeValues.put(UserSystemProperty.USER_COUNTRY_DISPLAY, () -> postProcessLocale(UserSystemProperty.USER_COUNTRY, parseLocale(DISPLAY).country(), DISPLAY));
+        lazyRuntimeValues.put(UserSystemProperty.USER_COUNTRY_FORMAT, () -> postProcessLocale(UserSystemProperty.USER_COUNTRY, parseLocale(FORMAT).country(), FORMAT));
+        lazyRuntimeValues.put(UserSystemProperty.USER_VARIANT, () -> postProcessLocale(UserSystemProperty.USER_VARIANT, parseLocale(DISPLAY).variant(), null));
+        lazyRuntimeValues.put(UserSystemProperty.USER_VARIANT_DISPLAY, () -> postProcessLocale(UserSystemProperty.USER_VARIANT, parseLocale(DISPLAY).variant(), DISPLAY));
+        lazyRuntimeValues.put(UserSystemProperty.USER_VARIANT_FORMAT, () -> postProcessLocale(UserSystemProperty.USER_VARIANT, parseLocale(FORMAT).variant(), FORMAT));
+        lazyRuntimeValues.put(UserSystemProperty.USER_EXTENSIONS, () -> postProcessLocale(UserSystemProperty.USER_EXTENSIONS, parseLocale(DISPLAY).extensions(), null));
+        lazyRuntimeValues.put(UserSystemProperty.USER_EXTENSIONS_DISPLAY, () -> postProcessLocale(UserSystemProperty.USER_EXTENSIONS, parseLocale(DISPLAY).extensions(), DISPLAY));
+        lazyRuntimeValues.put(UserSystemProperty.USER_EXTENSIONS_FORMAT, () -> postProcessLocale(UserSystemProperty.USER_EXTENSIONS, parseLocale(FORMAT).extensions(), FORMAT));
 
         String targetName = System.getProperty("svm.targetName");
         if (targetName != null) {
@@ -182,6 +213,12 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
         return properties.getProperty(key);
     }
 
+    protected String getSavedProperty(String key, String defaultValue) {
+        initializeLazyValue(key);
+        String value = savedProperties.get(key);
+        return value != null ? value : defaultValue;
+    }
+
     public void setProperties(Properties props) {
         // Flush lazy values into savedProperties
         ensureFullyInitialized();
@@ -202,8 +239,12 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
      */
     @Override
     public void initializeProperty(String key, String value) {
+        initializeProperty(key, value, true);
+    }
+
+    public void initializeProperty(String key, String value, boolean strict) {
         String prevValue = savedProperties.put(key, value);
-        if (prevValue != null && !prevValue.equals(value)) {
+        if (strict && prevValue != null && !prevValue.equals(value)) {
             VMError.shouldNotReachHere("System property " + key + " is initialized to " + value + " but was previously initialized to " + prevValue + ".");
         }
         properties.setProperty(key, value);
@@ -230,10 +271,14 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
              * manual updates of the same property key.
              */
             String value = lazyRuntimeValues.get(key).get();
-            if (properties.putIfAbsent(key, value) == null) {
-                synchronized (savedProperties) {
-                    savedProperties.put(key, value);
-                }
+            setRawProperty(key, value);
+        }
+    }
+
+    private void setRawProperty(String key, String value) {
+        if (value != null && properties.putIfAbsent(key, value) == null) {
+            synchronized (savedProperties) {
+                savedProperties.put(key, value);
             }
         }
     }
@@ -296,7 +341,7 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
     }
 
     protected String tmpdirValue() {
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented();
     }
 
     protected String javaLibraryPathValue() {
@@ -313,4 +358,90 @@ public abstract class SystemPropertiesSupport implements RuntimeSystemProperties
     }
 
     protected abstract String osVersionValue();
+
+    public record LocaleEncoding(String language, String script, String country, String variant, String extensions) {
+        private LocaleEncoding(CCharPointerPointer properties) {
+            this(fromCStringArray(properties, LANGUAGE_POSITION),
+                            fromCStringArray(properties, SCRIPT_POSITION),
+                            fromCStringArray(properties, COUNTRY_POSITION),
+                            fromCStringArray(properties, VARIANT_POSITION),
+                            fromCStringArray(properties, EXTENSION_POSITION));
+        }
+
+        private static String fromCStringArray(CCharPointerPointer cString, int index) {
+            if (cString.isNull()) {
+                return null;
+            }
+            return CTypeConversion.toJavaString(cString.read(index));
+        }
+    }
+
+    private LocaleEncoding displayLocale;
+
+    private LocaleEncoding formatLocale;
+
+    protected LocaleEncoding parseLocale(Locale.Category category) {
+        if (!ImageSingletons.contains(LibCSupport.class)) {
+            /* If native calls are not supported, just return fixed values. */
+            return new LocaleEncoding("en", "", "US", "", "");
+        }
+        switch (category) {
+            case DISPLAY -> {
+                if (displayLocale == null) {
+                    displayLocale = new LocaleEncoding(LibCHelper.Locale.parseDisplayLocale());
+                }
+                return displayLocale;
+            }
+            case FORMAT -> {
+                if (formatLocale == null) {
+                    formatLocale = new LocaleEncoding(LibCHelper.Locale.parseFormatLocale());
+                }
+                return formatLocale;
+            }
+            default -> throw new GraalError("Unknown locale category: " + category + ".");
+        }
+    }
+
+    private String postProcessLocale(String base, String value, Locale.Category category) {
+        if (category == null) {
+            /* user.xxx property */
+            String baseValue = null;
+            if (value != null) {
+                setRawProperty(base, value);
+                baseValue = value;
+            }
+            return baseValue;
+        }
+        switch (category) {
+            case DISPLAY, FORMAT -> {
+                /* user.xxx.(display|format) property */
+                String baseValue = getProperty(base);
+                if (baseValue == null && value != null) {
+                    setRawProperty(base + '.' + category.name().toLowerCase(Locale.ROOT), value);
+                    return value;
+                }
+                return null;
+            }
+            default -> throw new GraalError("Unknown locale category: " + category + ".");
+        }
+    }
+
+    public static class UserSystemProperty {
+        public static final String USER_LANGUAGE = "user.language";
+        public static final String USER_LANGUAGE_DISPLAY = USER_LANGUAGE + ".display";
+        public static final String USER_LANGUAGE_FORMAT = USER_LANGUAGE + ".format";
+        public static final String USER_SCRIPT = "user.script";
+        public static final String USER_SCRIPT_DISPLAY = USER_SCRIPT + ".display";
+        public static final String USER_SCRIPT_FORMAT = USER_SCRIPT + ".format";
+        public static final String USER_COUNTRY = "user.country";
+        public static final String USER_COUNTRY_DISPLAY = USER_COUNTRY + ".display";
+        public static final String USER_COUNTRY_FORMAT = USER_COUNTRY + ".format";
+        public static final String USER_VARIANT = "user.variant";
+        public static final String USER_VARIANT_DISPLAY = USER_VARIANT + ".display";
+        public static final String USER_VARIANT_FORMAT = USER_VARIANT + ".format";
+        public static final String USER_EXTENSIONS = "user.extensions";
+        public static final String USER_EXTENSIONS_DISPLAY = USER_EXTENSIONS + ".display";
+        public static final String USER_EXTENSIONS_FORMAT = USER_EXTENSIONS + ".format";
+        public static final String USER_REGION = "user.region";
+    }
 }

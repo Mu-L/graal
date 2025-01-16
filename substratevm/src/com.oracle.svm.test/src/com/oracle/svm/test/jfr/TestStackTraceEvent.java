@@ -25,50 +25,40 @@
 
 package com.oracle.svm.test.jfr;
 
-import org.graalvm.word.WordFactory;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import jdk.jfr.consumer.RecordedThread;
+import org.junit.Assert;
 import org.junit.Test;
 
-import com.oracle.svm.core.jfr.HasJfrSupport;
-import com.oracle.svm.core.sampler.SamplerBuffer;
-import com.oracle.svm.core.sampler.SamplerBufferAccess;
-import com.oracle.svm.core.sampler.SamplerBuffersAccess;
-import com.oracle.svm.core.sampler.SamplerThreadLocal;
 import com.oracle.svm.test.jfr.events.StackTraceEvent;
+
+import jdk.jfr.Recording;
+import jdk.jfr.consumer.RecordedEvent;
+import jdk.jfr.consumer.RecordedFrame;
+import jdk.jfr.consumer.RecordedMethod;
+import jdk.jfr.consumer.RecordedStackTrace;
 
 /**
  * Test if event ({@link StackTraceEvent}) with stacktrace payload is working.
  */
-public class TestStackTraceEvent extends JfrTest {
-    private static final int LOCAL_BUFFER_SIZE = 1024;
+public class TestStackTraceEvent extends JfrRecordingTest {
 
-    @Override
-    public String[] getTestedEvents() {
-        return new String[]{
-                        StackTraceEvent.class.getName()
-        };
-    }
+    private static final JfrSeenMethod junitTest = new JfrSeenMethod("test", "()V", 1);
+    private static final JfrSeenMethod svmJunitMain = new JfrSeenMethod("main", "([Ljava/lang/String;)V", 9);
+    private static final JfrSeenMethod javaMainRun = new JfrSeenMethod("doRun", "(ILorg/graalvm/nativeimage/c/type/CCharPointerPointer;)I", 10);
 
     @Test
-    public void test() throws Exception {
-        if (!HasJfrSupport.get()) {
-            /*
-             * The static analysis will find reachable the com.oracle.svm.core.jfr.SubstrateJVM via
-             * processSamplerBuffer call. Since we are not supporting JFR on Windows yet, JfrFeature
-             * will not add the SubstrateJVM to the list of all image singletons and therefore
-             * InvocationPlugin will throw an exception while folding the SubstrateJVM (see
-             * SubstrateJVM.get).
-             *
-             * Note that although we are building this JFR test for Windows as well, it will not be
-             * executed because of guard in com.oracle.svm.test.jfr.JfrTest.checkForJFR.
-             *
-             * Once we have support for Windows, this check will become obsolete.
-             */
-            return;
-        }
-
-        /* Set thread-local buffer before stack walk. */
-        SamplerBuffer buffer = SamplerBufferAccess.allocate(WordFactory.unsigned(LOCAL_BUFFER_SIZE));
-        SamplerThreadLocal.setThreadLocalBuffer(buffer);
+    public void test() throws Throwable {
+        String[] events = new String[]{StackTraceEvent.class.getName()};
+        Recording recording = startRecording(events);
 
         /*
          * Create and commit an event. This will trigger
@@ -77,10 +67,47 @@ public class TestStackTraceEvent extends JfrTest {
         StackTraceEvent event = new StackTraceEvent();
         event.commit();
 
-        /* Call manually buffer processing. */
-        SamplerBuffersAccess.processSamplerBuffer(buffer);
+        stopRecording(recording, TestStackTraceEvent::validateEvents);
+    }
 
-        /* We need to free memory manually as well afterward. */
-        SamplerBufferAccess.free(buffer);
+    private static void validateEvents(List<RecordedEvent> events) {
+        assertEquals(1, events.size());
+        RecordedEvent event = events.getFirst();
+
+        long sampledThreadId = event.<RecordedThread> getValue("eventThread").getJavaThreadId();
+        assertTrue(sampledThreadId > 0);
+
+        RecordedStackTrace stackTrace = event.getStackTrace();
+        assertNotNull(stackTrace);
+
+        List<RecordedFrame> frames = stackTrace.getFrames();
+        assertFalse(frames.isEmpty());
+
+        Set<JfrSeenMethod> seenMethod = new HashSet<>();
+        for (RecordedFrame frame : frames) {
+            RecordedMethod method = frame.getMethod();
+            assertNotNull(method);
+
+            String methodName = method.getName();
+            assertNotNull(methodName);
+            assertFalse(methodName.isEmpty());
+
+            String methodDescriptor = method.getDescriptor();
+            assertNotNull(methodDescriptor);
+            assertFalse(methodDescriptor.isEmpty());
+
+            int methodModifiers = method.getModifiers();
+            assertTrue(methodModifiers >= 0);
+
+            seenMethod.add(new JfrSeenMethod(methodName, methodDescriptor, methodModifiers));
+        }
+
+        Assert.assertTrue(seenMethod.contains(junitTest));
+        Assert.assertTrue(seenMethod.contains(javaMainRun));
+        Assert.assertTrue(seenMethod.contains(svmJunitMain));
+    }
+
+    private record JfrSeenMethod(String name, String descriptor, int modifier) {
+
     }
 }

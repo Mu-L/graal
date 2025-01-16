@@ -24,24 +24,28 @@
  */
 package com.oracle.svm.core.jni.headers;
 
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
 import org.graalvm.nativeimage.c.CContext;
 import org.graalvm.nativeimage.c.constant.CConstant;
 
 import com.oracle.svm.core.Uninterruptible;
 
+import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
+
 @CContext(JNIHeaderDirectives.class)
 public final class JNIVersion {
-    @Uninterruptible(reason = "Called from uninterruptible code.")
-    public static boolean isSupported(int version) {
-        return (JavaVersionUtil.JAVA_SPEC > 17 && version == JNIVersionJDK19OrLater.JNI_VERSION_19()) ||
-                        version == JNI_VERSION_10() ||
-                        version == JNI_VERSION_9() ||
-                        version == JNI_VERSION_1_8() ||
-                        version == JNI_VERSION_1_6() ||
-                        version == JNI_VERSION_1_4() ||
-                        version == JNI_VERSION_1_2() ||
-                        version == JNI_VERSION_1_1();
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static boolean isSupported(int version, boolean builtInLibrary) {
+        if (JavaVersionUtil.JAVA_SPEC > 21 && version == JNIVersionJDKLatest.JNI_VERSION_LATEST()) {
+            return true;
+        }
+        if (version == JNI_VERSION_21() || version == JNI_VERSION_20() || version == JNI_VERSION_19() || version == JNI_VERSION_10() || version == JNI_VERSION_9() || version == JNI_VERSION_1_8()) {
+            return true;
+        }
+        if (builtInLibrary) {
+            // Specification requires 1.8 or later for built-in (statically linked) libraries.
+            return false;
+        }
+        return version == JNI_VERSION_1_6() || version == JNI_VERSION_1_4() || version == JNI_VERSION_1_2() || version == JNI_VERSION_1_1();
     }
 
     // Checkstyle: stop
@@ -66,6 +70,15 @@ public final class JNIVersion {
 
     @CConstant
     public static native int JNI_VERSION_10();
+
+    @CConstant
+    public static native int JNI_VERSION_19();
+
+    @CConstant
+    public static native int JNI_VERSION_20();
+
+    @CConstant
+    public static native int JNI_VERSION_21();
 
     // Checkstyle: resume
 

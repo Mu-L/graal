@@ -24,33 +24,41 @@
  */
 package com.oracle.svm.core.genscavenge.graal;
 
-import com.oracle.svm.core.heap.Pod;
-import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
-import com.oracle.svm.core.thread.Continuation;
-import org.graalvm.compiler.core.common.spi.ForeignCallDescriptor;
-import org.graalvm.compiler.word.Word;
+import static jdk.graal.compiler.core.common.spi.ForeignCallDescriptor.CallSideEffect.NO_SIDE_EFFECT;
+
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.genscavenge.HeapParameters;
 import com.oracle.svm.core.genscavenge.ThreadLocalAllocation;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.snippets.GCAllocationSupport;
+import com.oracle.svm.core.heap.Pod;
+import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.snippets.SnippetRuntime;
+import com.oracle.svm.core.snippets.SnippetRuntime.SubstrateForeignCallDescriptor;
+import com.oracle.svm.core.thread.ContinuationSupport;
+
+import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
+import jdk.graal.compiler.word.Word;
 
 public class GenScavengeAllocationSupport implements GCAllocationSupport {
-    private static final SubstrateForeignCallDescriptor SLOW_NEW_INSTANCE = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewInstance", true);
-    private static final SubstrateForeignCallDescriptor SLOW_NEW_ARRAY = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewArray", true);
-    private static final SubstrateForeignCallDescriptor SLOW_NEW_STORED_CONTINUATION = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewStoredContinuation", true);
-    private static final SubstrateForeignCallDescriptor SLOW_NEW_POD_INSTANCE = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewPodInstance", true);
+    private static final SubstrateForeignCallDescriptor SLOW_NEW_INSTANCE = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewInstance", NO_SIDE_EFFECT);
+    private static final SubstrateForeignCallDescriptor SLOW_NEW_ARRAY = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewArray", NO_SIDE_EFFECT);
+    private static final SubstrateForeignCallDescriptor SLOW_NEW_STORED_CONTINUATION = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewStoredContinuation", NO_SIDE_EFFECT);
+    private static final SubstrateForeignCallDescriptor SLOW_NEW_POD_INSTANCE = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "slowPathNewPodInstance", NO_SIDE_EFFECT);
+    private static final SubstrateForeignCallDescriptor NEW_DYNAMICHUB = SnippetRuntime.findForeignCall(ThreadLocalAllocation.class, "newDynamicHub", NO_SIDE_EFFECT);
     private static final SubstrateForeignCallDescriptor[] UNCONDITIONAL_FOREIGN_CALLS = new SubstrateForeignCallDescriptor[]{SLOW_NEW_INSTANCE, SLOW_NEW_ARRAY};
 
     public static void registerForeignCalls(SubstrateForeignCallsProvider foreignCalls) {
         foreignCalls.register(UNCONDITIONAL_FOREIGN_CALLS);
-        if (Continuation.isSupported()) {
+        if (ContinuationSupport.isSupported()) {
             foreignCalls.register(SLOW_NEW_STORED_CONTINUATION);
         }
         if (Pod.RuntimeSupport.isPresent()) {
             foreignCalls.register(SLOW_NEW_POD_INSTANCE);
+        }
+        if (RuntimeClassLoading.isSupported()) {
+            foreignCalls.register(NEW_DYNAMICHUB);
         }
     }
 
@@ -72,6 +80,11 @@ public class GenScavengeAllocationSupport implements GCAllocationSupport {
     @Override
     public ForeignCallDescriptor getNewPodInstanceStub() {
         return SLOW_NEW_POD_INSTANCE;
+    }
+
+    @Override
+    public SubstrateForeignCallDescriptor getNewDynamicHub() {
+        return NEW_DYNAMICHUB;
     }
 
     @Override

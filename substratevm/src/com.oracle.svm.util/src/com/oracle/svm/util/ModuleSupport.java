@@ -24,6 +24,9 @@
  */
 package com.oracle.svm.util;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -35,15 +38,33 @@ import jdk.internal.module.Modules;
 
 public final class ModuleSupport {
 
+    public static final String MODULE_SET_ALL_DEFAULT = "ALL-DEFAULT";
+    public static final String MODULE_SET_ALL_SYSTEM = "ALL-SYSTEM";
+    public static final String MODULE_SET_ALL_MODULE_PATH = "ALL-MODULE-PATH";
+    public static final List<String> nonExplicitModules = List.of(MODULE_SET_ALL_DEFAULT, MODULE_SET_ALL_SYSTEM, MODULE_SET_ALL_MODULE_PATH);
+
     public static final String ENV_VAR_USE_MODULE_SYSTEM = "USE_NATIVE_IMAGE_JAVA_PLATFORM_MODULE_SYSTEM";
-    public static final String PROPERTY_IMAGE_EXPLICITLY_ADDED_MODULES = "org.graalvm.nativeimage.module.addmods";
+    public static final String PROPERTY_IMAGE_EXPLICITLY_ADDED_MODULES = "svm.modulesupport.addedModules";
+    public static final String PROPERTY_IMAGE_EXPLICITLY_LIMITED_MODULES = "svm.modulesupport.limitedModules";
     public static final boolean modulePathBuild = isModulePathBuild();
+
+    public static final Set<String> SYSTEM_MODULES = Set.of("org.graalvm.nativeimage.builder", "org.graalvm.nativeimage", "org.graalvm.nativeimage.base", "com.oracle.svm.svm_enterprise",
+                    "org.graalvm.word", "jdk.internal.vm.ci", "jdk.graal.compiler", "com.oracle.graal.graal_enterprise");
 
     private ModuleSupport() {
     }
 
     private static boolean isModulePathBuild() {
         return !"false".equalsIgnoreCase(System.getenv().get(ENV_VAR_USE_MODULE_SYSTEM));
+    }
+
+    public static Set<String> parseModuleSetModifierProperty(String prop) {
+        Set<String> specifiedModules = new HashSet<>();
+        String args = System.getProperty(prop, "");
+        if (!args.isEmpty()) {
+            specifiedModules.addAll(Arrays.asList(args.split(",")));
+        }
+        return specifiedModules;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -124,7 +145,7 @@ public final class ModuleSupport {
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    private static void accessModuleByClass(Access access, Class<?> accessingClass, Module declaringModule, String packageName) {
+    public static void accessModuleByClass(Access access, Class<?> accessingClass, Module declaringModule, String packageName) {
         Module namedAccessingModule = null;
         if (accessingClass != null) {
             Module accessingModule = accessingClass.getModule();
@@ -133,5 +154,10 @@ public final class ModuleSupport {
             }
         }
         access.giveAccess(namedAccessingModule, declaringModule, packageName);
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public static void accessModule(Access access, Module accessingModule, Module declaringModule, String packageName) {
+        access.giveAccess(accessingModule, declaringModule, packageName);
     }
 }

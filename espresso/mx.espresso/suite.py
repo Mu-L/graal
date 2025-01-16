@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -20,10 +20,11 @@
 # or visit www.oracle.com if you need additional information or have any
 # questions.
 #
+
 suite = {
-    "mxversion": "6.9.1",
+    "mxversion": "7.33.0",
     "name": "espresso",
-    "version" : "23.0.0",
+    "version" : "25.0.0",
     "release" : False,
     "groupId" : "org.graalvm.espresso",
     "url" : "https://www.graalvm.org/reference-manual/java-on-truffle/",
@@ -50,6 +51,10 @@ suite = {
             "name": "Universal Permissive License, Version 1.0",
             "url": "http://opensource.org/licenses/UPL",
         },
+        "Oracle Proprietary": {
+            "name": "ORACLE PROPRIETARY/CONFIDENTIAL",
+            "url": "http://www.oracle.com/us/legal/copyright/index.html"
+        },
     },
     "defaultLicense": "GPLv2",
 
@@ -60,42 +65,18 @@ suite = {
             {
                 "name": "truffle",
                 "subdir": True,
-                "urls": [
-                    {"url": "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind": "binary"},
-                ]
             },
             {
                 "name": "tools",
                 "subdir": True,
-                "urls": [
-                    {"url": "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind": "binary"},
-                ]
             },
             {
                 "name": "sulong",
                 "subdir": True,
-                "urls": [
-                    {"url": "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind": "binary"},
-                ],
-                "os_arch": {
-                    "windows": {
-                        "<others>": {
-                            "ignore": True,
-                        },
-                    },
-                    "<others>": {
-                        "<others>": {
-                            "ignore": False,
-                        }
-                    }
-                }
             },
             {
-                "name" : "java-benchmarks",
+                "name" : "sdk",
                 "subdir": True,
-                "urls": [
-                    {"url": "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind": "binary"},
-                ]
             },
         ],
     },
@@ -109,9 +90,9 @@ suite = {
             "sourceDirs": ["src"],
             "dependencies": [
             ],
-            "javaCompliance": "11+",
+            "javaCompliance" : "8+",
             "checkstyle": "com.oracle.truffle.espresso.polyglot",
-            "checkstyleVersion": "8.8",
+            "checkstyleVersion": "10.21.0",
             "license": "UPL",
         },
 
@@ -120,9 +101,45 @@ suite = {
             "sourceDirs": ["src"],
             "dependencies": [
             ],
-            "javaCompliance": "11+",
+            "javaCompliance" : "8+",
             "checkstyle": "com.oracle.truffle.espresso.polyglot",
             "license": "UPL",
+        },
+
+        "org.graalvm.continuations": {
+            "subDir": "src",
+            "sourceDirs": ["src"],
+            "dependencies": [
+            ],
+            "javaCompliance" : "21+",
+            "checkstyle": "com.oracle.truffle.espresso.polyglot",
+            "license": "UPL",
+        },
+
+        # Shared .class file parser
+        "com.oracle.truffle.espresso.classfile": {
+            "subDir": "src",
+            "sourceDirs": ["src"],
+            "dependencies": [
+                "truffle:TRUFFLE_API",
+            ],
+            "requires": [
+            ],
+            "javaCompliance" : "17+",
+            "checkstyle": "com.oracle.truffle.espresso",
+        },
+
+        # Shared link resolver
+        "com.oracle.truffle.espresso.shared": {
+            "subDir": "src",
+            "sourceDirs": ["src"],
+            "dependencies": [
+                "com.oracle.truffle.espresso.classfile",
+            ],
+            "requires": [
+            ],
+            "javaCompliance" : "17+",
+            "checkstyle": "com.oracle.truffle.espresso",
         },
 
         "com.oracle.truffle.espresso": {
@@ -131,32 +148,35 @@ suite = {
             "dependencies": [
                 "truffle:TRUFFLE_API",
                 "truffle:TRUFFLE_NFI",
-                "truffle:TRUFFLE_ASM_9.1",
                 "com.oracle.truffle.espresso.jdwp",
+                "com.oracle.truffle.espresso.shadowed.asm",
+                "com.oracle.truffle.espresso.shared",
             ],
             "requires": [
                 "java.logging",
                 "jdk.unsupported", # sun.misc.Signal
+                "java.management",
+            ],
+            "uses": [
+                "com.oracle.truffle.espresso.ffi.NativeAccess.Provider",
             ],
             "annotationProcessors": ["truffle:TRUFFLE_DSL_PROCESSOR", "ESPRESSO_PROCESSOR"],
-            "javaCompliance": "11+",
+            "jacoco" : "include",
+            "javaCompliance" : "17+",
             "checkstyle": "com.oracle.truffle.espresso",
-            "checkstyleVersion": "8.8",
+            "checkstyleVersion": "10.21.0",
         },
 
-        "com.oracle.truffle.espresso.jdk17": {
+        "com.oracle.truffle.espresso.resources.libs": {
             "subDir": "src",
             "sourceDirs": ["src"],
-            "overlayTarget": "com.oracle.truffle.espresso",
             "dependencies": [
-                "com.oracle.truffle.espresso",
+                "truffle:TRUFFLE_API",
             ],
-            "checkPackagePrefix": "false",
-            "multiReleaseJarVersion": "17",
-            "checkstyle": "com.oracle.truffle.espresso",
+            "annotationProcessors": ["truffle:TRUFFLE_DSL_PROCESSOR"],
             "javaCompliance": "17+",
+            "checkstyle": "com.oracle.truffle.espresso",
         },
-
 
         "com.oracle.truffle.espresso.processor": {
             "subDir": "src",
@@ -164,7 +184,7 @@ suite = {
             "requires": [
                 "java.compiler"
             ],
-            "javaCompliance": "11+",
+            "javaCompliance" : "21+",
             "checkstyle": "com.oracle.truffle.espresso",
         },
 
@@ -172,10 +192,11 @@ suite = {
             "subDir": "src",
             "sourceDirs": ["src"],
             "dependencies": [
-                "sdk:GRAAL_SDK",
+                "sdk:POLYGLOT",
                 "sdk:LAUNCHER_COMMON",
             ],
-            "javaCompliance": "11+",
+            "jacoco" : "include",
+            "javaCompliance" : "17+",
             "checkstyle": "com.oracle.truffle.espresso",
         },
 
@@ -183,13 +204,13 @@ suite = {
             "subDir": "src",
             "sourceDirs": ["src"],
             "dependencies": [
-                "sdk:GRAAL_SDK",
+                "sdk:POLYGLOT",
                 "sdk:LAUNCHER_COMMON",
             ],
             "requires": [
                 "java.logging",
             ],
-            "javaCompliance": "11+",
+            "javaCompliance" : "17+",
             "checkstyle": "com.oracle.truffle.espresso",
         },
 
@@ -197,12 +218,37 @@ suite = {
             "subDir": "src",
             "sourceDirs": ["src"],
             "dependencies": [
+                "com.oracle.truffle.espresso.classfile",
                 "truffle:TRUFFLE_API",
                 "truffle:TRUFFLE_NFI",
             ],
+            "requires": [
+                "java.logging",
+            ],
             "annotationProcessors": ["truffle:TRUFFLE_DSL_PROCESSOR"],
-            "javaCompliance": "11+",
+            "javaCompliance" : "17+",
             "checkstyle": "com.oracle.truffle.espresso.jdwp",
+        },
+
+        "com.oracle.truffle.espresso.jvmci": {
+            "subDir": "src",
+            "sourceDirs": ["src"],
+            "requires": [
+                "jdk.internal.vm.ci",
+            ],
+            "requiresConcealed": {
+                "jdk.internal.vm.ci": [
+                    "jdk.vm.ci.amd64",
+                    "jdk.vm.ci.aarch64",
+                    "jdk.vm.ci.code",
+                    "jdk.vm.ci.code.stack",
+                    "jdk.vm.ci.common",
+                    "jdk.vm.ci.meta",
+                    "jdk.vm.ci.runtime",
+                ],
+            },
+            "javaCompliance": "8+",
+            "checkstyle": "com.oracle.truffle.espresso",
         },
 
         # Native library for Espresso native interface
@@ -211,15 +257,19 @@ suite = {
             "native": "shared_lib",
             "deliverable": "nespresso",
             "platformDependent": True,
-            "use_jdk_headers": True,
             "buildDependencies": [
-                "truffle:TRUFFLE_NFI_NATIVE",
                 "com.oracle.truffle.espresso.mokapot",
             ],
             "os_arch": {
                 "windows": {
                     "<others>": {
                         "cflags": ["-Wall"],
+                    },
+                },
+                "linux-musl": {
+                    "<others>": {
+                        "cflags": ["-Wall", "-Werror", "-Wno-error=cpp"],
+                        "toolchain": "sulong:SULONG_BOOTSTRAP_TOOLCHAIN",
                     },
                 },
                 "<others>": {
@@ -248,9 +298,14 @@ suite = {
                         "ldlibs" : ["-ldl"],
                     },
                 },
+                "linux-musl": {
+                    "<others>": {
+                        "ignore": "GNU Linux-only",
+                    },
+                },
                 "<others>": {
                     "<others>": {
-                        "ignore": "Linux-only",
+                        "ignore": "GNU Linux-only",
                     },
                 },
             },
@@ -262,10 +317,6 @@ suite = {
             "native": "shared_lib",
             "deliverable": "jvm",
             "platformDependent": True,
-            "use_jdk_headers": True,
-            "buildDependencies": [
-                "truffle:TRUFFLE_NFI_NATIVE",
-            ],
             "os_arch": {
                 "darwin": {
                     "<others>": {
@@ -286,6 +337,20 @@ suite = {
                         "ldflags": [
                             "-Wl,-soname,libjvm.so",
                             "-Wl,--version-script,<path:espresso:com.oracle.truffle.espresso.mokapot>/mapfile-vers",
+                            # newer LLVM versions default to --no-undefined-version
+                            "-Wl,--undefined-version",
+                        ],
+                        "toolchain": "sulong:SULONG_BOOTSTRAP_TOOLCHAIN",
+                    },
+                },
+                "linux-musl": {
+                    "<others>": {
+                        "cflags": ["-Wall", "-Werror", "-Wno-error=cpp", "-g"],
+                        "ldflags": [
+                            "-Wl,-soname,libjvm.so",
+                            "-Wl,--version-script,<path:espresso:com.oracle.truffle.espresso.mokapot>/mapfile-vers",
+                            # newer LLVM versions default to --no-undefined-version
+                            "-Wl,--undefined-version",
                         ],
                         "toolchain": "sulong:SULONG_BOOTSTRAP_TOOLCHAIN",
                     },
@@ -302,11 +367,43 @@ suite = {
             "subDir": "src",
             "sourceDirs": ["src"],
             "dependencies": [
-                "java-benchmarks:DACAPO_SCALA",
+                "sdk:DACAPO_SCALA",
             ],
             "javaCompliance": "8+",
             "checkstyle": "com.oracle.truffle.espresso",
             "testProject" : True,
+        },
+
+        "com.oracle.truffle.espresso.shadowed.asm" : {
+            # Shadowed ASM library (org.ow2.asm:asm)
+            "subDir" : "src",
+            "sourceDirs" : ["src"],
+            "javaCompliance" : "17+",
+            "spotbugs" : "false",
+            "shadedDependencies" : [
+                "truffle:ASM_9.7.1",
+            ],
+            "class" : "ShadedLibraryProject",
+            "shade" : {
+                "packages" : {
+                    "org.objectweb.asm" : "com.oracle.truffle.espresso.shadowed.asm",
+                },
+                "exclude" : [
+                    "META-INF/MANIFEST.MF",
+                    "**/package.html",
+                ],
+            },
+            "description" : "ASM library shadowed for Espresso.",
+            "allowsJavadocWarnings": True,
+            # We need to force javac because the generated sources in this project produce warnings in JDT.
+            "forceJavac" : "true",
+            "javac.lint.overrides" : "none",
+            "jacoco" : "exclude",
+            "graalCompilerSourceEdition": "ignore",
+        },
+
+        "espresso-legacy-nativeimage-properties": {
+            "class": "EspressoLegacyNativeImageProperties",
         },
     },
 
@@ -314,6 +411,18 @@ suite = {
 
     "distributions": {
         "ESPRESSO": {
+            "moduleInfo" : {
+                "name" : "org.graalvm.espresso",
+                "exports": [
+                    "com.oracle.truffle.espresso.runtime.staticobject",  # Workaround GR-48132
+                ],
+                "requires": [
+                  "org.graalvm.collections",
+                  "org.graalvm.nativeimage",
+                  "org.graalvm.polyglot",
+                ],
+            },
+            "description" : "Core module of the Java on Truffle (aka Espresso): a Java bytecode interpreter",
             "subDir": "src",
             "dependencies": [
                 "com.oracle.truffle.espresso",
@@ -321,16 +430,13 @@ suite = {
             "distDependencies": [
                 "truffle:TRUFFLE_API",
                 "truffle:TRUFFLE_NFI",
-                "truffle:TRUFFLE_NFI_LIBFFI",
-                "tools:TRUFFLE_PROFILER",
             ],
-            "exclude": [
-                "truffle:TRUFFLE_ASM_9.1",
-            ],
-            "javaProperties": {
-                "org.graalvm.language.java.home": "<path:ESPRESSO_SUPPORT>",
+            "maven" : {
+                "artifactId" : "espresso-language",
+                "tag": ["default", "public"],
             },
-            "maven": False,
+            "useModulePath": True,
+            "noMavenJavadoc": True,
         },
 
         "ESPRESSO_LAUNCHER": {
@@ -340,7 +446,7 @@ suite = {
             ],
             "mainClass": "com.oracle.truffle.espresso.launcher.EspressoLauncher",
             "distDependencies": [
-                "sdk:GRAAL_SDK",
+                "sdk:POLYGLOT",
                 "sdk:LAUNCHER_COMMON",
             ],
             "description": "Espresso launcher using the polyglot API.",
@@ -354,7 +460,7 @@ suite = {
                 "com.oracle.truffle.espresso.libjavavm",
             ],
             "distDependencies": [
-                "sdk:GRAAL_SDK",
+                "sdk:POLYGLOT",
                 "sdk:LAUNCHER_COMMON",
             ],
             "description": "provides native espresso entry points",
@@ -371,41 +477,67 @@ suite = {
             "maven": False,
         },
 
-        "ESPRESSO_SUPPORT": {
-            "native": True,
-            "description": "Espresso support distribution for the GraalVM (in espresso home)",
+        "ESPRESSO_LIBS_RESOURCES": {
             "platformDependent": True,
+            "moduleInfo": {
+                "name": "org.graalvm.espresso.resources.libs",
+            },
+            "distDependencies": [
+                "truffle:TRUFFLE_API",
+            ],
+            "dependencies": [
+                "com.oracle.truffle.espresso.resources.libs",
+                "ESPRESSO_LIBS_DIR",
+            ],
+            "compress": True,
+            "useModulePath": True,
+            "description": "Libraries used by the Java on Truffle (aka Espresso) implementation",
+            "maven" : {
+                "artifactId": "espresso-libs-resources",
+                "tag": ["default", "public"],
+            },
+        },
+
+        "ESPRESSO_LIBS_DIR": {
+            "platformDependent": True,
+            "type": "dir",
+            "hashEntry": "META-INF/resources/java/espresso-libs/<os>/<arch>/sha256",
+            "fileListEntry": "META-INF/resources/java/espresso-libs/<os>/<arch>/files",
+            "platforms": [
+                "linux-amd64",
+                "linux-aarch64",
+                "darwin-amd64",
+                "darwin-aarch64",
+                "windows-amd64",
+            ],
             "os_arch": {
                 "linux": {
-                    "amd64": {
+                    "<others>": {
                         "layout": {
-                            "./": ["file:mx.espresso/reflectconfig.json"],
-                            "./native-image.properties": ["file:mx.espresso/native-image-preinit.properties"],
-                            "LICENSE_JAVAONTRUFFLE": "file:LICENSE",
-                            "lib/": [
+                            "META-INF/resources/java/espresso-libs/<os>/<arch>/lib/": [
                                 "dependency:espresso:com.oracle.truffle.espresso.eden/<lib:eden>",
                                 "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
                                 # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
                                 "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
-                                "dependency:espresso:POLYGLOT/*",
-                                "dependency:espresso:HOTSWAP/*",
+                                "dependency:espresso:ESPRESSO_POLYGLOT",
+                                "dependency:espresso:HOTSWAP",
+                                "dependency:espresso:CONTINUATIONS",
+                                "dependency:espresso:ESPRESSO_JVMCI",
                             ],
                         },
                     },
+                },
+                "linux-musl": {
                     "<others>": {
                         "layout": {
-                            "./": [
-                                "file:mx.espresso/reflectconfig.json",
-                                "file:mx.espresso/native-image.properties",
-                            ],
-                            "LICENSE_JAVAONTRUFFLE": "file:LICENSE",
-                            "lib/": [
-                                "dependency:espresso:com.oracle.truffle.espresso.eden/<lib:eden>",
+                            "META-INF/resources/java/espresso-libs/<os>/<arch>/lib/": [
                                 "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
                                 # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
                                 "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
-                                "dependency:espresso:POLYGLOT/*",
-                                "dependency:espresso:HOTSWAP/*",
+                                "dependency:espresso:ESPRESSO_POLYGLOT",
+                                "dependency:espresso:HOTSWAP",
+                                "dependency:espresso:CONTINUATIONS",
+                                "dependency:espresso:ESPRESSO_JVMCI",
                             ],
                         },
                     },
@@ -413,18 +545,75 @@ suite = {
                 "<others>": {
                     "<others>": {
                         "layout": {
-                            "./": [
-                                "file:mx.espresso/reflectconfig.json",
-                                "file:mx.espresso/native-image.properties",
+                            "META-INF/resources/java/espresso-libs/<os>/<arch>/lib/": [
+                                "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
+                                # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
+                                "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
+                                "dependency:espresso:ESPRESSO_POLYGLOT",
+                                "dependency:espresso:HOTSWAP",
+                                "dependency:espresso:CONTINUATIONS",
+                                "dependency:espresso:ESPRESSO_JVMCI",
                             ],
+                        },
+                    },
+                },
+            },
+            "maven": False,
+        },
+
+        "ESPRESSO_SUPPORT": {
+            "native": True,
+            "description": "Espresso support distribution for the GraalVM (in espresso home)",
+            "platformDependent": True,
+            "os_arch": {
+                "linux": {
+                    "<others>": {
+                        "layout": {
+                            "./native-image.properties": "dependency:espresso:espresso-legacy-nativeimage-properties",
                             "LICENSE_JAVAONTRUFFLE": "file:LICENSE",
                             "lib/": [
                                 "dependency:espresso:com.oracle.truffle.espresso.eden/<lib:eden>",
                                 "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
                                 # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
                                 "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
-                                "dependency:espresso:POLYGLOT/*",
+                                "dependency:espresso:ESPRESSO_POLYGLOT/*",
                                 "dependency:espresso:HOTSWAP/*",
+                                "dependency:espresso:CONTINUATIONS/*",
+                                "dependency:espresso:ESPRESSO_JVMCI/*",
+                            ],
+                        },
+                    },
+                },
+                "linux-musl": {
+                    "<others>": {
+                        "layout": {
+                            "./native-image.properties": "dependency:espresso:espresso-legacy-nativeimage-properties",
+                            "LICENSE_JAVAONTRUFFLE": "file:LICENSE",
+                            "lib/": [
+                                "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
+                                # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
+                                "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
+                                "dependency:espresso:ESPRESSO_POLYGLOT/*",
+                                "dependency:espresso:HOTSWAP/*",
+                                "dependency:espresso:CONTINUATIONS/*",
+                                "dependency:espresso:ESPRESSO_JVMCI/*",
+                            ],
+                        },
+                    },
+                },
+                "<others>": {
+                    "<others>": {
+                        "layout": {
+                            "./native-image.properties": "dependency:espresso:espresso-legacy-nativeimage-properties",
+                            "LICENSE_JAVAONTRUFFLE": "file:LICENSE",
+                            "lib/": [
+                                "dependency:espresso:com.oracle.truffle.espresso.native/<lib:nespresso>",
+                                # Copy of libjvm.so, accessible by Sulong via the default Truffle file system.
+                                "dependency:espresso:com.oracle.truffle.espresso.mokapot/<lib:jvm>",
+                                "dependency:espresso:ESPRESSO_POLYGLOT/*",
+                                "dependency:espresso:HOTSWAP/*",
+                                "dependency:espresso:CONTINUATIONS/*",
+                                "dependency:espresso:ESPRESSO_JVMCI/*",
                             ],
                         },
                     },
@@ -445,7 +634,7 @@ suite = {
             "maven": False,
         },
 
-        "POLYGLOT": {
+        "ESPRESSO_POLYGLOT": {
             "subDir": "src",
             "dependencies": [
                 "com.oracle.truffle.espresso.polyglot"
@@ -458,6 +647,10 @@ suite = {
                 "exports" : [
                     "com.oracle.truffle.espresso.polyglot",
                 ]
+            },
+            "maven": {
+                "artifactId": "polyglot",
+                "tag": ["default", "public"],
             }
         },
 
@@ -474,14 +667,51 @@ suite = {
                 "exports" : [
                     "com.oracle.truffle.espresso.hotswap",
                 ]
-            }
+            },
+            "maven": {
+                "tag": ["default", "public"],
+            },
+        },
+
+        "CONTINUATIONS": {
+            "subDir": "src",
+            "dependencies": [
+                "org.graalvm.continuations"
+            ],
+            "description": "Espresso Continuations API",
+            "license": "UPL",
+            "javadocType": "api",
+            "moduleInfo" : {
+                "name" : "org.graalvm.continuations",
+                "exports" : [
+                    "org.graalvm.continuations",
+                ]
+            },
+            "maven": {
+                "tag": ["default", "public"],
+            },
+        },
+
+        "ESPRESSO_JVMCI": {
+            "subDir": "src",
+            "moduleInfo": {
+                "name": "jdk.internal.vm.ci.espresso",
+                "exports": [
+                    "com.oracle.truffle.espresso.jvmci,com.oracle.truffle.espresso.jvmci.meta to jdk.graal.compiler.espresso",
+                ]
+            },
+            "dependencies": [
+                "com.oracle.truffle.espresso.jvmci",
+            ],
+            "description": "JVMCI implementation for Espresso",
+            "maven": False,
         },
 
         "DACAPO_SCALA_WARMUP": {
             "subDir": "src",
             "dependencies": [
                 "com.oracle.truffle.espresso.dacapo",
-                "java-benchmarks:DACAPO_SCALA",
+                "sdk:DACAPO_SCALA",
             ],
             "testDistribution": True,
             "manifestEntries" : {

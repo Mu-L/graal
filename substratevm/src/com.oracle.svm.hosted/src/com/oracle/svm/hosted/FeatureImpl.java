@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,16 +30,14 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -47,42 +45,47 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import com.oracle.svm.hosted.image.NativeImageCodeCache;
 import org.graalvm.collections.Pair;
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.phases.util.Providers;
 import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.hosted.Feature.DuringAnalysisAccess;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
+import org.graalvm.nativeimage.impl.ConfigurationCondition;
 
 import com.oracle.graal.pointsto.BigBang;
-import com.oracle.graal.pointsto.api.DefaultUnsafePartition;
+import com.oracle.graal.pointsto.ObjectScanner;
+import com.oracle.graal.pointsto.heap.ImageHeapConstant;
+import com.oracle.graal.pointsto.heap.ImageHeapScanner;
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
+import com.oracle.graal.pointsto.meta.ObjectReachableCallback;
+import com.oracle.svm.common.meta.MultiMethod;
 import com.oracle.svm.core.LinkerInvocation;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.annotate.Delete;
+import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
-import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.meta.SharedField;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SharedType;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.option.SubstrateOptionsParser;
+import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.ameta.FieldValueInterceptionSupport;
 import com.oracle.svm.hosted.analysis.Inflation;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.code.CEntryPointData;
 import com.oracle.svm.hosted.code.CompileQueue.CompileTask;
-import com.oracle.svm.hosted.code.SharedRuntimeConfigurationBuilder;
 import com.oracle.svm.hosted.image.AbstractImage;
 import com.oracle.svm.hosted.image.AbstractImage.NativeImageKind;
+import com.oracle.svm.hosted.image.NativeImageCodeCache;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
@@ -90,10 +93,10 @@ import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.option.HostedOptionProvider;
 import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.UnsafePartitionKind;
 
-import jdk.vm.ci.meta.JavaConstant;
-import jdk.vm.ci.meta.JavaKind;
+import jdk.graal.compiler.debug.Assertions;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.phases.util.Providers;
 import jdk.vm.ci.meta.MetaAccessProvider;
 
 @SuppressWarnings("deprecation")
@@ -246,11 +249,13 @@ public class FeatureImpl {
 
         public Set<Executable> reachableMethodOverrides(Executable baseMethod) {
             return reachableMethodOverrides(getMetaAccess().lookupJavaMethod(baseMethod)).stream()
-                            .map(AnalysisMethod::getJavaMethod).collect(Collectors.toCollection(LinkedHashSet::new));
+                            .map(AnalysisMethod::getJavaMethod)
+                            .filter(Objects::nonNull)
+                            .collect(Collectors.toCollection(LinkedHashSet::new));
         }
 
         Set<AnalysisMethod> reachableMethodOverrides(AnalysisMethod baseMethod) {
-            return AnalysisUniverse.reachableMethodOverrides(baseMethod);
+            return baseMethod.collectMethodImplementations(true);
         }
 
         public void rescanObject(Object obj) {
@@ -293,6 +298,31 @@ public class FeatureImpl {
             getUniverse().registerObjectReplacer(replacer);
         }
 
+        /**
+         * Register an object replacer which may return an ImageHeapConstant. Note only one replacer
+         * can be triggered for a given object; otherwise an error will be thrown. Too, if the
+         * object should not be replaced then {@code null} should be returned.
+         */
+        public void registerObjectToConstantReplacer(Function<Object, ImageHeapConstant> replacer) {
+            getUniverse().registerObjectToConstantReplacer(replacer);
+        }
+
+        /**
+         * Register a callback that is executed when an object of the specified type or any of its
+         * subtypes is marked as reachable.
+         *
+         * @since 24.0
+         */
+        public <T> void registerObjectReachableCallback(Class<T> clazz, ObjectReachableCallback<T> callback) {
+            getMetaAccess().lookupJavaType(clazz).registerObjectReachableCallback(callback);
+        }
+
+        @Override
+        public <T> void registerObjectReachabilityHandler(Consumer<T> callback, Class<T> clazz) {
+            ObjectReachableCallback<T> wrapper = (access, obj, reason) -> callback.accept(obj);
+            getMetaAccess().lookupJavaType(clazz).registerObjectReachableCallback(wrapper);
+        }
+
         public void registerSubstitutionProcessor(SubstitutionProcessor substitution) {
             getUniverse().registerFeatureSubstitution(substitution);
         }
@@ -328,12 +358,15 @@ public class FeatureImpl {
         private final NativeLibraries nativeLibraries;
         private final boolean concurrentReachabilityHandlers;
         private final ReachabilityHandler reachabilityHandler;
+        private ClassForNameSupport classForNameSupport;
 
-        public BeforeAnalysisAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, Inflation bb, NativeLibraries nativeLibraries, DebugContext debugContext) {
+        public BeforeAnalysisAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, Inflation bb, NativeLibraries nativeLibraries,
+                        DebugContext debugContext) {
             super(featureHandler, imageClassLoader, bb, debugContext);
             this.nativeLibraries = nativeLibraries;
             this.concurrentReachabilityHandlers = SubstrateOptions.RunReachabilityHandlersConcurrently.getValue(bb.getOptions());
             this.reachabilityHandler = concurrentReachabilityHandlers ? ConcurrentReachabilityHandler.singleton() : ReachabilityHandlerFeature.singleton();
+            this.classForNameSupport = ClassForNameSupport.singleton();
         }
 
         public NativeLibraries getNativeLibraries() {
@@ -350,7 +383,7 @@ public class FeatureImpl {
         }
 
         public void registerAsUsed(AnalysisType aType, Object reason) {
-            bb.registerTypeAsReachable(aType, reason);
+            aType.registerAsReachable(reason);
         }
 
         @Override
@@ -363,7 +396,20 @@ public class FeatureImpl {
         }
 
         public void registerAsInHeap(AnalysisType aType, Object reason) {
-            bb.registerTypeAsInHeap(aType, reason);
+            aType.registerAsInstantiated(reason);
+        }
+
+        @Override
+        public void registerAsUnsafeAllocated(Class<?> clazz) {
+            registerAsUnsafeAllocated(getMetaAccess().lookupJavaType(clazz));
+        }
+
+        public void registerAsUnsafeAllocated(AnalysisType aType) {
+            if (aType.isAbstract()) {
+                throw UserError.abort("Cannot register an abstract class as instantiated: " + aType.toJavaName(true));
+            }
+            aType.registerAsUnsafeAllocated("From feature");
+            classForNameSupport.registerUnsafeAllocated(ConfigurationCondition.alwaysTrue(), aType.getJavaClass());
         }
 
         @Override
@@ -372,7 +418,7 @@ public class FeatureImpl {
         }
 
         public void registerAsAccessed(AnalysisField aField, Object reason) {
-            bb.markFieldAccessed(aField, reason);
+            aField.registerAsAccessed(reason);
         }
 
         public void registerAsRead(Field field, Object reason) {
@@ -380,7 +426,7 @@ public class FeatureImpl {
         }
 
         public void registerAsRead(AnalysisField aField, Object reason) {
-            bb.markFieldRead(aField, reason);
+            aField.registerAsRead(reason);
         }
 
         @Override
@@ -388,34 +434,25 @@ public class FeatureImpl {
             registerAsUnsafeAccessed(getMetaAccess().lookupJavaField(field), "registered from Feature API");
         }
 
+        public void registerAsUnsafeAccessed(Field field, Object reason) {
+            registerAsUnsafeAccessed(getMetaAccess().lookupJavaField(field), reason);
+        }
+
         public boolean registerAsUnsafeAccessed(AnalysisField aField, Object reason) {
-            return registerAsUnsafeAccessed(aField, DefaultUnsafePartition.get(), reason);
-        }
-
-        public void registerAsUnsafeAccessed(Field field, UnsafePartitionKind partitionKind, Object reason) {
-            registerAsUnsafeAccessed(getMetaAccess().lookupJavaField(field), partitionKind, reason);
-        }
-
-        public boolean registerAsUnsafeAccessed(AnalysisField aField, UnsafePartitionKind partitionKind, Object reason) {
             assert !AnnotationAccess.isAnnotationPresent(aField, Delete.class);
-            return bb.registerAsUnsafeAccessed(aField, partitionKind, reason);
+            return aField.registerAsUnsafeAccessed(reason);
         }
 
-        public void registerAsFrozenUnsafeAccessed(Field field, Object reason) {
-            registerAsFrozenUnsafeAccessed(getMetaAccess().lookupJavaField(field), reason);
+        public void registerAsRoot(Executable method, boolean invokeSpecial, String reason, MultiMethod.MultiMethodKey... otherRoots) {
+            bb.addRootMethod(method, invokeSpecial, reason, otherRoots);
         }
 
-        public void registerAsFrozenUnsafeAccessed(AnalysisField aField, Object reason) {
-            bb.registerAsFrozenUnsafeAccessed(aField);
-            registerAsUnsafeAccessed(aField, reason);
+        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, String reason, MultiMethod.MultiMethodKey... otherRoots) {
+            bb.addRootMethod(aMethod, invokeSpecial, reason, otherRoots);
         }
 
-        public void registerAsRoot(Executable method, boolean invokeSpecial) {
-            bb.addRootMethod(method, invokeSpecial);
-        }
-
-        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial) {
-            bb.addRootMethod(aMethod, invokeSpecial);
+        public void registerAsRoot(AnalysisMethod aMethod, boolean invokeSpecial, ObjectScanner.ScanReason reason, MultiMethod.MultiMethodKey... otherRoots) {
+            bb.addRootMethod(aMethod, invokeSpecial, reason, otherRoots);
         }
 
         public void registerUnsafeFieldsRecomputed(Class<?> clazz) {
@@ -456,7 +493,17 @@ public class FeatureImpl {
 
         @Override
         public void registerFieldValueTransformer(Field field, FieldValueTransformer transformer) {
-            bb.getAnnotationSubstitutionProcessor().registerFieldValueTransformer(field, transformer);
+            FieldValueInterceptionSupport.singleton().registerFieldValueTransformer(field, transformer);
+        }
+
+        /**
+         * Registers a method as having an analysis-opaque return value. This designation limits the
+         * type-flow analysis performed on the method's return value.
+         */
+        public void registerOpaqueMethodReturn(Method method) {
+            AnalysisMethod aMethod = bb.getMetaAccess().lookupJavaMethod(method);
+            VMError.guarantee(aMethod.getAllMultiMethods().size() == 1, "Opaque method return called for method with >1 multimethods: %s ", method);
+            aMethod.setOpaqueReturn();
         }
     }
 
@@ -532,19 +579,21 @@ public class FeatureImpl {
         protected final AnalysisUniverse aUniverse;
         protected final HostedUniverse hUniverse;
         protected final NativeImageHeap heap;
-        protected final SharedRuntimeConfigurationBuilder runtimeBuilder;
+        protected final RuntimeConfiguration runtimeConfiguration;
+        protected final NativeLibraries nativeLibraries;
 
         CompilationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, AnalysisUniverse aUniverse, HostedUniverse hUniverse, NativeImageHeap heap, DebugContext debugContext,
-                        SharedRuntimeConfigurationBuilder runtimeBuilder) {
+                        RuntimeConfiguration runtimeConfiguration, NativeLibraries nativeLibraries) {
             super(featureHandler, imageClassLoader, debugContext);
             this.aUniverse = aUniverse;
             this.hUniverse = hUniverse;
-            this.runtimeBuilder = runtimeBuilder;
             this.heap = heap;
+            this.runtimeConfiguration = runtimeConfiguration;
+            this.nativeLibraries = nativeLibraries;
         }
 
         public NativeLibraries getNativeLibraries() {
-            return runtimeBuilder.getNativeLibraries();
+            return nativeLibraries;
         }
 
         @Override
@@ -554,7 +603,7 @@ public class FeatureImpl {
 
         public long objectFieldOffset(HostedField hField) {
             int result = hField.getLocation();
-            assert result > 0;
+            assert result > 0 : Assertions.errorMessage(hField, hField.getLocation());
             return result;
         }
 
@@ -565,47 +614,7 @@ public class FeatureImpl {
 
         @Override
         public void registerAsImmutable(Object root, Predicate<Object> includeObject) {
-            Deque<Object> worklist = new ArrayDeque<>();
-            IdentityHashMap<Object, Boolean> registeredObjects = new IdentityHashMap<>();
-
-            worklist.push(root);
-
-            while (!worklist.isEmpty()) {
-                Object cur = worklist.pop();
-                registerAsImmutable(cur);
-
-                if (!getMetaAccess().optionalLookupJavaType(cur.getClass()).isPresent()) {
-                    /*
-                     * The type is unused (actually was never created by the static analysis), so we
-                     * do not need to follow any children.
-                     */
-                } else if (cur instanceof Object[]) {
-                    for (Object element : ((Object[]) cur)) {
-                        addToWorklist(aUniverse.replaceObject(element), includeObject, worklist, registeredObjects);
-                    }
-                } else {
-                    JavaConstant constant = SubstrateObjectConstant.forObject(cur);
-                    for (HostedField field : getMetaAccess().lookupJavaType(constant).getInstanceFields(true)) {
-                        if (field.isAccessed() && field.getStorageKind() == JavaKind.Object) {
-                            Object fieldValue = SubstrateObjectConstant.asObject(field.readValue(constant));
-                            addToWorklist(fieldValue, includeObject, worklist, registeredObjects);
-                        }
-                    }
-                }
-            }
-        }
-
-        private static void addToWorklist(Object object, Predicate<Object> includeObject, Deque<Object> worklist, IdentityHashMap<Object, Boolean> registeredObjects) {
-            if (object == null || registeredObjects.containsKey(object)) {
-                return;
-            } else if (object instanceof DynamicHub || object instanceof Class) {
-                /* Classes are handled specially, some fields of it are immutable and some not. */
-                return;
-            } else if (!includeObject.test(object)) {
-                return;
-            }
-            registeredObjects.put(object, Boolean.TRUE);
-            worklist.push(object);
+            heap.registerAsImmutable(root, includeObject);
         }
 
         public HostedMetaAccess getMetaAccess() {
@@ -613,7 +622,7 @@ public class FeatureImpl {
         }
 
         public Providers getProviders() {
-            return runtimeBuilder.getRuntimeConfig().getProviders();
+            return runtimeConfiguration.getProviders();
         }
 
         public HostedUniverse getUniverse() {
@@ -631,17 +640,21 @@ public class FeatureImpl {
         public Collection<? extends SharedMethod> getMethods() {
             return hUniverse.getMethods();
         }
+
+        public ImageHeapScanner getHeapScanner() {
+            return aUniverse.getHeapScanner();
+        }
     }
 
     public static class BeforeCompilationAccessImpl extends CompilationAccessImpl implements Feature.BeforeCompilationAccess {
 
         public BeforeCompilationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, AnalysisUniverse aUniverse, HostedUniverse hUniverse,
-                        NativeImageHeap heap, DebugContext debugContext, SharedRuntimeConfigurationBuilder runtimeBuilder) {
-            super(featureHandler, imageClassLoader, aUniverse, hUniverse, heap, debugContext, runtimeBuilder);
+                        NativeImageHeap heap, DebugContext debugContext, RuntimeConfiguration runtimeConfiguration, NativeLibraries nativeLibraries) {
+            super(featureHandler, imageClassLoader, aUniverse, hUniverse, heap, debugContext, runtimeConfiguration, nativeLibraries);
         }
 
-        public SharedRuntimeConfigurationBuilder getRuntimeBuilder() {
-            return runtimeBuilder;
+        public RuntimeConfiguration getRuntimeConfiguration() {
+            return runtimeConfiguration;
         }
     }
 
@@ -651,8 +664,8 @@ public class FeatureImpl {
 
         public AfterCompilationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, AnalysisUniverse aUniverse, HostedUniverse hUniverse,
                         Map<HostedMethod, CompileTask> compilations, NativeImageCodeCache codeCache, NativeImageHeap heap, DebugContext debugContext,
-                        SharedRuntimeConfigurationBuilder runtimeBuilder) {
-            super(featureHandler, imageClassLoader, aUniverse, hUniverse, heap, debugContext, runtimeBuilder);
+                        RuntimeConfiguration runtimeConfiguration, NativeLibraries nativeLibraries) {
+            super(featureHandler, imageClassLoader, aUniverse, hUniverse, heap, debugContext, runtimeConfiguration, nativeLibraries);
             this.compilations = compilations;
             this.codeCache = codeCache;
         }
@@ -667,6 +680,17 @@ public class FeatureImpl {
 
         public NativeImageCodeCache getCodeCache() {
             return codeCache;
+        }
+
+        public NativeImageHeap getHeap() {
+            return heap;
+        }
+    }
+
+    public static class BeforeHeapLayoutAccessImpl extends CompilationAccessImpl implements Feature.BeforeHeapLayoutAccess {
+        public BeforeHeapLayoutAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, AnalysisUniverse aUniverse, HostedUniverse hUniverse, NativeImageHeap heap,
+                        DebugContext debugContext, RuntimeConfiguration runtimeConfiguration, NativeLibraries nativeLibraries) {
+            super(featureHandler, imageClassLoader, aUniverse, hUniverse, heap, debugContext, runtimeConfiguration, nativeLibraries);
         }
     }
 
@@ -728,10 +752,6 @@ public class FeatureImpl {
             return hUniverse;
         }
 
-        public HostedOptionProvider getHostedOptionProvider() {
-            return optionProvider;
-        }
-
         public HostedMetaAccess getHostedMetaAccess() {
             return hMetaAccess;
         }
@@ -748,6 +768,26 @@ public class FeatureImpl {
                 linkerInvocationTransformers = new ArrayList<>();
             }
             linkerInvocationTransformers.add(transformer);
+        }
+    }
+
+    public static class AfterAbstractImageCreationAccessImpl extends FeatureAccessImpl implements InternalFeature.AfterAbstractImageCreationAccess {
+        protected final AbstractImage abstractImage;
+        protected final SubstrateBackend substrateBackend;
+
+        AfterAbstractImageCreationAccessImpl(FeatureHandler featureHandler, ImageClassLoader imageClassLoader, DebugContext debugContext, AbstractImage abstractImage,
+                        SubstrateBackend substrateBackend) {
+            super(featureHandler, imageClassLoader, debugContext);
+            this.abstractImage = abstractImage;
+            this.substrateBackend = substrateBackend;
+        }
+
+        public AbstractImage getImage() {
+            return abstractImage;
+        }
+
+        public SubstrateBackend getSubstrateBackend() {
+            return substrateBackend;
         }
     }
 
@@ -773,6 +813,10 @@ public class FeatureImpl {
 
         @Override
         public Path getImagePath() {
+            if (linkerInvocation == null) {
+                /* Some backends might not use native-linking */
+                return null;
+            }
             return linkerInvocation.getOutputFile();
         }
 

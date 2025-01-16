@@ -32,7 +32,11 @@ import com.oracle.svm.core.heap.CodeReferenceMapEncoder;
 
 /**
  * Information about an instruction pointer (IP), created and returned by methods in
- * {@link CodeInfoTable}.
+ * {@link CodeInfoTable}. In situations where we can't allocate any Java heap memory, we use the
+ * structure {@link SimpleCodeInfoQueryResult} instead.
+ *
+ * During a stack walk, this class holds information about a physical Java frame (see
+ * {@link FrameInfoQueryResult} for the virtual Java frames).
  */
 public class CodeInfoQueryResult {
 
@@ -72,7 +76,7 @@ public class CodeInfoQueryResult {
         return getTotalFrameSize(encodedFrameSize);
     }
 
-    @Uninterruptible(reason = "called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static long getTotalFrameSize(long encodedFrameSize) {
         return CodeInfoDecoder.decodeTotalFrameSize(encodedFrameSize);
     }
@@ -84,7 +88,7 @@ public class CodeInfoQueryResult {
         return isEntryPoint(encodedFrameSize);
     }
 
-    @Uninterruptible(reason = "called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean isEntryPoint(long encodedFrameSize) {
         return CodeInfoDecoder.decodeIsEntryPoint(encodedFrameSize);
     }
@@ -96,7 +100,7 @@ public class CodeInfoQueryResult {
         return hasCalleeSavedRegisters(encodedFrameSize);
     }
 
-    @Uninterruptible(reason = "called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean hasCalleeSavedRegisters(long encodedFrameSize) {
         return CodeInfoDecoder.decodeHasCalleeSavedRegisters(encodedFrameSize);
     }
@@ -122,7 +126,7 @@ public class CodeInfoQueryResult {
      * Stack frame information used, e.g., for deoptimization and printing of stack frames in debug
      * builds.
      */
-    @Uninterruptible(reason = "called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public FrameInfoQueryResult getFrameInfo() {
         return frameInfo;
     }

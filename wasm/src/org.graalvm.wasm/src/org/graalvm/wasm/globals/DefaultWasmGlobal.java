@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -45,21 +45,24 @@ import org.graalvm.wasm.api.ValueType;
 
 public class DefaultWasmGlobal extends WasmGlobal {
     private long globalValue;
-    private Object globalReferenceValue;
+    private Object globalObjectValue;
 
+    @SuppressWarnings("this-escape")
     public DefaultWasmGlobal(ValueType valueType, boolean mutable, int value) {
         super(valueType, mutable);
         storeInt(value);
     }
 
+    @SuppressWarnings("this-escape")
     public DefaultWasmGlobal(ValueType valueType, boolean mutable, long value) {
         super(valueType, mutable);
         storeLong(value);
     }
 
+    @SuppressWarnings("this-escape")
     public DefaultWasmGlobal(ValueType valueType, boolean mutable, Object value) {
         super(valueType, mutable);
-        storeReference(value);
+        storeObject(value);
     }
 
     @Override
@@ -75,10 +78,10 @@ public class DefaultWasmGlobal extends WasmGlobal {
     }
 
     @Override
-    public Object loadAsReference() {
-        assert globalReferenceValue != null;
-        assert ValueType.isReferenceType(getValueType());
-        return globalReferenceValue;
+    public Object loadAsObject() {
+        assert globalObjectValue != null;
+        assert ValueType.isReferenceType(getValueType()) || ValueType.isVectorType(getValueType());
+        return globalObjectValue;
     }
 
     @Override
@@ -94,8 +97,8 @@ public class DefaultWasmGlobal extends WasmGlobal {
     }
 
     @Override
-    public void storeReference(Object value) {
-        assert ValueType.isReferenceType(getValueType());
-        this.globalReferenceValue = value;
+    public void storeObject(Object value) {
+        assert ValueType.isReferenceType(getValueType()) || ValueType.isVectorType(getValueType());
+        this.globalObjectValue = value;
     }
 }

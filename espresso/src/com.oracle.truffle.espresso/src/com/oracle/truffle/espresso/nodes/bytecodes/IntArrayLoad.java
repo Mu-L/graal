@@ -33,7 +33,7 @@ import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * IALOAD bytecode with interop extensions.
@@ -57,7 +57,7 @@ public abstract class IntArrayLoad extends EspressoNode {
     public abstract int execute(StaticObject receiver, int index);
 
     @Specialization
-    int executeWithNullCheck(StaticObject array, int index,
+    int doWithNullCheck(StaticObject array, int index,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck intArrayLoad) {
         return intArrayLoad.execute(nullCheck.execute(array), index);

@@ -29,13 +29,13 @@ import java.lang.ref.Reference;
 import java.lang.reflect.Field;
 import java.util.function.BooleanSupplier;
 
-import org.graalvm.compiler.nodes.java.ReachabilityFenceNode;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.Inject;
@@ -44,11 +44,11 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.jdk.JDK17OrLater;
-import com.oracle.svm.core.jdk.JDK17_0_2OrLater;
+import com.oracle.svm.core.jdk.JDKLatest;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.util.ReflectionUtil;
+
+import jdk.graal.compiler.nodes.java.ReachabilityFenceNode;
 
 /**
  * Substitution of {@link Reference}, which is the abstract base class of all non-strong reference
@@ -78,6 +78,12 @@ public final class Target_java_lang_ref_Reference<T> {
     @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FieldOffset, name = ReferenceInternals.REFERENT_FIELD_NAME, declClass = Target_java_lang_ref_Reference.class) //
     static long referentFieldOffset;
 
+    @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FieldOffset, name = "queue", declClass = Target_java_lang_ref_Reference.class) //
+    static long queueFieldOffset;
+
+    @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FieldOffset, name = "next", declClass = Target_java_lang_ref_Reference.class) //
+    static long nextFieldOffset;
+
     @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FieldOffset, name = "discovered", declClass = Target_java_lang_ref_Reference.class) //
     static long discoveredFieldOffset;
 
@@ -90,12 +96,12 @@ public final class Target_java_lang_ref_Reference<T> {
      * {@link Target_java_lang_ref_Reference#clear0()} may set this field to null.
      */
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ComputeReferenceValue.class) //
-    @ExcludeFromReferenceMap(reason = "Field is manually processed by the garbage collector.") //
+    @ExcludeFromReferenceMap(reason = "The GC processes this field manually.") //
     T referent;
 
     @SuppressWarnings("unused") //
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    @ExcludeFromReferenceMap(reason = "Some GCs process this field manually.", onlyIf = NotSerialNotEpsilonGC.class) //
+    @ExcludeFromReferenceMap(reason = "The GC processes this field manually.") //
     transient Target_java_lang_ref_Reference<?> discovered;
 
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ComputeQueueValue.class) //
@@ -119,27 +125,25 @@ public final class Target_java_lang_ref_Reference<T> {
     @KeepOriginal
     native T get();
 
+    @KeepOriginal
+    native void clear();
+
     @Substitute
-    public void clear() {
+    private void clear0() {
         ReferenceInternals.clear(SubstrateUtil.cast(this, Reference.class));
     }
 
-    @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
-    private void clear0() {
-        clear();
-    }
+    @TargetElement(onlyWith = JDKLatest.class)
+    @KeepOriginal
+    native void clearImpl();
 
     @KeepOriginal
-    @TargetElement(onlyWith = JDK17_0_2OrLater.class)
     native boolean refersToImpl(T obj);
 
     @KeepOriginal
-    @TargetElement(onlyWith = JDK17OrLater.class)
     public native boolean refersTo(T obj);
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     boolean refersTo0(Object obj) {
         return ReferenceInternals.refersTo(SubstrateUtil.cast(this, Reference.class), obj);
     }
@@ -168,11 +172,9 @@ public final class Target_java_lang_ref_Reference<T> {
     }
 
     @KeepOriginal
-    @TargetElement(onlyWith = JDK17OrLater.class) //
     native T getFromInactiveFinalReference();
 
     @Substitute //
-    @TargetElement(onlyWith = JDK17OrLater.class) //
     void clearInactiveFinalReference() {
         // assert this instanceof FinalReference;
         assert next != null; // I.e. FinalReference is inactive
@@ -232,6 +234,6 @@ class ComputeQueueValue implements FieldValueTransformer {
 class NotSerialNotEpsilonGC implements BooleanSupplier {
     @Override
     public boolean getAsBoolean() {
-        return !SubstrateOptions.UseSerialGC.getValue() && !SubstrateOptions.UseEpsilonGC.getValue();
+        return !SubstrateOptions.useSerialGC() && !SubstrateOptions.useEpsilonGC();
     }
 }

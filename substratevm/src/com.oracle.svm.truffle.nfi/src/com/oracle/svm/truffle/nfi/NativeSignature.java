@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,7 @@ package com.oracle.svm.truffle.nfi;
 import static com.oracle.svm.truffle.nfi.Target_com_oracle_truffle_nfi_backend_libffi_NativeArgumentBuffer_TypeTag.getOffset;
 import static com.oracle.svm.truffle.nfi.Target_com_oracle_truffle_nfi_backend_libffi_NativeArgumentBuffer_TypeTag.getTag;
 
-import org.graalvm.nativeimage.PinnedObject;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.CContext;
 import org.graalvm.nativeimage.c.struct.CFieldAddress;
@@ -38,11 +38,11 @@ import org.graalvm.nativeimage.c.type.WordPointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.WordBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
+import com.oracle.svm.core.handles.PrimitiveArrayView;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.nodes.CFunctionEpilogueNode;
 import com.oracle.svm.core.nodes.CFunctionPrologueNode;
@@ -74,7 +74,7 @@ final class NativeSignature {
             CifData data = UnmanagedMemory.malloc(SizeOf.get(CifData.class) + argCount * SizeOf.get(ffi_type_array.class));
 
             for (int i = 0; i < argCount; i++) {
-                data.args().write(i, WordFactory.pointer(args[i].type));
+                data.args().write(i, Word.pointer(args[i].type));
             }
 
             return data;
@@ -108,7 +108,7 @@ final class NativeSignature {
             NativeTruffleEnv env = UnsafeStackValue.get(NativeTruffleEnv.class);
             NFIInitialization.initializeEnv(env, ctx);
 
-            try (PinnedObject primBuffer = PinnedObject.create(primArgs)) {
+            try (PrimitiveArrayView primBuffer = PrimitiveArrayView.createForReading(primArgs)) {
                 Pointer prim = primBuffer.addressOfArrayElement(0);
 
                 int primIdx = 0;
@@ -128,7 +128,7 @@ final class NativeSignature {
                         WordBase handle = scope.createLocalHandle(obj);
                         prim.writeWord(offset, handle);
                     } else if (tag == Target_com_oracle_truffle_nfi_backend_libffi_NativeArgumentBuffer_TypeTag.STRING) {
-                        PointerBase strPtr = scope.pinString((String) obj);
+                        PointerBase strPtr = scope.refString((String) obj);
                         prim.writeWord(offset, strPtr);
                     } else if (tag == Target_com_oracle_truffle_nfi_backend_libffi_NativeArgumentBuffer_TypeTag.KEEPALIVE) {
                         // nothing to do
@@ -136,18 +136,12 @@ final class NativeSignature {
                         prim.writeWord(offset, env);
                     } else {
                         // all other types are array types, all of them are treated the same by svm
-                        PointerBase arrPtr = scope.pinArray(obj);
+                        PointerBase arrPtr = scope.refArray(obj);
                         prim.writeWord(offset, arrPtr);
                     }
                 }
 
-                ffiCall(cif, WordFactory.pointer(functionPointer), ret, argPtrs, ErrnoMirror.errnoMirror.getAddress());
-
-                Throwable pending = NativeClosure.pendingException.get();
-                if (pending != null) {
-                    NativeClosure.pendingException.set(null);
-                    throw rethrow(pending);
-                }
+                ffiCall(cif, Word.pointer(functionPointer), ret, argPtrs, ErrnoMirror.errnoMirror.getAddress());
             } finally {
                 UnmanagedMemory.free(argPtrs);
             }
@@ -175,10 +169,5 @@ final class NativeSignature {
             LibFFI.NoTransitions.ffi_call(cif, fn, rvalue, avalue);
             errnoMirror.write(LibC.errno());
         }
-    }
-
-    @SuppressWarnings({"unchecked"})
-    private static <E extends Throwable> RuntimeException rethrow(Throwable ex) throws E {
-        throw (E) ex;
     }
 }

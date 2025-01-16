@@ -24,19 +24,20 @@
  */
 package com.oracle.svm.driver.metainf;
 
-import com.oracle.svm.core.util.ClasspathUtils;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.oracle.svm.core.util.ClasspathUtils;
 
 public class NativeImageMetaInfWalker {
 
@@ -54,55 +55,43 @@ public class NativeImageMetaInfWalker {
         }
     }
 
-    public static void walkMetaInfForCPEntry(Path classpathEntry, NativeImageMetaInfResourceProcessor metaInfProcessor) throws MetaInfWalkException {
+    public static boolean walkMetaInfForCPEntry(Path classpathEntry, NativeImageMetaInfResourceProcessor metaInfProcessor) throws MetaInfWalkException {
         try {
+            boolean removeFromClassPath = false;
             if (Files.isDirectory(classpathEntry)) {
                 Path nativeImageMetaInfBase = classpathEntry.resolve(Paths.get(nativeImageMetaInf));
-                processNativeImageMetaInf(classpathEntry, nativeImageMetaInfBase, metaInfProcessor);
+                removeFromClassPath = processNativeImageMetaInf(classpathEntry, nativeImageMetaInfBase, metaInfProcessor);
             } else {
-                List<Path> jarFileMatches = Collections.emptyList();
-                if (classpathEntry.endsWith(ClasspathUtils.cpWildcardSubstitute)) {
-                    try {
-                        jarFileMatches = Files.list(classpathEntry.getParent())
-                                        .filter(ClasspathUtils::isJar)
-                                        .collect(Collectors.toList());
-                    } catch (NoSuchFileException e) {
-                        /* Fallthrough */
-                    }
-                } else if (ClasspathUtils.isJar(classpathEntry)) {
-                    jarFileMatches = Collections.singletonList(classpathEntry);
-                }
-
-                for (Path jarFile : jarFileMatches) {
-                    URI jarFileURI = URI.create("jar:" + jarFile.toUri());
+                if (ClasspathUtils.isJar(classpathEntry)) {
+                    URI jarFileURI = URI.create("jar:" + classpathEntry.toUri());
                     FileSystem probeJarFS;
                     try {
                         probeJarFS = FileSystems.newFileSystem(jarFileURI, Collections.emptyMap());
                     } catch (UnsupportedOperationException e) {
                         probeJarFS = null;
-                        metaInfProcessor.showWarning(ClasspathUtils.classpathToString(classpathEntry) + " does not describe valid jarfile" + (jarFileMatches.size() > 1 ? "s" : ""));
+                        metaInfProcessor.showWarning(classpathEntry + " does not describe valid jar-file");
                     }
                     if (probeJarFS != null) {
                         try (FileSystem jarFS = probeJarFS) {
                             Path nativeImageMetaInfBase = jarFS.getPath("/" + nativeImageMetaInf);
-                            processNativeImageMetaInf(jarFile, nativeImageMetaInfBase, metaInfProcessor);
+                            removeFromClassPath = processNativeImageMetaInf(classpathEntry, nativeImageMetaInfBase, metaInfProcessor);
                         }
                     }
                 }
             }
+            return removeFromClassPath;
         } catch (IOException | FileSystemNotFoundException e) {
-            throw new MetaInfWalkException("Invalid classpath entry " + ClasspathUtils.classpathToString(classpathEntry), e);
+            throw new MetaInfWalkException("Invalid classpath entry " + classpathEntry, e);
         }
     }
 
-    private static void processNativeImageMetaInf(Path classpathEntry, Path nativeImageMetaInfBase, NativeImageMetaInfResourceProcessor metaInfProcessor) throws MetaInfWalkException {
+    private static boolean processNativeImageMetaInf(Path classpathEntry, Path nativeImageMetaInfBase, NativeImageMetaInfResourceProcessor metaInfProcessor) throws MetaInfWalkException {
+        boolean ignoreOnClassPath = false;
         if (Files.isDirectory(nativeImageMetaInfBase)) {
             for (MetaInfFileType fileType : MetaInfFileType.values()) {
                 List<Path> nativeImageMetaInfFiles;
-                try {
-                    nativeImageMetaInfFiles = Files.walk(nativeImageMetaInfBase)
-                                    .filter(p -> p.endsWith(fileType.fileName))
-                                    .collect(Collectors.toList());
+                try (Stream<Path> pathStream = Files.walk(nativeImageMetaInfBase)) {
+                    nativeImageMetaInfFiles = pathStream.filter(p -> p.endsWith(fileType.fileName)).collect(Collectors.toList());
                 } catch (IOException e) {
                     throw new MetaInfWalkException("Processing " + nativeImageMetaInfBase.toUri() + " failed.", e);
                 }
@@ -115,12 +104,13 @@ public class NativeImageMetaInfWalker {
                     Path resourceRoot = nativeImageMetaInfBase.getParent().getParent();
                     metaInfProcessor.showVerboseMessage("Apply " + nativeImageMetaInfFile.toUri());
                     try {
-                        metaInfProcessor.processMetaInfResource(classpathEntry, resourceRoot, nativeImageMetaInfFile, fileType);
+                        ignoreOnClassPath = ignoreOnClassPath | metaInfProcessor.processMetaInfResource(classpathEntry, resourceRoot, nativeImageMetaInfFile, fileType);
                     } catch (Throwable err) {
                         throw new MetaInfWalkException("Processing " + nativeImageMetaInfFile.toUri() + " failed", err);
                     }
                 }
             }
         }
+        return ignoreOnClassPath;
     }
 }

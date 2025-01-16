@@ -25,14 +25,14 @@
 
 package com.oracle.svm.core.graal.code;
 
-import org.graalvm.compiler.core.common.spi.MetaAccessExtensionProvider;
-
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SharedType;
 
+import jdk.graal.compiler.core.common.spi.MetaAccessExtensionProvider;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
+import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
@@ -59,14 +59,14 @@ public class SubstrateMetaAccessExtensionProvider implements MetaAccessExtension
 
         // check if the method itself indicates it will not have a safepoint.
         SharedMethod sharedMethod = (SharedMethod) method;
-        if (Uninterruptible.Utils.isUninterruptible(sharedMethod)) {
+        if (sharedMethod.isUninterruptible()) {
             return false;
         }
 
         // for indirect calls, confirming all implementations also have safepoints.
         if (!isDirect) {
             for (SharedMethod implementation : sharedMethod.getImplementations()) {
-                if (Uninterruptible.Utils.isUninterruptible(implementation)) {
+                if (implementation.isUninterruptible()) {
                     return false;
                 }
             }
@@ -78,5 +78,15 @@ public class SubstrateMetaAccessExtensionProvider implements MetaAccessExtension
     @Override
     public boolean canVirtualize(ResolvedJavaType instanceType) {
         return true;
+    }
+
+    @Override
+    public ResolvedJavaField getStaticFieldForAccess(JavaConstant base, long offset, JavaKind accessKind) {
+        /*
+         * The base of unsafe static field accesses is not constant until low tier for SVM. See
+         * com.oracle.svm.core.StaticFieldsSupport for details on the static field base during
+         * analysis, compilation, and JIT compilation.
+         */
+        return null;
     }
 }

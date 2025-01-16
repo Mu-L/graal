@@ -27,26 +27,26 @@ package com.oracle.svm.core.reflect.target;
 import java.lang.reflect.AccessibleObject;
 
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Inject;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.annotate.TargetElement;
-import com.oracle.svm.core.jdk.JDK11OrEarlier;
-import com.oracle.svm.core.jdk.JDK17OrLater;
+import com.oracle.svm.core.configure.RuntimeConditionSet;
 
 @TargetClass(value = AccessibleObject.class)
 public final class Target_java_lang_reflect_AccessibleObject {
     @Alias //
     public boolean override;
 
-    @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    volatile Object securityCheckCache;
+    /**
+     * For objects in image heap the conditions are always satisfied.
+     */
+    @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = SatisfiedConditionComputer.class) //
+    public RuntimeConditionSet conditions;
 
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    @TargetElement(onlyWith = JDK17OrLater.class) //
     volatile Object accessCheckCache;
 
     @Inject @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = TypeAnnotationsComputer.class) //
@@ -58,7 +58,14 @@ public final class Target_java_lang_reflect_AccessibleObject {
     static class TypeAnnotationsComputer extends ReflectionMetadataComputer {
         @Override
         public Object transform(Object receiver, Object originalValue) {
-            return ImageSingletons.lookup(EncodedReflectionMetadataSupplier.class).getTypeAnnotationsEncoding((AccessibleObject) receiver);
+            return ImageSingletons.lookup(EncodedRuntimeMetadataSupplier.class).getTypeAnnotationsEncoding((AccessibleObject) receiver);
+        }
+    }
+
+    static class SatisfiedConditionComputer implements FieldValueTransformer {
+        @Override
+        public Object transform(Object receiver, Object originalValue) {
+            return RuntimeConditionSet.unmodifiableEmptySet();
         }
     }
 }

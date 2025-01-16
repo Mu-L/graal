@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -55,7 +55,7 @@ public abstract class CodeElementScanner<R, P> extends ElementScanner8<R, P> {
     @Override
     public final R visitExecutable(ExecutableElement e, P p) {
         if (!(e instanceof CodeExecutableElement)) {
-            throw new ClassCastException(e.toString());
+            throw new ClassCastException(e.toString() + " in " + e.getEnclosingElement().toString());
         }
         return visitExecutable(cast(e, CodeExecutableElement.class), p);
     }
@@ -64,6 +64,9 @@ public abstract class CodeElementScanner<R, P> extends ElementScanner8<R, P> {
         R ret = super.visitExecutable(e, p);
         if (e.getBodyTree() != null) {
             visitTree(e.getBodyTree(), p, e);
+        }
+        if (e.getDocTree() != null) {
+            visitTree(e.getDocTree(), p, e);
         }
         return ret;
     }
@@ -74,6 +77,10 @@ public abstract class CodeElementScanner<R, P> extends ElementScanner8<R, P> {
             CodeTree init = ((CodeVariableElement) e).getInit();
             if (init != null) {
                 visitTree(init, p, e);
+            }
+            CodeTree doc = ((CodeVariableElement) e).getDocTree();
+            if (doc != null) {
+                visitTree(doc, p, e);
             }
         }
         return super.visitVariable(e, p);
@@ -90,6 +97,10 @@ public abstract class CodeElementScanner<R, P> extends ElementScanner8<R, P> {
     }
 
     public R visitType(CodeTypeElement e, P p) {
+        CodeTree doc = e.getDocTree();
+        if (doc != null) {
+            visitTree(doc, p, e);
+        }
         return super.visitType(e, p);
     }
 

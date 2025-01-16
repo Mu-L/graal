@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,7 +40,12 @@
  */
 package com.oracle.truffle.polyglot;
 
+import java.lang.reflect.Type;
+import java.util.Map;
+import java.util.Objects;
+
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -48,22 +53,26 @@ import com.oracle.truffle.api.interop.InvalidArrayIndexException;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.profiles.BranchProfile;
-
-import java.lang.reflect.Type;
-import java.util.Map;
-import java.util.Objects;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
+import org.graalvm.polyglot.Context;
 
 class PolyglotMapEntry<K, V> implements Map.Entry<K, V>, PolyglotWrapper {
 
     final PolyglotLanguageContext languageContext;
     final Object guestObject;
     final PolyglotMapEntry.Cache cache;
+    /**
+     * Strong reference to the creator {@link Context} to prevent it from being garbage collected
+     * and closed while this entry is still reachable.
+     */
+    final Context contextAnchor;
 
     PolyglotMapEntry(PolyglotLanguageContext languageContext, Object obj, Class<K> keyClass, Type keyType, Class<V> valueClass, Type valueType) {
         this.languageContext = languageContext;
         this.guestObject = obj;
         this.cache = Cache.lookup(languageContext, obj.getClass(), keyClass, keyType, valueClass, valueType);
+        this.contextAnchor = languageContext.context.getContextAPI();
     }
 
     static <K, V> PolyglotMapEntry<K, V> create(PolyglotLanguageContext languageContext, Object foreignObject, boolean implementsFunction,
@@ -78,13 +87,13 @@ class PolyglotMapEntry<K, V> implements Map.Entry<K, V>, PolyglotWrapper {
     @Override
     @SuppressWarnings("unchecked")
     public final K getKey() {
-        return (K) cache.getKey.call(languageContext, guestObject);
+        return (K) cache.getKey.call(null, languageContext, guestObject);
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public final V getValue() {
-        return (V) cache.getValue.call(languageContext, guestObject);
+        return (V) cache.getValue.call(null, languageContext, guestObject);
     }
 
     @Override
@@ -162,9 +171,9 @@ class PolyglotMapEntry<K, V> implements Map.Entry<K, V>, PolyglotWrapper {
             }
             assert cache.receiverClass == receiverClass;
             assert cache.keyClass == keyClass;
-            assert cache.keyType == keyType;
+            assert Objects.equals(cache.keyType, keyType);
             assert cache.valueClass == valueClass;
-            assert cache.valueType == valueType;
+            assert Objects.equals(cache.valueType, valueType);
             return cache;
         }
 
@@ -272,25 +281,26 @@ class PolyglotMapEntry<K, V> implements Map.Entry<K, V>, PolyglotWrapper {
             }
 
             @Specialization(limit = "LIMIT")
-            @SuppressWarnings("unused")
+            @SuppressWarnings({"unused", "truffle-static-method"})
             protected Object doCached(PolyglotLanguageContext languageContext, Object receiver, Object[] args,
+                            @Bind Node node,
                             @CachedLibrary("receiver") InteropLibrary interop,
                             @Cached PolyglotToHostNode toHost,
-                            @Cached BranchProfile error) {
+                            @Cached InlinedBranchProfile error) {
                 if (interop.hasArrayElements(receiver)) {
                     Object result;
                     try {
                         result = interop.readArrayElement(receiver, index);
                     } catch (UnsupportedMessageException e) {
-                        error.enter();
+                        error.enter(node);
                         throw unsupported(languageContext, receiver);
                     } catch (InvalidArrayIndexException e) {
-                        error.enter();
+                        error.enter(node);
                         throw invalidArrayIndex(languageContext, receiver, e.getInvalidIndex());
                     }
-                    return toHost.execute(languageContext, result, elementClass, elementType);
+                    return toHost.execute(node, languageContext, result, elementClass, elementType);
                 } else {
-                    error.enter();
+                    error.enter(node);
                     throw unsupported(languageContext, receiver);
                 }
             }

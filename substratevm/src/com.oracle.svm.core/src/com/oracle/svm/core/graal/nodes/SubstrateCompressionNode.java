@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,19 +24,19 @@
  */
 package com.oracle.svm.core.graal.nodes;
 
-import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_2;
-import static org.graalvm.compiler.nodeinfo.NodeSize.SIZE_2;
+import static jdk.graal.compiler.nodeinfo.NodeCycles.CYCLES_2;
+import static jdk.graal.compiler.nodeinfo.NodeSize.SIZE_2;
 
-import org.graalvm.compiler.core.common.CompressEncoding;
-import org.graalvm.compiler.core.common.type.CompressibleConstant;
-import org.graalvm.compiler.core.common.type.Stamp;
-import org.graalvm.compiler.debug.GraalError;
-import org.graalvm.compiler.graph.NodeClass;
-import org.graalvm.compiler.nodeinfo.NodeInfo;
-import org.graalvm.compiler.nodes.CompressionNode;
-import org.graalvm.compiler.nodes.NodeView;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.ValueNode;
+import jdk.graal.compiler.core.common.CompressEncoding;
+import jdk.graal.compiler.core.common.type.CompressibleConstant;
+import jdk.graal.compiler.core.common.type.Stamp;
+import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.graph.NodeClass;
+import jdk.graal.compiler.nodeinfo.NodeInfo;
+import jdk.graal.compiler.nodes.CompressionNode;
+import jdk.graal.compiler.nodes.NodeView;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.ValueNode;
 
 import com.oracle.svm.core.meta.CompressedNullConstant;
 
@@ -83,7 +83,7 @@ public final class SubstrateCompressionNode extends CompressionNode {
         } else if (c instanceof CompressibleConstant) {
             return ((CompressibleConstant) c).compress();
         }
-        throw GraalError.shouldNotReachHere("invalid constant input for compress op: " + c);
+        throw GraalError.shouldNotReachHere("invalid constant input for compress op: " + c); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -91,7 +91,7 @@ public final class SubstrateCompressionNode extends CompressionNode {
         if (c instanceof CompressibleConstant) {
             return ((CompressibleConstant) c).uncompress();
         }
-        throw GraalError.shouldNotReachHere("invalid constant input for uncompress op: " + c);
+        throw GraalError.shouldNotReachHere("invalid constant input for uncompress op: " + c); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -102,7 +102,7 @@ public final class SubstrateCompressionNode extends CompressionNode {
             case Uncompress:
                 return compress(input, encoding);
             default:
-                throw GraalError.shouldNotReachHere();
+                throw GraalError.shouldNotReachHereUnexpectedValue(op); // ExcludeFromJacocoGeneratedReport
         }
     }
 

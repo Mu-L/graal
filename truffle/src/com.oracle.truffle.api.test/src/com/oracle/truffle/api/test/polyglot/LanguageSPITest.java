@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -47,6 +47,7 @@ import static com.oracle.truffle.tck.tests.ValueAssert.assertValue;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
@@ -80,6 +81,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.graalvm.home.Version;
 import org.graalvm.options.OptionCategory;
 import org.graalvm.options.OptionDescriptor;
 import org.graalvm.options.OptionDescriptors;
@@ -135,7 +137,6 @@ import com.oracle.truffle.api.test.polyglot.LanguageSPITest.ServiceTestLanguage.
 import com.oracle.truffle.api.test.polyglot.LanguageSPITestLanguage.LanguageContext;
 import com.oracle.truffle.tck.tests.TruffleTestAssumptions;
 import com.oracle.truffle.tck.tests.ValueAssert;
-import org.graalvm.home.Version;
 
 public class LanguageSPITest {
 
@@ -234,7 +235,7 @@ public class LanguageSPITest {
 
         c.close();
         engine.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, context1.disposeCalled);
             assertEquals(1, context2.disposeCalled);
         } else {
@@ -259,7 +260,7 @@ public class LanguageSPITest {
         });
         t.start();
         t.join(10000);
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -283,7 +284,7 @@ public class LanguageSPITest {
         t.start();
         t.join(10000);
         engine.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -310,7 +311,7 @@ public class LanguageSPITest {
         context.initialize(LanguageSPITestLanguage.ID);
         evalTestLanguage(context, ExecuteFirstContextArgumentTestLanguage.class, "", (Runnable) context::close);
         context.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -372,7 +373,7 @@ public class LanguageSPITest {
         context.initialize(LanguageSPITestLanguage.ID);
         evalTestLanguage(context, ExecuteFirstContextArgumentTestLanguage.class, "", (Runnable) engine::close);
         engine.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -397,7 +398,7 @@ public class LanguageSPITest {
             }
         }
         engine.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -431,7 +432,7 @@ public class LanguageSPITest {
             }
         }
         engine.close();
-        if (TruffleTestAssumptions.isWeakEncapsulation()) {
+        if (TruffleTestAssumptions.isNoIsolateEncapsulation()) {
             assertEquals(1, langContext.disposeCalled);
         } else {
             // We cannot obtain any information from a closed isolate.
@@ -990,7 +991,7 @@ public class LanguageSPITest {
                 case CREATE_THREAD:
                     return env.isCreateThreadAllowed();
                 case POLYGLOT_ACCESS:
-                    return env.isPolyglotBindingsAccessAllowed() || env.isPolyglotEvalAllowed();
+                    return env.isPolyglotBindingsAccessAllowed() || env.isPolyglotEvalAllowed(null);
                 case ENVIRONMENT_ACCESS:
                     // environment access can only be observed with properties
                     String value = env.getEnvironment().get(OUTER_CONTEXT_TEST_KEY);
@@ -1680,6 +1681,7 @@ public class LanguageSPITest {
         static class Context {
             private final Env env;
             private int disposeCalled;
+            private TruffleContext innerCreatorTruffleContext;
             private static int disposeCalledStatic;
 
             Context(Env env) {
@@ -1702,11 +1704,11 @@ public class LanguageSPITest {
 
                 @TruffleBoundary
                 private Object executeBoundary() {
-                    Env env = CONTEXT_REF.get(null).env;
-                    TruffleContext innerContext = env.newInnerContextBuilder().initializeCreatorContext(true).build();
-                    Object p = innerContext.enter(null);
+                    Context outerLangContext = CONTEXT_REF.get(null);
+                    outerLangContext.innerCreatorTruffleContext = outerLangContext.env.newInnerContextBuilder().initializeCreatorContext(true).build();
+                    Object p = outerLangContext.innerCreatorTruffleContext.enter(null);
                     Context innerLangContext = CONTEXT_REF.get(null);
-                    innerContext.leave(null, p);
+                    outerLangContext.innerCreatorTruffleContext.leave(null, p);
                     return innerLangContext.disposeCalled;
                 }
             }.getCallTarget();
@@ -2511,16 +2513,16 @@ public class LanguageSPITest {
             @Override
             protected void finalizeContext(LanguageContext context) {
                 if (contextOnFinalize.get()) {
-                    context.env.createThread(() -> {
-                    }).start();
+                    context.env.newTruffleThreadBuilder(() -> {
+                    }).build().start();
                 }
             }
 
             @Override
             protected void disposeContext(LanguageContext context) {
                 if (contextOnDispose.get()) {
-                    context.env.createThread(() -> {
-                    }).start();
+                    context.env.newTruffleThreadBuilder(() -> {
+                    }).build().start();
                 }
             }
         });
@@ -3085,6 +3087,33 @@ public class LanguageSPITest {
     }
 
     @Test
+    public void testLanguageInfoLookup() throws Exception {
+        TruffleTestAssumptions.assumeWeakEncapsulation();
+
+        try (Context context = Context.newBuilder().allowPolyglotAccess(PolyglotAccess.ALL).build()) {
+            context.initialize(ProxyLanguage.ID);
+            context.enter();
+            Env env = ProxyLanguage.LanguageContext.get(null).getEnv();
+            LanguageInfo languageInfo = env.getLanguageInfo(ProxyLanguage.class);
+            assertEquals(ProxyLanguage.ID, languageInfo.getId());
+
+            assertFails(() -> env.getLanguageInfo(InvalidLanguageClass.class), IllegalArgumentException.class);
+
+            Class<? extends TruffleLanguage<?>> hostLanguage = InteropLibrary.getUncached().getLanguage(env.asBoxedGuestValue(1));
+            assertEquals("host", env.getLanguageInfo(hostLanguage).getId());
+        }
+    }
+
+    static class InvalidLanguageClass extends TruffleLanguage<Env> {
+
+        @Override
+        protected Env createContext(Env env) {
+            return env;
+        }
+
+    }
+
+    @Test
     public void testConcurrentLookupWhileInitializing() throws InterruptedException {
         TruffleTestAssumptions.assumeWeakEncapsulation();
 
@@ -3544,4 +3573,35 @@ public class LanguageSPITest {
         assertEquals("java.lang.AssertionError: expectedMessage", e.getMessage());
     }
 
+    @Test
+    public void testEquals() {
+        try (Engine engine = Engine.create()) {
+            Language language1 = engine.getLanguages().get(EqualsLanguage1.ID);
+            Language language2 = engine.getLanguages().get(EqualsLanguage2.ID);
+            assertNotEquals(language1, language2);
+            assertEquals(language1, engine.getLanguages().get(EqualsLanguage1.ID));
+        }
+    }
+
+    @TruffleLanguage.Registration(id = EqualsLanguage1.ID)
+    public static final class EqualsLanguage1 extends TruffleLanguage<Void> {
+
+        static final String ID = "EqualsLanguage1";
+
+        @Override
+        protected Void createContext(Env env) {
+            return null;
+        }
+    }
+
+    @TruffleLanguage.Registration(id = EqualsLanguage2.ID)
+    public static final class EqualsLanguage2 extends TruffleLanguage<Void> {
+
+        static final String ID = "EqualsLanguage2";
+
+        @Override
+        protected Void createContext(Env env) {
+            return null;
+        }
+    }
 }

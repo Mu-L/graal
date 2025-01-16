@@ -24,29 +24,25 @@
  */
 package com.oracle.svm.hosted.meta;
 
-import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Field;
-
 import com.oracle.graal.pointsto.infrastructure.OriginalFieldProvider;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaField;
 import com.oracle.graal.pointsto.meta.AnalysisField;
-import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.graal.pointsto.meta.AnalysisUniverse;
+import com.oracle.svm.core.StaticFieldsSupport;
 import com.oracle.svm.core.meta.SharedField;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.AnnotationWrapper;
+import com.oracle.svm.hosted.ameta.FieldValueInterceptionSupport;
+import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
+import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
 
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
-import jdk.vm.ci.meta.JavaTypeProfile;
+import jdk.vm.ci.meta.ResolvedJavaField;
 
 /**
  * Store the compile-time information for a field in the Substrate VM, such as the field offset.
  */
-public class HostedField implements OriginalFieldProvider, SharedField, WrappedJavaField, AnnotationWrapper {
+public class HostedField extends HostedElement implements OriginalFieldProvider, SharedField, WrappedJavaField {
 
-    private final HostedUniverse universe;
-    private final HostedMetaAccess metaAccess;
     public final AnalysisField wrapped;
 
     private final HostedType holder;
@@ -54,27 +50,18 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
 
     protected int location;
 
-    private final JavaTypeProfile typeProfile;
-
     static final int LOC_UNMATERIALIZED_STATIC_CONSTANT = -10;
 
-    public HostedField(HostedUniverse universe, HostedMetaAccess metaAccess, AnalysisField wrapped, HostedType holder, HostedType type, JavaTypeProfile typeProfile) {
-        this.universe = universe;
-        this.metaAccess = metaAccess;
+    public HostedField(AnalysisField wrapped, HostedType holder, HostedType type) {
         this.wrapped = wrapped;
         this.holder = holder;
         this.type = type;
-        this.typeProfile = typeProfile;
         this.location = LOC_UNINITIALIZED;
     }
 
     @Override
     public AnalysisField getWrapped() {
         return wrapped;
-    }
-
-    public JavaTypeProfile getFieldTypeProfile() {
-        return typeProfile;
     }
 
     protected void setLocation(int location) {
@@ -86,6 +73,10 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
     protected void setUnmaterializedStaticConstant() {
         assert this.location == LOC_UNINITIALIZED && isStatic();
         this.location = LOC_UNMATERIALIZED_STATIC_CONSTANT;
+    }
+
+    public boolean isUnmaterialized() {
+        return this.location == LOC_UNMATERIALIZED_STATIC_CONSTANT;
     }
 
     public boolean hasLocation() {
@@ -128,6 +119,11 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
     }
 
     @Override
+    public boolean isValueAvailable() {
+        return FieldValueInterceptionSupport.singleton().isValueAvailable(wrapped);
+    }
+
+    @Override
     public String getName() {
         return wrapped.getName();
     }
@@ -152,29 +148,6 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
         return wrapped.hashCode();
     }
 
-    public JavaConstant readValue(JavaConstant receiver) {
-        JavaConstant wrappedReceiver;
-        if (metaAccess.isInstanceOf(receiver, Class.class)) {
-            Object classObject = SubstrateObjectConstant.asObject(receiver);
-            if (classObject instanceof Class) {
-                throw VMError.shouldNotReachHere("Receiver " + receiver + " of field " + this + " read should not be java.lang.Class. Expecting to see DynamicHub here.");
-            } else {
-                VMError.guarantee(classObject instanceof DynamicHub);
-                wrappedReceiver = receiver;
-            }
-        } else {
-            wrappedReceiver = receiver;
-        }
-        return universe.lookup(universe.getConstantReflectionProvider().readValue(metaAccess, wrapped, wrappedReceiver));
-    }
-
-    public JavaConstant readStorageValue(JavaConstant receiver) {
-        JavaConstant result = readValue(receiver);
-        assert result != null : "Cannot read value for field " + this.format("%H.%n");
-        assert result.getJavaKind() == getType().getStorageKind() : this;
-        return result;
-    }
-
     @Override
     public HostedType getDeclaringClass() {
         return holder;
@@ -191,13 +164,8 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
     }
 
     @Override
-    public AnnotatedElement getAnnotationRoot() {
-        return wrapped;
-    }
-
-    @Override
     public String toString() {
-        return "HostedField<" + format("%h.%n") + " location: " + location + "   " + wrapped.toString() + ">";
+        return "HostedField<" + format("%h.%n") + " -> " + wrapped.toString() + ", location: " + location + ">";
     }
 
     @Override
@@ -206,7 +174,23 @@ public class HostedField implements OriginalFieldProvider, SharedField, WrappedJ
     }
 
     @Override
-    public Field getJavaField() {
-        return OriginalFieldProvider.getJavaField(getDeclaringClass().universe.getSnippetReflection(), wrapped);
+    public ResolvedJavaField unwrapTowardsOriginalField() {
+        return wrapped;
+    }
+
+    @Override
+    public boolean isInBaseLayer() {
+        return wrapped.isInBaseLayer();
+    }
+
+    @Override
+    public JavaConstant getStaticFieldBase() {
+        AnalysisUniverse universe = type.wrapped.getUniverse();
+        boolean primitive = getStorageKind().isPrimitive();
+        if (isInBaseLayer()) {
+            SVMImageLayerLoader imageLayerLoader = HostedImageLayerBuildingSupport.singleton().getLoader();
+            return primitive ? imageLayerLoader.getBaseLayerStaticPrimitiveFields() : imageLayerLoader.getBaseLayerStaticObjectFields();
+        }
+        return universe.getSnippetReflection().forObject(primitive ? StaticFieldsSupport.getStaticPrimitiveFields() : StaticFieldsSupport.getStaticObjectFields());
     }
 }

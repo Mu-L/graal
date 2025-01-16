@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -503,7 +503,7 @@ public final class SpecializationStatistics {
 
         private String getDisplayName() {
             String className = nodeClass.getSimpleName();
-            if (className.equals("Uncached")) {
+            if (className.equals("Uncached") || className.equals("Inlined")) {
                 Class<?> enclosing = nodeClass.getEnclosingClass();
                 if (enclosing != null) {
                     className = enclosing.getSimpleName() + "." + className;

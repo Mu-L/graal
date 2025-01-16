@@ -26,36 +26,47 @@
 
 package com.oracle.svm.core.jfr.events;
 
+import jdk.graal.compiler.word.Word;
+import org.graalvm.nativeimage.StackValue;
+
 import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.jfr.HasJfrSupport;
 import com.oracle.svm.core.jfr.JfrEvent;
 import com.oracle.svm.core.jfr.JfrNativeEventWriter;
 import com.oracle.svm.core.jfr.JfrNativeEventWriterData;
 import com.oracle.svm.core.jfr.JfrNativeEventWriterDataAccess;
 import com.oracle.svm.core.jfr.JfrTicks;
 import com.oracle.svm.core.jfr.SubstrateJVM;
-import com.oracle.svm.core.jfr.HasJfrSupport;
-import org.graalvm.compiler.word.Word;
-import org.graalvm.nativeimage.StackValue;
 
 public class ThreadParkEvent {
-    public static void emit(long startTicks, Object obj, long timeout, long until) {
+    public static void emit(long startTicks, Object obj, boolean isAbsolute, long time) {
         if (HasJfrSupport.get()) {
-            emit0(startTicks, obj, timeout, until);
+            emit0(startTicks, obj, isAbsolute, time);
         }
     }
 
     @Uninterruptible(reason = "Accesses a JFR buffer.")
-    private static void emit0(long startTicks, Object obj, long timeout, long until) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.ThreadPark)) {
+    private static void emit0(long startTicks, Object obj, boolean isAbsolute, long time) {
+        long duration = JfrTicks.duration(startTicks);
+        if (JfrEvent.ThreadPark.shouldEmit(duration)) {
             Class<?> parkedClass = null;
             if (obj != null) {
                 parkedClass = obj.getClass();
             }
+
+            long timeout = Long.MIN_VALUE;
+            long until = Long.MIN_VALUE;
+            if (isAbsolute) {
+                until = time;
+            } else if (time != 0L) {
+                timeout = time;
+            }
+
             JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
             JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
             JfrNativeEventWriter.beginSmallEvent(data, JfrEvent.ThreadPark);
             JfrNativeEventWriter.putLong(data, startTicks);
-            JfrNativeEventWriter.putLong(data, JfrTicks.elapsedTicks() - startTicks);
+            JfrNativeEventWriter.putLong(data, duration);
             JfrNativeEventWriter.putEventThread(data);
             JfrNativeEventWriter.putLong(data, SubstrateJVM.get().getStackTraceId(JfrEvent.ThreadPark, 0));
             JfrNativeEventWriter.putClass(data, parkedClass);

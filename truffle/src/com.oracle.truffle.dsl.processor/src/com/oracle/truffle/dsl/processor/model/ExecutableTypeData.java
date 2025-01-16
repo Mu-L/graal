@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -70,6 +70,7 @@ public class ExecutableTypeData extends MessageContainer implements Comparable<E
     private String uniqueName;
 
     private final boolean ignoreUnexpected;
+    private final boolean reachableForRuntimeCompilation;
 
     public ExecutableTypeData(NodeData node, TypeMirror returnType, String uniqueName, TypeMirror frameParameter, List<TypeMirror> evaluatedParameters) {
         this.node = node;
@@ -79,13 +80,16 @@ public class ExecutableTypeData extends MessageContainer implements Comparable<E
         this.uniqueName = uniqueName;
         this.method = null;
         this.ignoreUnexpected = false;
+        this.reachableForRuntimeCompilation = true;
     }
 
-    public ExecutableTypeData(NodeData node, ExecutableElement method, int signatureSize, List<TypeMirror> frameTypes, boolean ignoreUnexpected) {
+    @SuppressWarnings("this-escape")
+    public ExecutableTypeData(NodeData node, ExecutableElement method, int signatureSize, List<TypeMirror> frameTypes, boolean ignoreUnexpected, boolean reachableForRuntimeCompilation) {
         this.node = node;
         this.method = method;
         this.returnType = method.getReturnType();
         this.ignoreUnexpected = ignoreUnexpected;
+        this.reachableForRuntimeCompilation = reachableForRuntimeCompilation;
         TypeMirror foundFrameParameter = null;
         List<? extends VariableElement> parameters = method.getParameters();
 
@@ -121,7 +125,7 @@ public class ExecutableTypeData extends MessageContainer implements Comparable<E
     }
 
     public static String createName(ExecutableTypeData type) {
-        return "execute" + (ElementUtils.isObject(type.getReturnType()) ? "" : ElementUtils.getTypeId(type.getReturnType()));
+        return "execute" + (ElementUtils.isObject(type.getReturnType()) ? "" : ElementUtils.getTypeSimpleId(type.getReturnType()));
     }
 
     public void addDelegatedFrom(ExecutableTypeData child) {
@@ -215,6 +219,10 @@ public class ExecutableTypeData extends MessageContainer implements Comparable<E
 
     public int getEvaluatedCount() {
         return evaluatedParameters.size();
+    }
+
+    public boolean isReachableForRuntimeCompilation() {
+        return reachableForRuntimeCompilation;
     }
 
     public boolean canDelegateTo(ExecutableTypeData to) {
@@ -366,23 +374,6 @@ public class ExecutableTypeData extends MessageContainer implements Comparable<E
     @Override
     public String toString() {
         return String.format("%s %s(%s,%s)", formatType(getReturnType()), getName(), formatType(getFrameParameter()), getEvaluatedParameters());
-    }
-
-    public boolean sameParameters(ExecutableTypeData other) {
-        if (!typeEquals(other.getFrameParameter(), getFrameParameter())) {
-            return false;
-        }
-
-        if (getEvaluatedCount() != other.getEvaluatedCount()) {
-            return false;
-        }
-
-        for (int i = 0; i < getEvaluatedCount(); i++) {
-            if (!typeEquals(getEvaluatedParameters().get(i), other.getEvaluatedParameters().get(i))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     public boolean sameSignature(ExecutableTypeData other) {

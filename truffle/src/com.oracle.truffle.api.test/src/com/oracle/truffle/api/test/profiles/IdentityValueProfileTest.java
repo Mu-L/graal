@@ -45,8 +45,8 @@ import static com.oracle.truffle.api.test.ReflectionUtils.invoke;
 import static com.oracle.truffle.api.test.ReflectionUtils.invokeStatic;
 import static com.oracle.truffle.api.test.ReflectionUtils.loadRelative;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -82,7 +82,7 @@ public class IdentityValueProfileTest {
 
     @Before
     public void create() {
-        profile = (ValueProfile) invokeStatic(loadRelative(IdentityValueProfileTest.class, "ValueProfile$Identity"), "create");
+        profile = (ValueProfile) invokeStatic(loadRelative(IdentityValueProfileTest.class, "ValueProfile$Identity"), "create0");
     }
 
     private static boolean isGeneric(ValueProfile profile) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -61,6 +61,7 @@ import com.oracle.truffle.api.TruffleLanguage.Registration;
 import com.oracle.truffle.api.dsl.AOTSupport;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.GenerateAOT;
+import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.test.examples.AOTTutorialFactory.AddNodeGen;
@@ -218,7 +219,7 @@ public class AOTTutorial {
         @TruffleBoundary
         @SuppressWarnings("unused")
         protected static double doDouble(double left, double right,
-                        @Cached("getASTLanguage()") AOTTestLanguage language) {
+                        @Cached(value = "getASTLanguage()", neverDefault = true) AOTTestLanguage language) {
             return left + right;
         }
 
@@ -237,6 +238,7 @@ public class AOTTutorial {
             return addLib.add(left, right);
         }
 
+        @Idempotent
         static boolean useLibrary() {
             /*
              * This library is not really useful and only here to show-case how to use libraries

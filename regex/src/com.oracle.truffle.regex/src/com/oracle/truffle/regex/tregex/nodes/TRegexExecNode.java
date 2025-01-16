@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,11 +40,15 @@
  */
 package com.oracle.truffle.regex.tregex.nodes;
 
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.regex.RegexBodyNode;
 import com.oracle.truffle.regex.RegexExecNode;
 import com.oracle.truffle.regex.RegexFlags;
@@ -56,7 +60,9 @@ import com.oracle.truffle.regex.UnsupportedRegexException;
 import com.oracle.truffle.regex.result.PreCalculatedResultFactory;
 import com.oracle.truffle.regex.result.RegexResult;
 import com.oracle.truffle.regex.tregex.TRegexCompiler;
+import com.oracle.truffle.regex.tregex.nfa.NFA;
 import com.oracle.truffle.regex.tregex.nodes.dfa.TRegexDFAExecutorNode;
+import com.oracle.truffle.regex.tregex.nodes.dfa.TRegexLazyBackwardSimpleCGRootNode;
 import com.oracle.truffle.regex.tregex.nodes.dfa.TRegexLazyCaptureGroupsRootNode;
 import com.oracle.truffle.regex.tregex.nodes.dfa.TRegexLazyFindStartRootNode;
 import com.oracle.truffle.regex.tregex.nodes.dfa.TRegexTraceFinderRootNode;
@@ -70,7 +76,7 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
     private static final LazyCaptureGroupRegexSearchNode LAZY_DFA_BAILED_OUT = new LazyCaptureGroupRegexSearchNode(null, null, null, null, null, null, null, null);
     private static final EagerCaptureGroupRegexSearchNode EAGER_DFA_BAILED_OUT = new EagerCaptureGroupRegexSearchNode(null);
 
-    private LazyCaptureGroupRegexSearchNode lazyDFANode;
+    @CompilationFinal private LazyCaptureGroupRegexSearchNode lazyDFANode;
     private LazyCaptureGroupRegexSearchNode regressTestNoSimpleCGLazyDFANode;
     private EagerCaptureGroupRegexSearchNode eagerDFANode;
     private NFARegexSearchNode nfaNode;
@@ -80,16 +86,18 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
     private final boolean regressionTestMode;
     private final boolean backtrackingMode;
     private final boolean sticky;
+    private final Lock optimizeLock;
 
     @Child private RunRegexSearchNode runnerNode;
 
     public TRegexExecNode(RegexAST ast, TRegexExecutorNode nfaExecutor) {
-        super(ast.getLanguage(), ast.getSource(), ast.getFlags().isUnicode());
+        super(ast.getLanguage(), ast.getSource(), ast.getFlags().isEitherUnicode());
         this.numberOfCaptureGroups = ast.getNumberOfCaptureGroups();
         this.nfaNode = new NFARegexSearchNode(createEntryNode(nfaExecutor));
         this.backtrackingMode = nfaExecutor instanceof TRegexBacktrackingNFAExecutorNode;
         this.regressionTestMode = !backtrackingMode && ast.getOptions().isRegressionTestMode();
         this.sticky = ast.getFlags().isSticky();
+        this.optimizeLock = new ReentrantLock();
         this.runnerNode = insert(nfaNode);
         if (this.regressionTestMode || !backtrackingMode && ast.getOptions().isGenerateDFAImmediately()) {
             switchToLazyDFA();
@@ -101,39 +109,53 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
     }
 
     @Override
-    public final RegexResult execute(VirtualFrame frame, Object input, int fromIndex) {
-        final int inputLength = inputLength(input);
+    public final RegexResult execute(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
 
         if (CompilerDirectives.inInterpreter() && !backtrackingMode) {
             RegexProfile profile = getRegexProfile();
             if (lazyDFANode == null) {
                 assert !regressionTestMode;
-                if (profile.shouldGenerateDFA(inputLength - fromIndex)) {
-                    switchToLazyDFA();
-                    profile.resetCalls();
-                    // free the NFA for garbage collection
-                    nfaNode = null;
+                if (profile.shouldGenerateDFA(maxIndex - fromIndex) && optimizeLock.tryLock()) {
+                    try {
+                        switchToLazyDFA();
+                        profile.resetCalls();
+                        // free the NFA for garbage collection
+                        nfaNode = null;
+                    } finally {
+                        optimizeLock.unlock();
+                    }
                 }
             } else if (canSwitchToEagerDFA() && runnerNode == lazyDFANode) {
-                if (profile.atEvaluationTripPoint() && profile.shouldUseEagerMatching()) {
-                    switchToEagerDFA(profile);
+                assert lazyDFANode.forwardEntryNode != null;
+                if (profile.atEvaluationTripPoint() && profile.shouldUseEagerMatching() && optimizeLock.tryLock()) {
+                    try {
+                        switchToEagerDFA(profile);
+                    } finally {
+                        optimizeLock.unlock();
+                    }
                 }
             }
         }
 
-        final RegexResult result = runnerNode.run(frame, input, fromIndex, inputLength);
+        final RegexResult result;
+        result = runnerNode.run(frame, input, fromIndex, maxIndex, regionFrom, regionTo);
         assert !sticky || source.getOptions().isBooleanMatch() || result == RegexResult.getNoMatchInstance() || RegexResult.RegexResultGetStartNode.getUncached().execute(result, 0) == fromIndex;
-        assert !regressionTestMode || backtrackerProducesSameResult(frame, input, fromIndex, result);
-        assert !regressionTestMode || nfaProducesSameResult(frame, input, fromIndex, result);
-        assert !regressionTestMode || noSimpleCGLazyDFAProducesSameResult(frame, input, fromIndex, result);
-        assert !regressionTestMode || source.getOptions().isBooleanMatch() || eagerAndLazyDFAProduceSameResult(frame, input, fromIndex, result);
-        assert validResult(input, fromIndex, result);
+        assert validResult(input, fromIndex, maxIndex, regionFrom, regionTo, result);
+        if (regressionTestMode) {
+            if (!(backtrackerProducesSameResult(frame, input, fromIndex, maxIndex, regionFrom, regionTo, result) &&
+                            nfaProducesSameResult(frame, input, fromIndex, maxIndex, regionFrom, regionTo, result) &&
+                            noSimpleCGLazyDFAProducesSameResult(frame, input, fromIndex, maxIndex, regionFrom, regionTo, result) &&
+                            (source.getOptions().isBooleanMatch() || eagerAndLazyDFAProduceSameResult(frame, input, fromIndex, maxIndex, regionFrom, regionTo, result)))) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                throw new AssertionError("Inconsistent results between different matching modes");
+            }
+        }
 
         if (CompilerDirectives.inInterpreter() && !backtrackingMode) {
             RegexProfile profile = getRegexProfile();
             if (lazyDFANode == null) {
                 profile.incCalls();
-                profile.incProcessedCharacters(charactersProcessedDuringSearch(result, fromIndex, inputLength));
+                profile.incProcessedCharacters(charactersProcessedDuringSearch(result, fromIndex, maxIndex));
             } else if (canSwitchToEagerDFA() && runnerNode == lazyDFANode) {
                 profile.incCalls();
                 if (result != RegexResult.getNoMatchInstance()) {
@@ -154,15 +176,20 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         return backtrackingMode;
     }
 
-    private static int charactersProcessedDuringSearch(RegexResult result, int fromIndex, int inputLength) {
+    @Override
+    public boolean isNFA() {
+        return runnerNode instanceof NFARegexSearchNode;
+    }
+
+    private static int charactersProcessedDuringSearch(RegexResult result, int fromIndex, int maxIndex) {
         if (result == RegexResult.getNoMatchInstance()) {
-            return inputLength - fromIndex;
+            return maxIndex - fromIndex;
         } else {
             return result.getEnd(0) + 1 - fromIndex;
         }
     }
 
-    private boolean validResult(Object input, int fromIndex, RegexResult result) {
+    private boolean validResult(Object input, int fromIndex, int maxIndex, int regionFrom, int regionTo, RegexResult result) {
         if (result == RegexResult.getNoMatchInstance() || result == RegexResult.getBooleanMatchInstance()) {
             return true;
         }
@@ -171,61 +198,58 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
             int start = result.getStart(i);
             int end = result.getEnd(i);
             if (start > end || (start < 0 && end >= 0)) {
-                Loggers.LOG_INTERNAL_ERRORS.severe(() -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nINVALID Result: %s", getSource(), input, fromIndex, result));
+                Loggers.LOG_INTERNAL_ERRORS.severe(() -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nmaxIndex: %d\nregionFrom: %d\nregionTo: %d\nINVALID Result: %s\n",
+                                getSource().toStringEscaped(), input, fromIndex, maxIndex, regionFrom, regionTo, result));
                 return false;
             }
         }
         return true;
     }
 
-    private RegexResult regressionTestRun(VirtualFrame frame, RunRegexSearchNode node, Object input, int fromIndex) {
+    private RegexResult regressionTestRun(VirtualFrame frame, RunRegexSearchNode node, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
         RunRegexSearchNode old = runnerNode;
         runnerNode = insert(node);
-        RegexResult result = runnerNode.run(frame, input, fromIndex, inputLength(input));
+        RegexResult result = runnerNode.run(frame, input, fromIndex, maxIndex, regionFrom, regionTo);
         runnerNode = insert(old);
         return result;
     }
 
-    private boolean backtrackerProducesSameResult(VirtualFrame frame, Object input, int fromIndex, RegexResult result) {
-        RegexResult btResult = regressionTestRun(frame, regressTestBacktrackingNode, input, fromIndex);
+    private boolean backtrackerProducesSameResult(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, RegexResult result) {
+        RegexResult btResult = regressionTestRun(frame, regressTestBacktrackingNode, input, fromIndex, maxIndex, regionFrom, regionTo);
         if (resultsEqual(result, btResult, getNumberOfCaptureGroups())) {
             return true;
         }
-        Loggers.LOG_INTERNAL_ERRORS.severe(
-                        () -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nBacktracker Result: %s\nDFA Result:         %s", getSource().toStringEscaped(), input, fromIndex, btResult, result));
+        Loggers.LOG_INTERNAL_ERRORS.severe(() -> regressionTestErrorMsg(input, fromIndex, maxIndex, regionFrom, regionTo, "Backtracker", btResult, "DFA", result));
         return false;
     }
 
-    private boolean nfaProducesSameResult(VirtualFrame frame, Object input, int fromIndex, RegexResult result) {
+    private boolean nfaProducesSameResult(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, RegexResult result) {
         if (lazyDFANode == LAZY_DFA_BAILED_OUT) {
             return true;
         }
         assert !(runnerNode instanceof NFARegexSearchNode);
-        RegexResult btResult = regressionTestRun(frame, nfaNode, input, fromIndex);
-        if (resultsEqual(result, btResult, getNumberOfCaptureGroups())) {
+        RegexResult nfaResult = regressionTestRun(frame, nfaNode, input, fromIndex, maxIndex, regionFrom, regionTo);
+        if (resultsEqual(result, nfaResult, getNumberOfCaptureGroups())) {
             return true;
         }
-        Loggers.LOG_INTERNAL_ERRORS.severe(
-                        () -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nNFA executor Result: %s\nDFA Result:         %s", getSource().toStringEscaped(), input, fromIndex, btResult, result));
+        Loggers.LOG_INTERNAL_ERRORS.severe(() -> regressionTestErrorMsg(input, fromIndex, maxIndex, regionFrom, regionTo, "NFA", nfaResult, "DFA", result));
         return false;
     }
 
-    private boolean noSimpleCGLazyDFAProducesSameResult(VirtualFrame frame, Object input, int fromIndex, RegexResult result) {
+    private boolean noSimpleCGLazyDFAProducesSameResult(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, RegexResult result) {
         if (lazyDFANode == LAZY_DFA_BAILED_OUT || !lazyDFANode.isSimpleCG() || regressTestNoSimpleCGLazyDFANode == LAZY_DFA_BAILED_OUT) {
             return true;
         }
         assert !regressTestNoSimpleCGLazyDFANode.isSimpleCG();
-        RegexResult noSimpleCGResult = regressionTestRun(frame, regressTestNoSimpleCGLazyDFANode, input, fromIndex);
+        RegexResult noSimpleCGResult = regressionTestRun(frame, regressTestNoSimpleCGLazyDFANode, input, fromIndex, maxIndex, regionFrom, regionTo);
         if (resultsEqual(result, noSimpleCGResult, getNumberOfCaptureGroups())) {
             return true;
         }
-        Loggers.LOG_INTERNAL_ERRORS.severe(
-                        () -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nLazyDFA Result:    %s\nSimplCGDFA Result: %s", getSource().toStringEscaped(), input, fromIndex, noSimpleCGResult,
-                                        result));
+        Loggers.LOG_INTERNAL_ERRORS.severe(() -> regressionTestErrorMsg(input, fromIndex, maxIndex, regionFrom, regionTo, "LazyDFA", noSimpleCGResult, "SimplCGDFA", result));
         return false;
     }
 
-    private boolean eagerAndLazyDFAProduceSameResult(VirtualFrame frame, Object input, int fromIndex, RegexResult resultOfCurrentSearchNode) {
+    private boolean eagerAndLazyDFAProduceSameResult(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, RegexResult resultOfCurrentSearchNode) {
         if (lazyDFANode.captureGroupEntryNode == null || eagerDFANode == EAGER_DFA_BAILED_OUT) {
             return true;
         }
@@ -233,16 +257,21 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         RegexResult eagerResult;
         if (runnerNode == lazyDFANode) {
             lazyResult = resultOfCurrentSearchNode;
-            eagerResult = regressionTestRun(frame, eagerDFANode, input, fromIndex);
+            eagerResult = regressionTestRun(frame, eagerDFANode, input, fromIndex, maxIndex, regionFrom, regionTo);
         } else {
-            lazyResult = regressionTestRun(frame, lazyDFANode, input, fromIndex);
+            lazyResult = regressionTestRun(frame, lazyDFANode, input, fromIndex, maxIndex, regionFrom, regionTo);
             eagerResult = resultOfCurrentSearchNode;
         }
         boolean equal = resultsEqual(lazyResult, eagerResult, getNumberOfCaptureGroups());
         if (!equal) {
-            Loggers.LOG_INTERNAL_ERRORS.severe(() -> String.format("Regex: %s\nInput: %s\nfromIndex: %d\nLazy Result: %s\nEager Result: %s", getSource(), input, fromIndex, lazyResult, eagerResult));
+            Loggers.LOG_INTERNAL_ERRORS.severe(() -> regressionTestErrorMsg(input, fromIndex, maxIndex, regionFrom, regionTo, "Lazy", lazyResult, "Eager", eagerResult));
         }
         return equal;
+    }
+
+    private String regressionTestErrorMsg(TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo, String nameA, RegexResult a, String nameB, RegexResult b) {
+        return String.format("Regex: %s\nInput: %s\nfromIndex: %d\nmaxIndex: %d\nregionFrom: %d\nregionTo: %d\n%s Result: %s\n%s Result: %s",
+                        getSource().toStringEscaped(), input, fromIndex, maxIndex, regionFrom, regionTo, nameA, a, nameB, b);
     }
 
     private static boolean resultsEqual(RegexResult a, RegexResult b, int numberOfCaptureGroups) {
@@ -281,7 +310,7 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         return regexProfile;
     }
 
-    private synchronized void switchToLazyDFA() {
+    private void switchToLazyDFA() {
         compileLazyDFA();
         if (lazyDFANode != LAZY_DFA_BAILED_OUT) {
             runnerNode = insert(lazyDFANode);
@@ -302,6 +331,7 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
     private void compileLazyDFA() {
         if (lazyDFANode == null) {
             lazyDFANode = compileLazyDFA(true);
+            CompilerDirectives.transferToInterpreterAndInvalidate();
         }
         if (regressionTestMode && lazyDFANode != LAZY_DFA_BAILED_OUT && lazyDFANode.isSimpleCG()) {
             regressTestNoSimpleCGLazyDFANode = compileLazyDFA(false);
@@ -310,7 +340,7 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
 
     private LazyCaptureGroupRegexSearchNode compileLazyDFA(boolean allowSimpleCG) {
         try {
-            return TRegexCompiler.compileLazyDFAExecutor(getRegexLanguage(), ((TRegexNFAExecutorNode) nfaNode.getExecutor().unwrap()).getNFA(), this, allowSimpleCG);
+            return TRegexCompiler.compileLazyDFAExecutor(getRegexLanguage(), new NFA(((TRegexNFAExecutorNode) nfaNode.getExecutor().unwrap()).getNFA()), this, allowSimpleCG);
         } catch (UnsupportedRegexException e) {
             Loggers.LOG_BAILOUT_MESSAGES.fine(() -> e.getReason() + ": " + source);
             return LAZY_DFA_BAILED_OUT;
@@ -356,7 +386,7 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
 
     public abstract static class RunRegexSearchNode extends Node {
 
-        protected abstract RegexResult run(VirtualFrame frame, Object input, int fromIndexArg, int inputLength);
+        protected abstract RegexResult run(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo);
     }
 
     public static final class LazyCaptureGroupRegexSearchNode extends RunRegexSearchNode {
@@ -393,12 +423,14 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
                 return;
             }
             if (backwardNode == null) {
-                assert singlePreCalcResult() || getForwardExecutor().isAnchored() || getForwardExecutor().isSimpleCG();
+                assert singlePreCalcResult() || getForwardExecutor().isAnchored() || getForwardExecutor().isSimpleCG() || booleanMatch;
                 backwardCallTarget = null;
             } else {
                 final RegexBodyNode bodyNode;
                 if (preCalculatedResults != null) {
                     bodyNode = new TRegexTraceFinderRootNode(language, source, preCalculatedResults, backwardNode);
+                } else if (getBackwardExecutor().isSimpleCG()) {
+                    bodyNode = new TRegexLazyBackwardSimpleCGRootNode(language, source, backwardNode);
                 } else {
                     bodyNode = new TRegexLazyFindStartRootNode(language, source, backwardNode, captureGroupNode == null);
                 }
@@ -409,7 +441,8 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
                 captureGroupCallTarget = null;
             } else {
                 final CallTarget findStartCallTarget;
-                if ((getForwardExecutor().isAnchored() || (flags.isSticky() && getForwardExecutor().getPrefixLength() == 0)) || (backwardEntryNode != null && getBackwardExecutor().isAnchored())) {
+                if ((getForwardExecutor().isAnchored() || (flags.isSticky() && getForwardExecutor().getPrefixLength() == 0)) ||
+                                (backwardEntryNode != null && getBackwardExecutor().isAnchored()) || getForwardExecutor().canFindStart()) {
                     findStartCallTarget = null;
                 } else {
                     findStartCallTarget = backwardCallTarget;
@@ -431,20 +464,20 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         }
 
         @Override
-        protected RegexResult run(VirtualFrame frame, Object input, int fromIndexArg, int inputLength) {
+        protected RegexResult run(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
             if (backwardEntryNode != null && getBackwardExecutor().isAnchored() && !flags.isSticky()) {
-                return executeBackwardAnchored(frame, input, fromIndexArg, inputLength);
+                return executeBackwardAnchored(frame, input, fromIndex, maxIndex, regionFrom, regionTo);
             } else {
-                return executeForward(frame, input, fromIndexArg, inputLength);
+                return executeForward(frame, input, fromIndex, maxIndex, regionFrom, regionTo);
             }
         }
 
-        private RegexResult executeForward(VirtualFrame frame, Object input, int fromIndexArg, int inputLength) {
+        private RegexResult executeForward(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
             if (getForwardExecutor().isSimpleCG()) {
-                Object result = forwardEntryNode.execute(frame, input, fromIndexArg, fromIndexArg, inputLength);
+                Object result = forwardEntryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, fromIndex);
                 return RegexResult.createFromExecutorResult(result);
             }
-            final int end = (int) forwardEntryNode.execute(frame, input, fromIndexArg, fromIndexArg, inputLength);
+            final long end = (long) forwardEntryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, fromIndex);
             if (end == TRegexDFAExecutorNode.NO_MATCH) {
                 return RegexResult.getNoMatchInstance();
             }
@@ -452,31 +485,38 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
                 return RegexResult.getBooleanMatchInstance();
             }
             if (singlePreCalcResult()) {
-                return preCalculatedResults[0].createFromEnd(end);
+                return preCalculatedResults[0].createFromEnd((int) end);
             }
             if (preCalculatedResults == null && captureGroupEntryNode == null) {
-                if (end == fromIndexArg) { // zero-length match
-                    return RegexResult.create(end, end);
+                if ((backwardCallTarget == null || getForwardExecutor().getNumberOfCaptureGroups() == 1) && end == fromIndex) {
+                    // zero-length match
+                    return RegexResult.create((int) end, (int) end);
                 }
                 if (getForwardExecutor().isAnchored() || flags.isSticky()) {
-                    return RegexResult.create(fromIndexArg, end);
+                    return RegexResult.create(fromIndex, (int) end);
                 }
-                return RegexResult.createLazy(input, fromIndexArg, -1, end, backwardCallTarget);
+                if (backwardCallTarget == null && getForwardExecutor().canFindStart()) {
+                    return RegexResult.create((int) (end >>> 32), (int) end);
+                }
+                assert backwardCallTarget != null;
+                return RegexResult.createLazy(input, fromIndex, regionFrom, regionTo, -1, (int) end, backwardCallTarget);
             } else {
                 if (preCalculatedResults != null) { // traceFinder
-                    return RegexResult.createLazy(input, fromIndexArg, -1, end, backwardCallTarget);
+                    return RegexResult.createLazy(input, fromIndex, regionFrom, regionTo, -1, (int) end, backwardCallTarget);
+                } else if (getForwardExecutor().canFindStart()) {
+                    return RegexResult.createLazy(input, fromIndex, regionFrom, regionTo, (int) (end >>> 32), (int) end, captureGroupCallTarget);
                 } else {
-                    return RegexResult.createLazy(input, fromIndexArg, fromIndexArg, end, captureGroupCallTarget);
+                    return RegexResult.createLazy(input, fromIndex, regionFrom, regionTo, fromIndex, (int) end, captureGroupCallTarget);
                 }
             }
         }
 
-        private RegexResult executeBackwardAnchored(VirtualFrame frame, Object input, int fromIndexArg, int inputLength) {
+        private RegexResult executeBackwardAnchored(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
             if (getBackwardExecutor().isSimpleCG()) {
-                Object result = backwardEntryNode.execute(frame, input, fromIndexArg, inputLength, inputLength);
+                Object result = backwardEntryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, maxIndex);
                 return RegexResult.createFromExecutorResult(result);
             }
-            final int backwardResult = (int) backwardEntryNode.execute(frame, input, fromIndexArg, inputLength, inputLength);
+            final int backwardResult = (int) ((long) backwardEntryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, maxIndex));
             if (backwardResult == TRegexDFAExecutorNode.NO_MATCH) {
                 return RegexResult.getNoMatchInstance();
             }
@@ -484,21 +524,21 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
                 return RegexResult.getBooleanMatchInstance();
             }
             if (multiplePreCalcResults()) { // traceFinder
-                return preCalculatedResults[backwardResult].createFromEnd(inputLength);
+                return preCalculatedResults[backwardResult].createFromEnd(maxIndex);
             }
             final int start = backwardResult;
             if (singlePreCalcResult()) {
                 return preCalculatedResults[0].createFromStart(start);
             }
             if (getForwardExecutor().isSimpleCG()) {
-                Object result = forwardEntryNode.execute(frame, input, fromIndexArg, start, inputLength);
+                Object result = forwardEntryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, start);
                 assert result != null;
                 return RegexResult.createFromExecutorResult(result);
             }
             if (captureGroupEntryNode != null) {
-                return RegexResult.createLazy(input, start, start, inputLength, captureGroupCallTarget);
+                return RegexResult.createLazy(input, start, regionFrom, regionTo, start, maxIndex, captureGroupCallTarget);
             }
-            return RegexResult.create(start, inputLength);
+            return RegexResult.create(start, maxIndex);
         }
 
         private boolean singlePreCalcResult() {
@@ -523,8 +563,8 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         }
 
         @Override
-        protected RegexResult run(VirtualFrame frame, Object input, int fromIndexArg, int inputLength) {
-            Object result = entryNode.execute(frame, input, fromIndexArg, fromIndexArg, inputLength);
+        protected RegexResult run(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
+            Object result = entryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, fromIndex);
             return RegexResult.createFromExecutorResult(result);
         }
     }
@@ -542,8 +582,8 @@ public class TRegexExecNode extends RegexExecNode implements RegexProfile.Tracks
         }
 
         @Override
-        protected RegexResult run(VirtualFrame frame, Object input, int fromIndexArg, int inputLength) {
-            Object result = entryNode.execute(frame, input, fromIndexArg, fromIndexArg, inputLength);
+        protected RegexResult run(VirtualFrame frame, TruffleString input, int fromIndex, int maxIndex, int regionFrom, int regionTo) {
+            Object result = entryNode.execute(frame, input, fromIndex, maxIndex, regionFrom, regionTo, fromIndex);
             if (entryNode.getExecutor().isBooleanMatch()) {
                 return result == null ? RegexResult.getNoMatchInstance() : RegexResult.getBooleanMatchInstance();
             }

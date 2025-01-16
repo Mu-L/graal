@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,10 @@ package com.oracle.svm.truffle.nfi;
 
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platform.AARCH64;
 import org.graalvm.nativeimage.Platform.AMD64;
 import org.graalvm.nativeimage.Platform.WINDOWS;
+import org.graalvm.nativeimage.Platform.DARWIN;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
 import com.oracle.svm.core.c.CGlobalData;
@@ -87,6 +89,9 @@ public final class NFIInitialization {
              */
             initializeNativeSimpleType(context, Target_com_oracle_truffle_nfi_backend_spi_types_NativeSimpleType.FP80, ffi_type_longdouble.get());
         }
+        if (Platform.includedIn(AARCH64.class) && !Platform.includedIn(WINDOWS.class) && !Platform.includedIn(DARWIN.class)) {
+            initializeNativeSimpleType(context, Target_com_oracle_truffle_nfi_backend_spi_types_NativeSimpleType.FP128, ffi_type_longdouble.get());
+        }
 
         initializeNativeSimpleType(context, Target_com_oracle_truffle_nfi_backend_spi_types_NativeSimpleType.STRING, ffi_type_pointer.get());
         initializeNativeSimpleType(context, Target_com_oracle_truffle_nfi_backend_spi_types_NativeSimpleType.OBJECT, ffi_type_pointer.get());
@@ -102,6 +107,7 @@ public final class NFIInitialization {
         ctx.nativeAPI().setNewClosureRefFunction(NativeAPIImpl.NEW_CLOSURE_REF.getFunctionPointer());
         ctx.nativeAPI().setReleaseClosureRefFunction(NativeAPIImpl.RELEASE_CLOSURE_REF.getFunctionPointer());
         ctx.nativeAPI().setGetClosureObjectFunction(NativeAPIImpl.GET_CLOSURE_OBJECT.getFunctionPointer());
+        ctx.nativeAPI().setExceptionCheckFunction(NativeAPIImpl.EXCEPTION_CHECK.getFunctionPointer());
 
         ctx.threadAPI().setGetTruffleEnvFunction(NativeAPIImpl.GET_TRUFFLE_ENV.getFunctionPointer());
         ctx.threadAPI().setAttachCurrentThreadFunction(NativeAPIImpl.ATTACH_CURRENT_THREAD.getFunctionPointer());

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,7 @@
 package com.oracle.truffle.api.strings.test.ops;
 
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_16;
+import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_16BE;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_32;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_8;
 import static org.junit.runners.Parameterized.Parameter;
@@ -122,7 +123,11 @@ public class TStringWriteByteTest extends TStringTestBase {
         } else if (encoding == UTF_16 || encoding == UTF_32) {
             Assert.assertTrue(codeRangeAfterNotify.isSupersetOf(TruffleString.CodeRange.LATIN_1));
         }
-        Assert.assertTrue(codeRangeAfterNotify.isSupersetOf(codeRangeBeforeMutate));
+        if (codeRangeBeforeMutate == TruffleString.CodeRange.BROKEN && encoding == UTF_16BE) {
+            Assert.assertSame(TruffleString.CodeRange.VALID, codeRangeAfterNotify);
+        } else {
+            Assert.assertTrue(codeRangeAfterNotify.isSupersetOf(codeRangeBeforeMutate));
+        }
     }
 
     @Test

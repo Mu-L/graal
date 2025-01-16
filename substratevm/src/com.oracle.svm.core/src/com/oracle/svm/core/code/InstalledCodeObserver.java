@@ -24,8 +24,8 @@
  */
 package com.oracle.svm.core.code;
 
-import org.graalvm.compiler.code.CompilationResult;
-import org.graalvm.compiler.debug.DebugContext;
+import jdk.graal.compiler.code.CompilationResult;
+import jdk.graal.compiler.debug.DebugContext;
 import org.graalvm.nativeimage.c.struct.RawField;
 import org.graalvm.nativeimage.c.struct.RawStructure;
 import org.graalvm.word.Pointer;
@@ -79,7 +79,7 @@ public interface InstalledCodeObserver {
         default void attachToCurrentIsolate(InstalledCodeObserverHandle handle) {
         }
 
-        @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+        @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
         default void releaseOnTearDown(InstalledCodeObserverHandle handle) {
         }
     }

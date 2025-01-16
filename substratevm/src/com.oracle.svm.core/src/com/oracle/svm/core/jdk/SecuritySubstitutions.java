@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,8 @@ package com.oracle.svm.core.jdk;
 
 import static com.oracle.svm.core.snippets.KnownIntrinsics.readCallerStackPointer;
 
+import java.lang.ref.ReferenceQueue;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.security.AccessControlContext;
 import java.security.CodeSource;
@@ -36,16 +36,18 @@ import java.security.PermissionCollection;
 import java.security.Permissions;
 import java.security.Policy;
 import java.security.PrivilegedAction;
-import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.security.ProtectionDomain;
 import java.security.Provider;
 import java.security.SecureRandom;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.WeakHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
@@ -63,50 +65,21 @@ import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.graal.snippets.CEntryPointSnippets;
 import com.oracle.svm.core.thread.Target_java_lang_Thread;
+import com.oracle.svm.core.thread.Target_java_lang_ThreadLocal;
+import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.util.ReflectionUtil;
 
-import jdk.internal.reflect.Reflection;
-import sun.security.jca.ProviderList;
 import sun.security.util.SecurityConstants;
 
 /*
  * All security checks are disabled.
  */
 
-@TargetClass(java.security.AccessController.class)
+@TargetClass(value = java.security.AccessController.class, onlyWith = JDK21OrEarlier.class)
 @Platforms(InternalPlatform.NATIVE_ONLY.class)
 @SuppressWarnings({"unused"})
 final class Target_java_security_AccessController {
-
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    public static <T> T doPrivileged(PrivilegedAction<T> action) throws Throwable {
-        return executePrivileged(action, null, Reflection.getCallerClass());
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    public static <T> T doPrivileged(PrivilegedAction<T> action, AccessControlContext context) throws Throwable {
-        Class<?> caller = Reflection.getCallerClass();
-        AccessControlContext acc = checkContext(context, caller);
-        return executePrivileged(action, acc, caller);
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    public static <T> T doPrivileged(PrivilegedExceptionAction<T> action) throws Throwable {
-        Class<?> caller = Reflection.getCallerClass();
-        return executePrivileged(action, null, caller);
-    }
-
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    static <T> T doPrivileged(PrivilegedExceptionAction<T> action, AccessControlContext context) throws Throwable {
-        Class<?> caller = Reflection.getCallerClass();
-        AccessControlContext acc = checkContext(context, caller);
-        return executePrivileged(action, acc, caller);
-    }
 
     @Substitute
     @SuppressWarnings("deprecation")
@@ -129,13 +102,11 @@ final class Target_java_security_AccessController {
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     private static ProtectionDomain getProtectionDomain(final Class<?> caller) {
         return caller.getProtectionDomain();
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     @SuppressWarnings("deprecation") // deprecated starting JDK 17
     static <T> T executePrivileged(PrivilegedExceptionAction<T> action, AccessControlContext context, Class<?> caller) throws Throwable {
         if (action == null) {
@@ -145,23 +116,14 @@ final class Target_java_security_AccessController {
         PrivilegedStack.push(context, caller);
         try {
             return action.run();
-        } catch (RuntimeException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            if (JavaVersionUtil.JAVA_SPEC > 11) {
-                throw ex;
-            } else {
-                throw new PrivilegedActionException(ex);
-            }
         } finally {
             PrivilegedStack.pop();
         }
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     @SuppressWarnings("deprecation") // deprecated starting JDK 17
-    static <T> T executePrivileged(PrivilegedAction<T> action, AccessControlContext context, Class<?> caller) throws Throwable {
+    static <T> T executePrivileged(PrivilegedAction<T> action, AccessControlContext context, Class<?> caller) {
         if (action == null) {
             throw new NullPointerException("Null action");
         }
@@ -169,31 +131,23 @@ final class Target_java_security_AccessController {
         PrivilegedStack.push(context, caller);
         try {
             return action.run();
-        } catch (RuntimeException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            if (JavaVersionUtil.JAVA_SPEC > 11) {
-                throw ex;
-            } else {
-                throw new PrivilegedActionException(ex);
-            }
         } finally {
             PrivilegedStack.pop();
         }
     }
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     @SuppressWarnings("deprecation")
     static AccessControlContext checkContext(AccessControlContext context, Class<?> caller) {
 
         if (context != null && context.equals(AccessControllerUtil.DISALLOWED_CONTEXT_MARKER)) {
-            VMError.shouldNotReachHere("Non-allowed AccessControlContext that was replaced with a blank one at build time was invoked without being reinitialized at run time.\n" +
-                            "This might be an indicator of improper build time initialization, or of a non-compatible JDK version.\n" +
-                            "In order to fix this you can either:\n" +
-                            "    * Annotate the offending context's field with @RecomputeFieldValue\n" +
-                            "    * Implement a custom runtime accessor and annotate said field with @InjectAccessors\n" +
-                            "    * If this context originates from the JDK, and it doesn't leak sensitive info, you can allow it in 'AccessControlContextReplacerFeature.duringSetup'");
+            VMError.shouldNotReachHere(
+                            "Non-allowed AccessControlContext that was replaced with a blank one at build time was invoked without being reinitialized at run time." + System.lineSeparator() +
+                                            "This might be an indicator of improper build time initialization, or of a non-compatible JDK version." + System.lineSeparator() +
+                                            "In order to fix this you can either:" + System.lineSeparator() +
+                                            "    * Annotate the offending context's field with @RecomputeFieldValue" + System.lineSeparator() +
+                                            "    * Implement a custom runtime accessor and annotate said field with @InjectAccessors" + System.lineSeparator() +
+                                            "    * If this context originates from the JDK, and it doesn't leak sensitive info, you can allow it in 'AccessControlContextReplacerFeature.duringSetup'");
         }
 
         // check if caller is authorized to create context
@@ -220,9 +174,13 @@ final class Target_java_lang_SecurityManager {
 @SuppressWarnings({"static-method", "unused"})
 final class Target_javax_crypto_JceSecurityManager {
     @Substitute
-    Object getCryptoPermission(String var1) {
-        return Target_javax_crypto_CryptoAllPermission.INSTANCE;
+    Target_javax_crypto_CryptoPermission getCryptoPermission(String var1) {
+        return SubstrateUtil.cast(Target_javax_crypto_CryptoAllPermission.INSTANCE, Target_javax_crypto_CryptoPermission.class);
     }
+}
+
+@TargetClass(className = "javax.crypto.CryptoPermission")
+final class Target_javax_crypto_CryptoPermission {
 }
 
 @TargetClass(className = "javax.crypto.CryptoAllPermission")
@@ -238,21 +196,63 @@ final class Target_java_security_Provider_ServiceKey {
 
 @TargetClass(value = java.security.Provider.class)
 final class Target_java_security_Provider {
-    @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ServiceKeyComputer.class) //
-    private static Target_java_security_Provider_ServiceKey previousKey;
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ServiceKeyComputer.class) //
+    @TargetElement(name = "previousKey", onlyWith = JDK21OrEarlier.class) //
+    private static Target_java_security_Provider_ServiceKey previousKeyJDK21;
+
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ThreadLocalServiceKeyComputer.class) //
+    @TargetElement(onlyWith = JDKLatest.class) //
+    private static Target_java_lang_ThreadLocal previousKey;
+}
+
+@TargetClass(value = java.security.Provider.class, innerClass = "Service")
+final class Target_java_security_Provider_Service {
+
+    /**
+     * The field is lazily initialized on first access. We already have the necessary reflection
+     * configuration for the reflective lookup at image run time.
+     */
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
+    private Object constructorCache;
+}
+
+class ServiceKeyProvider {
+    static Object getNewServiceKey() {
+        Class<?> serviceKey = ReflectionUtil.lookupClass("java.security.Provider$ServiceKey");
+        Constructor<?> constructor = ReflectionUtil.lookupConstructor(serviceKey, String.class, String.class, boolean.class);
+        return ReflectionUtil.newInstance(constructor, "", "", false);
+    }
+
+    /**
+     * Originally the thread local creates a new default service key each time. Here we always
+     * return the singleton default service key. This default key will be replaced with an actual
+     * key in {@code java.security.Provider.parseLegacy}
+     */
+    static Supplier<Object> getNewServiceKeySupplier() {
+        final Object singleton = ServiceKeyProvider.getNewServiceKey();
+        return () -> singleton;
+    }
 }
 
 @Platforms(Platform.HOSTED_ONLY.class)
 class ServiceKeyComputer implements FieldValueTransformer {
     @Override
     public Object transform(Object receiver, Object originalValue) {
-        try {
-            Class<?> serviceKey = Class.forName("java.security.Provider$ServiceKey");
-            Constructor<?> constructor = ReflectionUtil.lookupConstructor(serviceKey, String.class, String.class, boolean.class);
-            return constructor.newInstance("", "", false);
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException | ClassNotFoundException e) {
-            throw VMError.shouldNotReachHere(e);
-        }
+        return ServiceKeyProvider.getNewServiceKey();
+    }
+}
+
+@Platforms(Platform.HOSTED_ONLY.class)
+class ThreadLocalServiceKeyComputer implements FieldValueTransformer {
+    @Override
+    public Object transform(Object receiver, Object originalValue) {
+        // Originally the thread local creates a new default service key each time.
+        // Here we always return the singleton default service key. This default key
+        // will be replaced with an actual key in Provider.parseLegacy
+        return ThreadLocal.withInitial(ServiceKeyProvider.getNewServiceKeySupplier());
     }
 }
 
@@ -284,12 +284,13 @@ final class Target_java_security_Provider_Windows {
 final class ProviderUtil {
     private static volatile boolean initialized = false;
 
+    @SuppressWarnings("restricted")
     static void initialize(Target_java_security_Provider_Windows provider) {
         if (initialized) {
             return;
         }
 
-        if (provider.name.equals("SunMSCAPI")) {
+        if ("SunMSCAPI".equals(provider.name)) {
             try {
                 System.loadLibrary("sunmscapi");
             } catch (Throwable ignored) {
@@ -307,30 +308,40 @@ final class ProviderUtil {
 @SuppressWarnings({"unused"})
 final class Target_javax_crypto_ProviderVerifier {
 
-    @Substitute
-    static boolean isTrustedCryptoProvider(Provider provider) {
-        /*
-         * This is just used for fast-path checks, so returning false is a safe default. The
-         * original method accesses the Java home directory.
-         */
-        return false;
+    @TargetElement(onlyWith = ProviderVerifierJavaHomeFieldPresent.class) //
+    @Alias @InjectAccessors(ProviderVerifierJavaHomeAccessors.class) //
+    static String javaHome;
+
+}
+
+class ProviderVerifierJavaHomeFieldPresent implements BooleanSupplier {
+    @Override
+    public boolean getAsBoolean() {
+        Class<?> providerVerifier = Objects.requireNonNull(ReflectionUtil.lookupClass(false, "javax.crypto.ProviderVerifier"));
+        return ReflectionUtil.lookupField(true, providerVerifier, "javaHome") != null;
+    }
+}
+
+@SuppressWarnings("unused")
+class ProviderVerifierJavaHomeAccessors {
+    private static String javaHome;
+
+    private static String getJavaHome() {
+        if (javaHome == null) {
+            javaHome = System.getProperty("java.home", "");
+        }
+        return javaHome;
+    }
+
+    private static void setJavaHome(String newJavaHome) {
+        javaHome = newJavaHome;
     }
 }
 
 @TargetClass(className = "javax.crypto.JceSecurity")
+@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+27/src/java.base/share/classes/javax/crypto/JceSecurity.java.template")
 @SuppressWarnings({"unused"})
 final class Target_javax_crypto_JceSecurity {
-
-    /*
-     * Lazily recompute the RANDOM field at runtime. We cannot push the entire static initialization
-     * of JceSecurity to run time because we want the JceSecurity.verificationResults initialized at
-     * image build time.
-     *
-     * This is only used in {@link KeyAgreement}, it's safe to remove.
-     */
-    @Alias @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    @InjectAccessors(JceSecurityAccessor.class) //
-    static SecureRandom RANDOM;
 
     /*
      * The JceSecurity.verificationResults cache is initialized by the SecurityServicesFeature at
@@ -348,27 +359,26 @@ final class Target_javax_crypto_JceSecurity {
     // value == PROVIDER_VERIFIED is successfully verified
     // value is failure cause Exception in error case
     @Alias //
-    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = VerificationCacheTransformer.class, disableCaching = true) //
     private static Map<Object, Object> verificationResults;
 
     @Alias //
     @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
     private static Map<Provider, Object> verifyingProviders;
 
-    @Substitute
-    static void verifyProvider(URL codeBase, Provider p) {
-        throw JceSecurityUtil.shouldNotReach("javax.crypto.JceSecurity.verifyProviderJar(URL, Provider)");
-    }
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FromAlias) //
+    private static Map<Class<?>, URL> codeBaseCacheRef = new WeakHashMap<>();
 
-    @Substitute
-    static URL getCodeBase(final Class<?> clazz) {
-        throw VMError.unsupportedFeature("Trying to access the code base of " + clazz + ". ");
-    }
+    @Alias //
+    @TargetElement //
+    private static ReferenceQueue<Object> queue;
 
     @Substitute
     static Exception getVerificationResult(Provider p) {
         /* Start code block copied from original method. */
-        Object o = verificationResults.get(JceSecurityUtil.providerKey(p));
+        /* The verification results map key is an identity wrapper object. */
+        Object key = new Target_javax_crypto_JceSecurity_WeakIdentityWrapper(p, queue);
+        Object o = verificationResults.get(key);
         if (o == PROVIDER_VERIFIED) {
             return null;
         } else if (o != null) {
@@ -384,24 +394,14 @@ final class Target_javax_crypto_JceSecurity {
         throw VMError.unsupportedFeature("Trying to verify a provider that was not registered at build time: " + p + ". " +
                         "All providers must be registered and verified in the Native Image builder. ");
     }
-
-    private static class VerificationCacheTransformer implements FieldValueTransformer {
-        @Override
-        public Object transform(Object receiver, Object originalValue) {
-            return SecurityProvidersFilter.instance().cleanVerificationCache(originalValue);
-        }
-    }
 }
 
-@TargetClass(className = "javax.crypto.JceSecurity", innerClass = "IdentityWrapper", onlyWith = JDK17OrLater.class)
+@TargetClass(className = "javax.crypto.JceSecurity", innerClass = "WeakIdentityWrapper")
 @SuppressWarnings({"unused"})
-final class Target_javax_crypto_JceSecurity_IdentityWrapper {
-    @Alias //
-    Provider obj;
+final class Target_javax_crypto_JceSecurity_WeakIdentityWrapper {
 
     @Alias //
-    Target_javax_crypto_JceSecurity_IdentityWrapper(Provider obj) {
-        this.obj = obj;
+    Target_javax_crypto_JceSecurity_WeakIdentityWrapper(Provider obj, ReferenceQueue<Object> queue) {
     }
 }
 
@@ -430,24 +430,6 @@ class JceSecurityAccessor {
     }
 }
 
-final class JceSecurityUtil {
-
-    static Object providerKey(Provider p) {
-        if (JavaVersionUtil.JAVA_SPEC <= 11) {
-            return p;
-        }
-        /* Starting with JDK 17 the verification results map key is an identity wrapper object. */
-        return new Target_javax_crypto_JceSecurity_IdentityWrapper(p);
-    }
-
-    static RuntimeException shouldNotReach(String method) {
-        throw VMError.shouldNotReachHere(method + " is reached at runtime. " +
-                        "This should not happen. The contents of JceSecurity.verificationResults " +
-                        "are computed and cached at image build time.");
-    }
-
-}
-
 /**
  * JDK 8 has the class `javax.crypto.JarVerifier`, but in JDK 11 and later that class is only
  * available in Oracle builds, and not in OpenJDK builds.
@@ -459,27 +441,13 @@ final class Target_javax_crypto_JarVerifier {
     @Substitute
     @TargetElement(onlyWith = ContainsVerifyJars.class)
     private String verifySingleJar(URL var1) {
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Substitute
     @TargetElement(onlyWith = ContainsVerifyJars.class)
     private void verifyJars(URL var1, List<String> var2) {
-        throw VMError.unimplemented();
-    }
-}
-
-/** A predicate to tell whether this platform includes the argument class. */
-final class PlatformHasClass implements Predicate<String> {
-    @Override
-    public boolean test(String className) {
-        try {
-            @SuppressWarnings({"unused"})
-            final Class<?> classForName = Class.forName(className);
-            return true;
-        } catch (ClassNotFoundException cnfe) {
-            return false;
-        }
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 }
 
@@ -495,11 +463,11 @@ final class ContainsVerifyJars implements Predicate<Class<?>> {
     }
 }
 
-@TargetClass(value = java.security.Policy.class, innerClass = "PolicyInfo")
+@TargetClass(value = java.security.Policy.class, innerClass = "PolicyInfo", onlyWith = JDK21OrEarlier.class)
 final class Target_java_security_Policy_PolicyInfo {
 }
 
-@TargetClass(java.security.Policy.class)
+@TargetClass(value = java.security.Policy.class, onlyWith = JDK21OrEarlier.class)
 final class Target_java_security_Policy {
 
     @Delete //
@@ -566,7 +534,7 @@ final class AllPermissionsPolicy extends Policy {
  * version is more fool-proof in case someone manually registers security providers for reflective
  * instantiation.
  */
-@TargetClass(className = "sun.security.provider.PolicySpiFile")
+@TargetClass(className = "sun.security.provider.PolicySpiFile", onlyWith = JDK21OrEarlier.class)
 @SuppressWarnings({"unused", "static-method", "deprecation"})
 final class Target_sun_security_provider_PolicySpiFile {
 
@@ -599,7 +567,7 @@ final class Target_sun_security_provider_PolicySpiFile {
 }
 
 @Delete("Substrate VM does not use SecurityManager, so loading a security policy file would be misleading")
-@TargetClass(className = "sun.security.provider.PolicyFile")
+@TargetClass(className = "sun.security.provider.PolicyFile", onlyWith = JDK21OrEarlier.class)
 final class Target_sun_security_provider_PolicyFile {
 }
 
@@ -632,37 +600,6 @@ final class Target_sun_security_jca_ProviderConfig_ProviderLoader {
     @Alias//
     @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.NewInstance, isFinal = true)//
     static Target_sun_security_jca_ProviderConfig_ProviderLoader INSTANCE;
-}
-
-/**
- * This only applies to JDK8 and JDK11. Experimental FIPS mode in the SunJSSE Provider was removed
- * in JDK-8217835. Going forward it is recommended to configure FIPS 140 compliant cryptography
- * providers by using the usual JCA providers configuration mechanism.
- */
-@SuppressWarnings("unused")
-@TargetClass(value = sun.security.ssl.SunJSSE.class, onlyWith = JDK11OrEarlier.class)
-final class Target_sun_security_ssl_SunJSSE {
-
-    @Substitute
-    private Target_sun_security_ssl_SunJSSE(java.security.Provider cryptoProvider, String providerName) {
-        throw VMError.unsupportedFeature("Experimental FIPS mode in the SunJSSE Provider is deprecated (JDK-8217835)." +
-                        " To register a FIPS provider use the supported java.security.Security.addProvider() API.");
-    }
-}
-
-@TargetClass(className = "sun.security.jca.Providers")
-final class Target_sun_security_jca_Providers {
-    @Alias//
-    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Custom, declClass = ProviderListTransformer.class, disableCaching = true)//
-    private static ProviderList providerList;
-
-    private static class ProviderListTransformer implements FieldValueTransformer {
-        @Override
-        public Object transform(Object receiver, Object originalValue) {
-            ProviderList originalProviderList = (ProviderList) originalValue;
-            return SecurityProvidersFilter.instance().cleanUnregisteredProviders(originalProviderList);
-        }
-    }
 }
 
 /** Dummy class to have a class with the file's name. */

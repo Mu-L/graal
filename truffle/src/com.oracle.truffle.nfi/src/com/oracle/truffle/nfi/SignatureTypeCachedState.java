@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,7 @@ package com.oracle.truffle.nfi;
 
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.GenerateAOT;
+import com.oracle.truffle.api.dsl.GenerateInline;
 import com.oracle.truffle.api.dsl.GenerateNodeFactory;
 import com.oracle.truffle.api.dsl.GenerateUncached;
 import com.oracle.truffle.api.dsl.Specialization;
@@ -54,10 +55,11 @@ import com.oracle.truffle.nfi.api.SignatureLibrary;
 
 final class SignatureTypeCachedState {
 
-    static final TypeCachedState INSTANCE = new TypeCachedState(1, ClosureToNativeFactory.getInstance(), FunctionPtrFromNativeFactory.getInstance());
+    static final TypeCachedState INSTANCE = new TypeCachedState(1, ClosureToNativeFactory.getInstance(), FunctionPtrFromNativeFactory.getInstance(), NFIPointer.nullPtr());
 
     @GenerateUncached
     @GenerateNodeFactory
+    @GenerateInline(false)
     abstract static class ClosureToNative extends ConvertTypeNode {
 
         @Specialization(limit = "3", guards = "interop.isExecutable(value)")
@@ -77,6 +79,7 @@ final class SignatureTypeCachedState {
 
     @GenerateUncached
     @GenerateNodeFactory
+    @GenerateInline(false)
     abstract static class FunctionPtrFromNative extends ConvertTypeNode {
 
         @Specialization(guards = "nullValue == 0")

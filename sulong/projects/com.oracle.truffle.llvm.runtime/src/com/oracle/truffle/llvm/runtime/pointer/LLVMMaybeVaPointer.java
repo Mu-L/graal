@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates.
+ * Copyright (c) 2022, 2024, Oracle and/or its affiliates.
  *
  * All rights reserved.
  *
@@ -149,9 +149,8 @@ public final class LLVMMaybeVaPointer extends LLVMInternalTruffleObject {
         @Specialization(guards = "!self.isStoredOnHeap()")
         static void toNativeVaList(LLVMMaybeVaPointer self,
                         @Cached LLVMPointerOffsetStoreNode storeAddressNode) {
-            assert self.vaList.getOffset() == 0;
             // triggers a toNative transition for vaList object
-            storeAddressNode.executeWithTarget(self.address, 0, self.vaList.getObject());
+            storeAddressNode.executeWithTarget(self.address, 0, self.vaList);
             self.vaList = null;
         }
 
@@ -267,8 +266,6 @@ public final class LLVMMaybeVaPointer extends LLVMInternalTruffleObject {
         @GenerateAOT.Exclude
         static Object shiftStorage(LLVMMaybeVaPointer self, Type type, @SuppressWarnings("unused") Frame frame,
                         @CachedLibrary(limit = "3") LLVMManagedReadLibrary readLibrary) {
-            assert self.wasVAListPointer;
-
             Object vaListStorage = self.vaList.getObject();
             Object ret = null;
             long offset = self.vaList.getOffset();
@@ -291,46 +288,26 @@ public final class LLVMMaybeVaPointer extends LLVMInternalTruffleObject {
 
     @ExportMessage
     static class Copy {
-        @Specialization(guards = {"self.isManagedStorage()", "other.isManagedStorage()"})
-        static void copyHeapStorageManaged(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame,
-                        @CachedLibrary(limit = "1") LLVMManagedReadLibrary readLibrary,
-                        @CachedLibrary(limit = "1") LLVMManagedWriteLibrary writeLibrary) {
-            assert self.isStoredOnHeap();
-            LLVMManagedPointer selfPtr = LLVMManagedPointer.cast(self.address);
-            LLVMManagedPointer otherPtr = LLVMManagedPointer.cast(other.address);
-            Object vaListInstance = readLibrary.readGenericI64(selfPtr.getObject(), 0);
-            writeLibrary.writeGenericI64(otherPtr.getObject(), 0, vaListInstance);
-
-            assert vaListInstance == self.vaList.getObject();
-            other.vaList = self.vaList;
+        static boolean needsNativeTransition(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other) {
+            return !self.isPointer() && other.isPointer() && other.isStoredOnHeap();
         }
 
-        @Specialization(guards = {"self.isStoredOnHeap()", "other.isStoredOnHeap()"})
-        static void copyHeapStorageNative(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame,
-                        @Cached.Exclusive @Cached LLVMPointerOffsetLoadNode offsetLoadNode,
-                        @Cached.Exclusive @Cached LLVMPointerOffsetStoreNode offsetStoreNode) {
+        @Specialization(guards = "needsNativeTransition(self, other)")
+        static void copyToNative(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame,
+                        @Cached LLVMPointerOffsetStoreNode offsetStoreNode) {
+            /* triggers toNative transition for vaListInstance */
+            offsetStoreNode.executeWithTarget(other.address, 0, self.vaList);
+
+            assert other.vaList == null;
+        }
+
+        @Specialization(guards = "!needsNativeTransition(self, other)")
+        static void copy(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame,
+                        @Cached LLVMPointerOffsetLoadNode offsetLoadNode,
+                        @Cached LLVMPointerOffsetStoreNode offsetStoreNode) {
             LLVMPointer vaListPtr = offsetLoadNode.executeWithTarget(self.address, 0);
             offsetStoreNode.executeWithTarget(other.address, 0, vaListPtr);
-        }
-
-        @Specialization(guards = {"!self.isStoredOnHeap()", "other.isManagedStorage()"})
-        static void copyManagedFromStackToHeap(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame,
-                        @CachedLibrary(limit = "1") LLVMManagedWriteLibrary writeLibrary) {
-            LLVMManagedPointer otherPtr = LLVMManagedPointer.cast(other.address);
-            writeLibrary.writeGenericI64(otherPtr.getObject(), 0, self.vaList.getObject());
             other.vaList = self.vaList;
-        }
-
-        @Specialization
-        static void copyManaged(LLVMMaybeVaPointer self, LLVMMaybeVaPointer other, @SuppressWarnings("unused") Frame frame) {
-            assert self.isManagedStorage() || !self.isStoredOnHeap();
-            assert !other.isStoredOnHeap();
-            other.wasVAListPointer = true;
-            other.vaList = self.vaList;
-            /*
-             * Skip writing to stack memory as it would trigger a toNative transition. Reads to the
-             * stack storage are intercepted.
-             */
         }
     }
 

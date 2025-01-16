@@ -1,10 +1,12 @@
 /*
- * Copyright (c) 1996, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -37,10 +39,15 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-/* jni_md.h contains the machine-dependent typedefs for jbyte, jint
+/* jni_<platform>.h contains the machine-dependent typedefs for jbyte, jint
    and jlong */
-
-#include "jni_md.h"
+#if defined(_WIN32)
+#include "jni_windows.h"
+#elif defined(__linux__) || defined(__APPLE__)
+#include "jni_unix.h"
+#else
+#error unknown platform
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -768,6 +775,11 @@ struct JNINativeInterface_ {
 
     jobject (JNICALL *GetModule)
        (JNIEnv* env, jclass clazz);
+
+    /* Virtual threads */
+
+    jboolean (JNICALL *IsVirtualThread)
+       (JNIEnv* env, jobject obj);
 };
 
 /*
@@ -1866,9 +1878,29 @@ struct JNIEnv_ {
         return functions->GetModule(this, clazz);
     }
 
+    /* Virtual threads */
+
+    jboolean IsVirtualThread(jobject obj) {
+        return functions->IsVirtualThread(this, obj);
+    }
+
 #endif /* __cplusplus */
 };
 
+/*
+ * optionString may be any option accepted by the JVM, or one of the
+ * following:
+ *
+ * -D<name>=<value>          Set a system property.
+ * -verbose[:class|gc|jni]   Enable verbose output, comma-separated. E.g.
+ *                           "-verbose:class" or "-verbose:gc,class"
+ *                           Standard names include: gc, class, and jni.
+ *                           All nonstandard (VM-specific) names must begin
+ *                           with "X".
+ * vfprintf                  extraInfo is a pointer to the vfprintf hook.
+ * exit                      extraInfo is a pointer to the exit hook.
+ * abort                     extraInfo is a pointer to the abort hook.
+ */
 typedef struct JavaVMOption {
     char *optionString;
     void *extraInfo;
@@ -1963,6 +1995,9 @@ JNI_OnUnload(JavaVM *vm, void *reserved);
 #define JNI_VERSION_1_8 0x00010008
 #define JNI_VERSION_9   0x00090000
 #define JNI_VERSION_10  0x000a0000
+#define JNI_VERSION_19  0x00130000
+#define JNI_VERSION_20  0x00140000
+#define JNI_VERSION_21  0x00150000
 
 #ifdef __cplusplus
 } /* extern "C" */

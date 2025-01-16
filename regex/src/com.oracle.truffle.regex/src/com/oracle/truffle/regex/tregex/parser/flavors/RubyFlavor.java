@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,14 +40,20 @@
  */
 package com.oracle.truffle.regex.tregex.parser.flavors;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.regex.RegexLanguage;
 import com.oracle.truffle.regex.RegexSource;
+import com.oracle.truffle.regex.charset.UnicodeProperties;
+import com.oracle.truffle.regex.charset.UnicodePropertyDataVersion;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
-import com.oracle.truffle.regex.tregex.nfa.QuantifierGuard;
+import com.oracle.truffle.regex.tregex.nfa.TransitionGuard;
 import com.oracle.truffle.regex.tregex.nodes.nfa.TRegexBacktrackingNFAExecutorNode;
+import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
 import com.oracle.truffle.regex.tregex.parser.JSRegexParser;
+import com.oracle.truffle.regex.tregex.parser.MultiCharacterCaseFolding;
 import com.oracle.truffle.regex.tregex.parser.RegexParser;
 import com.oracle.truffle.regex.tregex.parser.RegexValidator;
+import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
 import com.oracle.truffle.regex.tregex.parser.ast.visitors.NFATraversalRegexASTVisitor;
 
 /**
@@ -58,9 +64,6 @@ import com.oracle.truffle.regex.tregex.parser.ast.visitors.NFATraversalRegexASTV
  * features:
  * </p>
  * <ul>
- * <li>case-insensitive backreferences: In Ruby, case-insensitive matching has to be implemented by
- * case-folding. However, there is no way we can case-fold a backreference, since we don't know
- * which string it will match.</li>
  * <li>\G escape sequence: In Ruby regular expressions, \G can be used to assert that we are still
  * at the initial index. TRegex only provides limited support for this feature by handling cases
  * when \G appears at the beginning of all top-level alternatives.</li>
@@ -85,7 +88,6 @@ import com.oracle.truffle.regex.tregex.parser.ast.visitors.NFATraversalRegexASTV
  * <li>(?~...) absent expressions: These constructs can be used in Ruby regular expressions to match
  * strings that do not contain a match for a given expression. TRegex doesn't have support for this
  * kind of construction.</li>
- * <li>conditional backreferences (?(group)then|else)</li>
  * </ul>
  *
  * <p>
@@ -182,7 +184,7 @@ import com.oracle.truffle.regex.tregex.parser.ast.visitors.NFATraversalRegexASTV
  * the empty check, by verifying the state of the capture groups on top of verifying the current
  * index (see {@code TRegexBacktrackingNFAExecutorNode#monitorCaptureGroupsInEmptyCheck}). For that,
  * we need fine-grained information about capture group updates and so we include this information
- * in the transition guards by {@link QuantifierGuard#createUpdateCG}.
+ * in the transition guards by {@link TransitionGuard#createUpdateCG}.
  *
  * In unrolled loops, we disable empty checks altogether (in {@link JSRegexParser}, in the calls to
  * {@code RegexParser#createOptional}). This is correct since Ruby's empty checks terminate a loop
@@ -215,25 +217,37 @@ import com.oracle.truffle.regex.tregex.parser.ast.visitors.NFATraversalRegexASTV
  * We implement this in {@code NFATraversalRegexASTVisitor} by introducing two transitions whenever
  * we leave a loop, one leading to the start of the loop (empty check passes) and one escaping past
  * the loop (empty check fails). The two transitions are then annotated with complementary guards
- * ({@link QuantifierGuard#createEscapeZeroWidth} and {@link QuantifierGuard#createEscapeZeroWidth},
+ * ({@link TransitionGuard#createEscapeZeroWidth} and {@link TransitionGuard#createEscapeZeroWidth},
  * respectively), so that at runtime, only one of the two transitions will be admissible.</li>
  * </ul>
  */
 public final class RubyFlavor extends RegexFlavor {
 
     public static final RubyFlavor INSTANCE = new RubyFlavor();
+    public static final UnicodeProperties UNICODE = new UnicodeProperties(UnicodePropertyDataVersion.UNICODE_15_1_0, UnicodeProperties.CASE_INSENSITIVE);
 
     private RubyFlavor() {
-        super(BACKREFERENCES_TO_UNMATCHED_GROUPS_FAIL | EMPTY_CHECKS_MONITOR_CAPTURE_GROUPS | NESTED_CAPTURE_GROUPS_KEPT_ON_LOOP_REENTRY | FAILING_EMPTY_CHECKS_DONT_BACKTRACK);
+        super(BACKREFERENCES_TO_UNMATCHED_GROUPS_FAIL | EMPTY_CHECKS_MONITOR_CAPTURE_GROUPS | NESTED_CAPTURE_GROUPS_KEPT_ON_LOOP_REENTRY | FAILING_EMPTY_CHECKS_DONT_BACKTRACK |
+                        HAS_CONDITIONAL_BACKREFERENCES | EMPTY_CHECKS_ON_MANDATORY_LOOP_ITERATIONS | LOOKBEHINDS_RUN_LEFT_TO_RIGHT);
     }
 
     @Override
-    public RegexValidator createValidator(RegexSource source) {
+    public RegexValidator createValidator(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) {
         return RubyRegexParser.createValidator(source);
     }
 
     @Override
     public RegexParser createParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) {
         return RubyRegexParser.createParser(language, source, compilationBuffer);
+    }
+
+    @Override
+    public EqualsIgnoreCasePredicate getEqualsIgnoreCasePredicate(RegexAST ast) {
+        return (codePointA, codePointB, altMode) -> MultiCharacterCaseFolding.equalsIgnoreCase(CaseFoldData.CaseFoldAlgorithm.Ruby, codePointA, codePointB);
+    }
+
+    @Override
+    public CaseFoldData.CaseFoldAlgorithm getCaseFoldAlgorithm(RegexAST ast) {
+        throw CompilerDirectives.shouldNotReachHere();
     }
 }

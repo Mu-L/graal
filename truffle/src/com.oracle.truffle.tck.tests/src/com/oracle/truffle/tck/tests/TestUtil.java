@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -202,7 +202,9 @@ final class TestUtil {
     static String formatErrorMessage(
                     final String errorMessage,
                     final TestRun testRun,
-                    final TestContext testContext) {
+                    final TestContext testContext,
+                    final Value resultValue,
+                    final PolyglotException exception) {
         final String language = testRun.getID();
         final Snippet snippet = testRun.getSnippet();
         final StringBuilder message = new StringBuilder();
@@ -226,12 +228,16 @@ final class TestUtil {
         message.append("failed:\n");
         message.append(errorMessage);
         message.append('\n');
+        message.append("Result: ").append(resultValue).append('\n');
+        message.append("Exception: ").append(exception).append('\n');
         message.append("Snippet: ").append(getSource(snippet.getExecutableValue())).append('\n');
-        int i = 0;
-        for (Map.Entry<String, ? extends Snippet> langAndparamSnippet : testRun.getActualParameterSnippets()) {
-            final Snippet paramSnippet = langAndparamSnippet.getValue();
-            message.append(String.format("Parameter %d Snippet: ", i++)).append(getSource(paramSnippet.getExecutableValue())).append('\n');
+        for (int i = 0; i < actualParameterSnippets.size(); i++) {
+            final Snippet paramSnippet = actualParameterSnippets.get(i).getValue();
+            message.append(String.format("Parameter %d Snippet: ", i)).append(getSource(paramSnippet.getExecutableValue())).append('\n');
+            message.append(String.format("Parameter %d Declared Return Type: %s%n", i, paramSnippet.getReturnType()));
+            message.append(String.format("Parameter %d Returned Value Type: %s%n", i, TypeDescriptor.forValue(actualParameters.get(i))));
         }
+
         return message.toString();
     }
 

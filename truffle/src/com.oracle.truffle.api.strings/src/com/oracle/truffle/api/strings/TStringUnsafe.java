@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -66,6 +66,8 @@ final class TStringUnsafe {
     private static final long javaStringCoderFieldOffset;
     private static final long javaStringHashFieldOffset;
 
+    static final boolean COMPACT_STRINGS_ENABLED;
+
     static {
         if (JAVA_SPEC <= 8) {
             throw new RuntimeException("TruffleString requires Java version > 8");
@@ -73,9 +75,21 @@ final class TStringUnsafe {
         Field valueField = getStringDeclaredField("value");
         Field coderField = getStringDeclaredField("coder");
         Field hashField = getStringDeclaredField("hash");
+        Field compactStringsField = getStringDeclaredField("COMPACT_STRINGS");
         javaStringValueFieldOffset = getObjectFieldOffset(valueField);
         javaStringCoderFieldOffset = getObjectFieldOffset(coderField);
         javaStringHashFieldOffset = getObjectFieldOffset(hashField);
+        COMPACT_STRINGS_ENABLED = UNSAFE.getBoolean(getStaticFieldBase(compactStringsField), getStaticFieldOffset(compactStringsField));
+    }
+
+    @SuppressWarnings("deprecation" /* JDK-8277863 */)
+    private static Object getStaticFieldBase(Field field) {
+        return UNSAFE.staticFieldBase(field);
+    }
+
+    @SuppressWarnings("deprecation" /* JDK-8277863 */)
+    private static long getStaticFieldOffset(Field field) {
+        return UNSAFE.staticFieldOffset(field);
     }
 
     @SuppressWarnings("deprecation" /* JDK-8277863 */)
@@ -129,8 +143,8 @@ final class TStringUnsafe {
 
     @TruffleBoundary
     static String createJavaString(byte[] bytes, int stride) {
-        if (stride < 0 || stride > 1) {
-            throw new IllegalArgumentException("stride must be 0 or 1!");
+        if (stride < (COMPACT_STRINGS_ENABLED ? 0 : 1) || stride > 1) {
+            throw new IllegalArgumentException("illegal stride!");
         }
         String ret = allocateJavaString();
         UNSAFE.putInt(ret, javaStringHashFieldOffset, 0);
@@ -150,60 +164,32 @@ final class TStringUnsafe {
         return new String(chars).equals(ret);
     }
 
-    static byte getByteManaged(Object array, long byteOffset) {
+    static byte getByte(Object array, long byteOffset) {
         return UNSAFE.getByte(array, byteOffset);
     }
 
-    static byte getByteNative(long array, long byteOffset) {
-        return UNSAFE.getByte(array + byteOffset);
-    }
-
-    static char getCharManaged(Object array, long byteOffset) {
+    static char getChar(Object array, long byteOffset) {
         return UNSAFE.getChar(array, byteOffset);
     }
 
-    static char getCharNative(long array, long byteOffset) {
-        return UNSAFE.getChar(array + byteOffset);
-    }
-
-    static int getIntManaged(Object array, long byteOffset) {
+    static int getInt(Object array, long byteOffset) {
         return UNSAFE.getInt(array, byteOffset);
     }
 
-    static int getIntNative(long array, long byteOffset) {
-        return UNSAFE.getInt(array + byteOffset);
-    }
-
-    static long getLongManaged(Object array, long byteOffset) {
+    static long getLong(Object array, long byteOffset) {
         return UNSAFE.getLong(array, byteOffset);
     }
 
-    static long getLongNative(long array) {
-        return UNSAFE.getLong(array);
-    }
-
-    static void putByteManaged(byte[] array, long byteOffset, byte value) {
+    static void putByte(byte[] array, long byteOffset, byte value) {
         UNSAFE.putByte(array, byteOffset, value);
     }
 
-    static void putByteNative(long array, long byteOffset, byte value) {
-        UNSAFE.putByte(array + byteOffset, value);
-    }
-
-    static void putCharManaged(byte[] array, long byteOffset, char value) {
+    static void putChar(byte[] array, long byteOffset, char value) {
         UNSAFE.putChar(array, byteOffset, value);
     }
 
-    static void putCharNative(long array, long byteOffset, char value) {
-        UNSAFE.putChar(array + byteOffset, value);
-    }
-
-    static void putIntManaged(byte[] array, long byteOffset, int value) {
+    static void putInt(byte[] array, long byteOffset, int value) {
         UNSAFE.putInt(array, byteOffset, value);
-    }
-
-    static void putIntNative(long array, long byteOffset, int value) {
-        UNSAFE.putInt(array + byteOffset, value);
     }
 
     static void copyFromNative(long arraySrc, int offsetSrc, byte[] arrayDst, long offsetDst, int byteLength) {

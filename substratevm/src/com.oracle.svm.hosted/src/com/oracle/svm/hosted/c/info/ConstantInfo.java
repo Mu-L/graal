@@ -31,10 +31,15 @@ public class ConstantInfo extends SizableInfo {
     private final ResolvedJavaMethod annotatedMethod;
     private final PropertyInfo<Object> valueInfo;
 
+    @SuppressWarnings("this-escape")
     public ConstantInfo(String name, ElementKind kind, ResolvedJavaMethod annotatedMethod) {
         super(name, kind);
         this.annotatedMethod = annotatedMethod;
         this.valueInfo = adoptChild(new PropertyInfo<>("value"));
+    }
+
+    public Object getValue() {
+        return valueInfo.getProperty();
     }
 
     public PropertyInfo<Object> getValueInfo() {

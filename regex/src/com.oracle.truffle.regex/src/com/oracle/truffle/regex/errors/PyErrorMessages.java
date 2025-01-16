@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,10 +41,14 @@
 package com.oracle.truffle.regex.errors;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.regex.tregex.parser.flavors.PythonREMode;
+
+import java.util.regex.Pattern;
 
 public interface PyErrorMessages {
 
     String BAD_ESCAPE_END_OF_PATTERN = "bad escape (end of pattern)";
+    String BAD_GROUP_NUMBER = "bad group number";
     String CANNOT_REFER_TO_AN_OPEN_GROUP = "cannot refer to an open group";
     String CANNOT_REFER_TO_GROUP_DEFINED_IN_THE_SAME_LOOKBEHIND_SUBPATTERN = "cannot refer to group defined in the same lookbehind subpattern";
     String CONDITIONAL_BACKREF_WITH_MORE_THAN_TWO_BRANCHES = "conditional backref with more than two branches";
@@ -55,6 +59,7 @@ public interface PyErrorMessages {
     String INLINE_FLAGS_CANNOT_USE_U_FLAG_WITH_A_BYTES_PATTERN = "bad inline flags: cannot use 'u' flag with a bytes pattern";
     String INLINE_FLAGS_FLAGS_A_U_AND_L_ARE_INCOMPATIBLE = "bad inline flags: flags 'a', 'u' and 'L' are incompatible";
     String INLINE_FLAGS_FLAG_TURNED_ON_AND_OFF = "bad inline flags: flag turned on and off";
+    String LOOK_BEHIND_REQUIRES_FIXED_WIDTH_PATTERN = "look-behind requires fixed-width pattern";
     String MIN_REPEAT_GREATER_THAN_MAX_REPEAT = "min repeat greater than max repeat";
     String MISSING_COLON = "missing :";
     String MISSING_DASH_COLON_PAREN = "missing -, : or )";
@@ -71,6 +76,7 @@ public interface PyErrorMessages {
     String UNTERMINATED_NAME = "missing ), unterminated name";
     String UNTERMINATED_NAME_ANGLE_BRACKET = "missing >, unterminated name";
     String UNTERMINATED_SUBPATTERN = "missing ), unterminated subpattern";
+    String GLOBAL_FLAGS_NOT_AT_START = "global flags not at the start of the expression";
 
     @TruffleBoundary
     static String badCharacterInGroupName(String name) {
@@ -88,13 +94,8 @@ public interface PyErrorMessages {
     }
 
     @TruffleBoundary
-    static String incompleteEscapeU(char chr, String code) {
-        return "incomplete escape \\" + chr + code;
-    }
-
-    @TruffleBoundary
-    static String incompleteEscapeX(String code) {
-        return "incomplete escape \\x" + code;
+    static String incompleteEscape(String code) {
+        return "incomplete escape " + code;
     }
 
     @TruffleBoundary
@@ -104,12 +105,12 @@ public interface PyErrorMessages {
 
     @TruffleBoundary
     static String invalidOctalEscape(String code) {
-        return "octal escape value \\" + code + " outside of range 0-0o377";
+        return "octal escape value " + code + " outside of range 0-0o377";
     }
 
     @TruffleBoundary
-    static String invalidUnicodeEscape(char chr, String code) {
-        return "bad escape \\" + chr + code;
+    static String invalidUnicodeEscape(String code) {
+        return "bad escape " + code;
     }
 
     @TruffleBoundary
@@ -147,8 +148,29 @@ public interface PyErrorMessages {
         return "unknown extension ?" + new String(Character.toChars(chr));
     }
 
+    Pattern NON_ASCII_CHARACTERS = Pattern.compile("\\P{ASCII}");
+    Pattern NON_PRINTABLE_CHARACTERS = Pattern.compile("\\P{Print}", Pattern.UNICODE_CHARACTER_CLASS);
+
     @TruffleBoundary
-    static String unknownGroupName(String name) {
-        return "unknown group name '" + name + "'";
+    private static String repr(String str, PythonREMode mode) {
+        Pattern charsToReplace = switch (mode) {
+            case Bytes -> NON_ASCII_CHARACTERS;
+            case Str -> NON_PRINTABLE_CHARACTERS;
+        };
+        return charsToReplace.matcher(str).replaceAll(res -> {
+            int cp = res.group().codePointAt(0);
+            if (cp <= 0xff) {
+                return String.format("\\\\x%02x", cp);
+            } else if (cp <= 0xffff) {
+                return String.format("\\\\u%04x", cp);
+            } else {
+                return String.format("\\\\U%08x", cp);
+            }
+        });
+    }
+
+    @TruffleBoundary
+    static String unknownGroupName(String name, PythonREMode mode) {
+        return "unknown group name '" + repr(name, mode) + "'";
     }
 }

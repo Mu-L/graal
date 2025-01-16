@@ -36,8 +36,9 @@ import org.graalvm.collections.MapCursor;
 
 import com.oracle.svm.agent.tracing.core.Tracer;
 import com.oracle.svm.agent.tracing.core.TracingResultWriter;
-import com.oracle.svm.core.util.json.JsonWriter;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.util.json.JsonWriter;
 
 public class TraceFileWriter extends Tracer implements TracingResultWriter {
     private final Object lock = new Object();
@@ -45,6 +46,7 @@ public class TraceFileWriter extends Tracer implements TracingResultWriter {
     private boolean open = true;
     private int written = 0;
 
+    @SuppressWarnings("this-escape")
     public TraceFileWriter(Path path) throws IOException {
         writer = Files.newBufferedWriter(path);
         JsonWriter json = new JsonWriter(writer);
@@ -98,13 +100,13 @@ public class TraceFileWriter extends Tracer implements TracingResultWriter {
     }
 
     private static void printValue(JsonWriter json, Object value) throws IOException {
-        String s = null;
+        Object s = null;
         if (value instanceof byte[]) {
             s = Base64.getEncoder().encodeToString((byte[]) value);
         } else if (value != null) {
-            s = value.toString();
+            s = value;
         }
-        json.quote(s);
+        json.printValue(s);
     }
 
     private void traceEntry(String s) throws IOException {

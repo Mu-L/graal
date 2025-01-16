@@ -1,69 +1,4 @@
 {
-  # composable: make an object composable
-  #
-  # When composing objects with `+`, the RHS overrides the LHS when fields collide,
-  # unless the RHS defines fields with `+:`. This is especially an issue when
-  # importing nested objects from JSON, where all fields are implicitly defined
-  # with `:`. To solve this, `composable` essentially turns `:` fields into `+:`.
-  #
-  # See the following example:
-  #
-  # input.jsonnet
-  # <code>
-  # {
-  #   composable:: ...,
-  #   obj1:: {
-  #     key1: {
-  #       foo: "foo",
-  #     },
-  #     key2: "key2",
-  #   },
-  #   obj2:: {
-  #     key1: {
-  #       baz : "baz",
-  #     },
-  #     key3: "key3",
-  #   },
-  #   res1: self.obj1 + self.obj2,
-  #   res2: self.composable(self.obj1) + self.composable(self.obj2),
-  # }
-  # </code>
-  #
-  # Output of jsonnet input.jsonnet
-  # <code>
-  # {
-  #    "res1": {
-  #       "key1": {
-  #          "baz": "baz"
-  #       },
-  #       "key2": "key2",
-  #       "key3": "key3"
-  #    },
-  #    "res2": {
-  #       "key1": {
-  #          "baz": "baz",
-  #          "foo": "foo"
-  #       },
-  #       "key2": "key2",
-  #       "key3": "key3"
-  #    }
-  # }
-  # </code>
-  # Note the missing `res1.key1.foo`!
-  #
-  local _composable(o) =
-    std.foldl(function(obj, key)
-      obj +
-       if std.type(o[key]) == "object" then
-         { [key] +: _composable(o[key]) }
-       else
-         { [key] : o[key] },
-      std.objectFields(o),
-      {}
-    ),
-  # exported name
-  composable(o) :: _composable(o),
-
   # prefixes the given number with 'jdk'
   prefixed_jdk(jdk_version)::
     if jdk_version == null || std.length(std.toString(jdk_version)) == 0 then
@@ -90,6 +25,14 @@
     }
   else
     build,
+
+  # Adds a 'defined_in' key to all jobs in the list.
+  # Due to the nature of std.thisFile, the file name has to be explicitly passed.
+  # Usage: add_defined_in(builds, std.thisFile)
+  add_defined_in(builds, file):: [{ defined_in: file } + b for b in builds],
+
+  # Returns true if `str` contains `needle` as a substring.
+  contains(str, needle):: std.findSubstr(needle, str) != [],
 
   # std.get is not available in all versions
   std_get(o, f, default=null, inc_hidden=true)::

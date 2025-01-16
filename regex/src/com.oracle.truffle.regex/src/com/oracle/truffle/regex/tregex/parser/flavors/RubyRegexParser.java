@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,17 +40,23 @@
  */
 package com.oracle.truffle.regex.tregex.parser.flavors;
 
+import static com.oracle.truffle.regex.tregex.parser.RegexLexer.isAscii;
+import static com.oracle.truffle.regex.tregex.parser.flavors.RubyFlavor.UNICODE;
+
 import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.BiConsumer;
-import java.util.function.Predicate;
+import java.util.function.IntPredicate;
+
+import com.oracle.truffle.regex.RegexSyntaxException.ErrorCode;
+import org.graalvm.collections.Pair;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.regex.AbstractRegexObject;
@@ -61,19 +67,19 @@ import com.oracle.truffle.regex.RegexSyntaxException;
 import com.oracle.truffle.regex.UnsupportedRegexException;
 import com.oracle.truffle.regex.charset.CodePointSet;
 import com.oracle.truffle.regex.charset.CodePointSetAccumulator;
-import com.oracle.truffle.regex.charset.Range;
-import com.oracle.truffle.regex.charset.UnicodeProperties;
 import com.oracle.truffle.regex.errors.RbErrorMessages;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
 import com.oracle.truffle.regex.tregex.buffer.IntArrayBuffer;
+import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
+import com.oracle.truffle.regex.tregex.parser.MultiCharacterCaseFolding;
 import com.oracle.truffle.regex.tregex.parser.RegexASTBuilder;
+import com.oracle.truffle.regex.tregex.parser.RegexLexer;
 import com.oracle.truffle.regex.tregex.parser.RegexParser;
 import com.oracle.truffle.regex.tregex.parser.RegexValidator;
 import com.oracle.truffle.regex.tregex.parser.Token;
 import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
 import com.oracle.truffle.regex.tregex.string.Encodings;
 import com.oracle.truffle.regex.util.TBitSet;
-import org.graalvm.collections.Pair;
 
 /**
  * Implements the parsing and validation of Ruby regular expressions.
@@ -93,9 +99,6 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     // This is the same as above but restricted to ASCII.
     private static final Map<String, CodePointSet> ASCII_POSIX_CHAR_CLASSES;
 
-    // The [\n\r] CodePointSet.
-    private static final CodePointSet NEWLINE_RETURN = CodePointSet.create('\n', '\n', '\r', '\r');
-
     // CodePointSet constants used for expanding the \R escape sequence.
     private static final CodePointSet UNICODE_LINE_BREAKS = CodePointSet.create(0x0a, 0x0c, 0x85, 0x85, 0x2028, 0x2029);
     private static final CodePointSet ASCII_LINE_BREAKS = CodePointSet.create(0x0a, 0x0c);
@@ -107,12 +110,12 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         UNICODE_CHAR_CLASSES = new HashMap<>(8);
         ASCII_CHAR_CLASSES = new HashMap<>(8);
 
-        CodePointSet alpha = UnicodeProperties.getProperty("Alphabetic");
-        CodePointSet digit = UnicodeProperties.getProperty("General_Category=Decimal_Number");
-        CodePointSet space = UnicodeProperties.getProperty("White_Space");
+        CodePointSet alpha = UNICODE.getProperty("Alphabetic");
+        CodePointSet digit = UNICODE.getProperty("General_Category=Decimal_Number");
+        CodePointSet space = UNICODE.getProperty("White_Space");
         CodePointSet xdigit = CodePointSet.create('0', '9', 'A', 'F', 'a', 'f');
-        CodePointSet word = alpha.union(UnicodeProperties.getProperty("General_Category=Mark")).union(digit).union(UnicodeProperties.getProperty("General_Category=Connector_Punctuation")).union(
-                        UnicodeProperties.getProperty("Join_Control"));
+        CodePointSet word = alpha.union(UNICODE.getProperty("General_Category=Mark")).union(digit).union(UNICODE.getProperty("General_Category=Connector_Punctuation")).union(
+                        UNICODE.getProperty("Join_Control"));
         UNICODE_CHAR_CLASSES.put('d', digit);
         UNICODE_CHAR_CLASSES.put('h', xdigit);
         UNICODE_CHAR_CLASSES.put('s', space);
@@ -131,25 +134,25 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         ASCII_POSIX_CHAR_CLASSES = new HashMap<>(14);
         CompilationBuffer buffer = new CompilationBuffer(Encodings.UTF_32);
 
-        CodePointSet blank = UnicodeProperties.getProperty("General_Category=Space_Separator").union(CodePointSet.create('\t', '\t'));
-        CodePointSet cntrl = UnicodeProperties.getProperty("General_Category=Control");
-        CodePointSet graph = space.union(UnicodeProperties.getProperty("General_Category=Control")).union(UnicodeProperties.getProperty("General_Category=Surrogate")).union(
-                        UnicodeProperties.getProperty("General_Category=Unassigned")).createInverse(Encodings.UTF_32);
+        CodePointSet blank = UNICODE.getProperty("General_Category=Space_Separator").union(CodePointSet.create('\t', '\t'));
+        CodePointSet cntrl = UNICODE.getProperty("General_Category=Control");
+        CodePointSet graph = space.union(UNICODE.getProperty("General_Category=Control")).union(UNICODE.getProperty("General_Category=Surrogate")).union(
+                        UNICODE.getProperty("General_Category=Unassigned")).createInverse(Encodings.UTF_32);
         UNICODE_POSIX_CHAR_CLASSES.put("alpha", alpha);
         UNICODE_POSIX_CHAR_CLASSES.put("alnum", alpha.union(digit));
         UNICODE_POSIX_CHAR_CLASSES.put("blank", blank);
         UNICODE_POSIX_CHAR_CLASSES.put("cntrl", cntrl);
         UNICODE_POSIX_CHAR_CLASSES.put("digit", digit);
         UNICODE_POSIX_CHAR_CLASSES.put("graph", graph);
-        UNICODE_POSIX_CHAR_CLASSES.put("lower", UnicodeProperties.getProperty("Lowercase"));
+        UNICODE_POSIX_CHAR_CLASSES.put("lower", UNICODE.getProperty("Lowercase"));
         UNICODE_POSIX_CHAR_CLASSES.put("print", graph.union(blank).subtract(cntrl, buffer));
-        UNICODE_POSIX_CHAR_CLASSES.put("punct", UnicodeProperties.getProperty("General_Category=Punctuation").union(UnicodeProperties.getProperty("General_Category=Symbol").subtract(alpha, buffer)));
+        UNICODE_POSIX_CHAR_CLASSES.put("punct", UNICODE.getProperty("General_Category=Punctuation").union(UNICODE.getProperty("General_Category=Symbol").subtract(alpha, buffer)));
         UNICODE_POSIX_CHAR_CLASSES.put("space", space);
-        UNICODE_POSIX_CHAR_CLASSES.put("upper", UnicodeProperties.getProperty("Uppercase"));
+        UNICODE_POSIX_CHAR_CLASSES.put("upper", UNICODE.getProperty("Uppercase"));
         UNICODE_POSIX_CHAR_CLASSES.put("xdigit", xdigit);
 
         UNICODE_POSIX_CHAR_CLASSES.put("word", word);
-        UNICODE_POSIX_CHAR_CLASSES.put("ascii", UnicodeProperties.getProperty("ASCII"));
+        UNICODE_POSIX_CHAR_CLASSES.put("ascii", UNICODE.getProperty("ASCII"));
 
         for (Map.Entry<String, CodePointSet> entry : UNICODE_POSIX_CHAR_CLASSES.entrySet()) {
             ASCII_POSIX_CHAR_CLASSES.put(entry.getKey(), asciiRange.createIntersectionSingleRange(entry.getValue()));
@@ -322,9 +325,9 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      */
     private CodePointSetAccumulator curCharClass = new CodePointSetAccumulator();
     /**
-     * The characters which are allowed to be full case-foldable (i.e. they are allowed to cross the
-     * ASCII boundary) in this character class. This set is constructed as the set of all characters
-     * that are included in the character class by being mentioned either:
+     * The characters which are allowed to be fully case-foldable (i.e. they are allowed to cross
+     * the ASCII boundary) in this character class. This set is constructed as the set of all
+     * characters that are included in the character class by being mentioned either:
      * <ul>
      * <li>literally, as in [a]</li>
      * <li>as part of a range, e.g. [a-c]</li>
@@ -332,8 +335,21 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      * <li>through a Unicode property other than \p{Ascii}</li>
      * <li>through a character type other than \w or \W</li>
      * </ul>
-     * This includes character mentioned inside negations, intersections and other nested character
-     * classes.
+     * This differs from the Onigmo/MRI/Joni implementation in order to better nested negation and
+     * intersection of character classes. See the original issue and fix:
+     * <ul>
+     * <li><a href=
+     * "https://bugs.ruby-lang.org/issues/4044#note-24">https://bugs.ruby-lang.org/issues/4044#note-24</a></li>
+     * <li><a href=
+     * "https://github.com/k-takata/Onigmo/commit/4312db54b3424cf832e2a17b356fe87f0d9b792c">https://github.com/k-takata/Onigmo/commit/4312db54b3424cf832e2a17b356fe87f0d9b792c</a></li>
+     * <li><a href=
+     * "https://github.com/k-takata/Onigmo/issues/4#issuecomment-51669968">https://github.com/k-takata/Onigmo/issues/4#issuecomment-51669968</a></li>
+     * </ul>
+     * and the description of the remaining problems which necessitate our deviation from MRI:
+     * <ul>
+     * <li><a href=
+     * "https://bugs.ruby-lang.org/issues/18009">https://bugs.ruby-lang.org/issues/18009</a></li>
+     * </ul>
      */
     private CodePointSetAccumulator fullyFoldableCharacters = new CodePointSetAccumulator();
     /**
@@ -378,7 +394,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     }
 
     public static RegexParser createParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) throws RegexSyntaxException {
-        return new RubyRegexParser(source, new RegexASTBuilder(language, source, makeTRegexFlags(false), compilationBuffer));
+        return new RubyRegexParser(source, new RegexASTBuilder(language, source, makeTRegexFlags(false), false, compilationBuffer));
     }
 
     @Override
@@ -439,7 +455,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         return c;
     }
 
-    private String getMany(Predicate<Integer> pred) {
+    private String getMany(IntPredicate pred) {
         StringBuilder out = new StringBuilder();
         while (!atEnd() && pred.test(curChar())) {
             out.appendCodePoint(consumeChar());
@@ -447,7 +463,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         return out.toString();
     }
 
-    private String getUpTo(int count, Predicate<Integer> pred) {
+    private String getUpTo(int count, IntPredicate pred) {
         StringBuilder out = new StringBuilder();
         int found = 0;
         while (found < count && !atEnd() && pred.test(curChar())) {
@@ -459,7 +475,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
 
     private void advance() {
         if (atEnd()) {
-            throw syntaxErrorAtEnd(RbErrorMessages.UNEXPECTED_END_OF_PATTERN);
+            throw syntaxErrorAtEnd(RbErrorMessages.UNEXPECTED_END_OF_PATTERN, ErrorCode.UnfinishedSequence);
         }
         advance(1);
     }
@@ -481,10 +497,9 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
-    private void mustMatch(String next) {
-        assert "}".equals(next) || ")".equals(next);
+    private void mustMatch(String next, String errorMsg, ErrorCode errorCode) {
         if (!match(next)) {
-            throw syntaxErrorHere("}".equals(next) ? RbErrorMessages.EXPECTED_BRACE : RbErrorMessages.EXPECTED_PAREN);
+            throw syntaxErrorHere(errorMsg, errorCode);
         }
     }
 
@@ -520,6 +535,12 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
+    private void pushConditionalBackReferenceGroup(int referencedGroupNumber, boolean namedReference) {
+        if (!silent) {
+            astBuilder.pushConditionalBackReferenceGroup(referencedGroupNumber, namedReference);
+        }
+    }
+
     private void pushLookAheadAssertion(boolean negate) {
         if (!silent) {
             astBuilder.pushLookAheadAssertion(negate);
@@ -546,7 +567,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
 
     private void addCharClass(CodePointSet charSet) {
         if (!silent) {
-            astBuilder.addCharClass(charSet);
+            astBuilder.addCharClass(charSet, false);
         }
     }
 
@@ -556,9 +577,9 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
-    private void addBackReference(int groupNumber) {
+    private void addBackReference(int groupNumber, boolean namedReference) {
         if (!silent) {
-            astBuilder.addBackReference(groupNumber);
+            astBuilder.addBackReference(groupNumber, namedReference, getLocalFlags().isIgnoreCase());
         }
     }
 
@@ -592,42 +613,18 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
-    private void wrapCurTermInAtomicGroup() {
-        if (!silent) {
-            astBuilder.wrapCurTermInAtomicGroup();
-        }
-    }
-
     // Error reporting
 
-    private RegexSyntaxException syntaxErrorAtEnd(String message) {
-        return RegexSyntaxException.createPattern(inSource, message, inPattern.length() - 1);
+    private RegexSyntaxException syntaxErrorAtEnd(String message, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(inSource, message, inPattern.length() - 1, errorCode);
     }
 
-    private RegexSyntaxException syntaxErrorHere(String message) {
-        return RegexSyntaxException.createPattern(inSource, message, position);
+    private RegexSyntaxException syntaxErrorHere(String message, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(inSource, message, position, errorCode);
     }
 
-    private RegexSyntaxException syntaxErrorAt(String message, int pos) {
-        return RegexSyntaxException.createPattern(inSource, message, pos);
-    }
-
-    // Character predicates
-
-    private static boolean isOctDigit(int c) {
-        return c >= '0' && c <= '7';
-    }
-
-    private static boolean isDecDigit(int c) {
-        return c >= '0' && c <= '9';
-    }
-
-    private static boolean isHexDigit(int c) {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-    }
-
-    static boolean isAscii(int c) {
-        return c < 128;
+    private RegexSyntaxException syntaxErrorAt(String message, int pos, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(inSource, message, pos, errorCode);
     }
 
     // First pass - identifying capture groups
@@ -682,7 +679,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                                 }
                                 String groupName = parseGroupName('>');
                                 if (namedCaptureGroups == null) {
-                                    namedCaptureGroups = new HashMap<>();
+                                    namedCaptureGroups = new LinkedHashMap<>();
                                     numberOfCaptureGroups = 0;
                                 }
                                 numberOfCaptureGroups++;
@@ -693,7 +690,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                                     parseGroupReference('>', true, true, true, false);
                                 } else if (match("'")) {
                                     parseGroupReference('\'', true, true, true, false);
-                                } else if (isDecDigit(curChar())) {
+                                } else if (RegexLexer.isDecimalDigit(curChar())) {
                                     parseGroupReference(')', true, false, true, false);
                                 }
                             }
@@ -742,7 +739,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
 
         if (!atEnd()) {
             assert curChar() == ')';
-            throw syntaxErrorHere(RbErrorMessages.UNBALANCED_PARENTHESIS);
+            throw syntaxErrorHere(RbErrorMessages.UNBALANCED_PARENTHESIS, ErrorCode.UnmatchedParenthesis);
         }
     }
 
@@ -778,6 +775,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     }
 
     private void disjunction() {
+        canHaveQuantifier = false;
         disjunction(false);
     }
 
@@ -956,11 +954,13 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
 
         if (!silent) {
             if (isQuantifierNext) {
-                codepointsBuffer.setLength(codepointsBuffer.length() - 1);
+                codepointsBuffer.removeLast();
             }
 
             if (getLocalFlags().isIgnoreCase()) {
-                RubyCaseFolding.caseFoldUnfoldString(codepointsBuffer.toArray(), inSource.getEncoding().getFullSet(), astBuilder);
+                int[] codepoints = codepointsBuffer.toArray();
+                CodePointSet encodingRange = inSource.getEncoding().getFullSet();
+                MultiCharacterCaseFolding.caseFoldUnfoldString(CaseFoldData.CaseFoldAlgorithm.Ruby, codepoints, encodingRange, false, true, astBuilder, null, astBuilder.getCompilationBuffer());
             } else {
                 for (int i = 0; i < codepointsBuffer.length(); i++) {
                     addChar(codepointsBuffer.get(i));
@@ -985,7 +985,9 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     private void buildChar(int codepoint) {
         if (!silent) {
             if (getLocalFlags().isIgnoreCase()) {
-                RubyCaseFolding.caseFoldUnfoldString(new int[]{codepoint}, inSource.getEncoding().getFullSet(), astBuilder);
+                CodePointSet encodingRange = inSource.getEncoding().getFullSet();
+                MultiCharacterCaseFolding.caseFoldUnfoldString(CaseFoldData.CaseFoldAlgorithm.Ruby, new int[]{codepoint}, encodingRange, false, true, astBuilder, null,
+                                astBuilder.getCompilationBuffer());
             } else {
                 addChar(codepoint);
             }
@@ -1030,10 +1032,10 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                         return false;
                     } else {
                         // lower bound
-                        getMany(RubyRegexParser::isDecDigit);
+                        getMany(RegexLexer::isDecimalDigit);
                         // upper bound
                         if (match(",")) {
-                            getMany(RubyRegexParser::isDecDigit);
+                            getMany(RegexLexer::isDecimalDigit);
                         }
                         if (!match("}")) {
                             return false;
@@ -1147,17 +1149,19 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                 addCaret();
                 return true;
             case 'Z':
-                // (?:$|(?=[\r\n]$))
+                notAllowedInLookbehind(restorePosition);
+                // (?:$|(?=[\n]$))
                 pushGroup(); // (?:
                 addDollar(); // $
                 nextSequence(); // |
                 pushLookAheadAssertion(false); // (?=
-                addCharClass(NEWLINE_RETURN); // [\r\n]
+                addCharClass(CodePointSet.create('\n')); // [\n]
                 addDollar(); // $
                 popGroup(); // )
                 popGroup(); // )
                 return true;
             case 'z':
+                notAllowedInLookbehind(restorePosition);
                 addDollar();
                 return true;
             case 'G':
@@ -1189,57 +1193,16 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     // character is dependent on whether the Ruby regular expression is set to use the ASCII range
     // only.
     private void buildWordBoundaryAssertion(CodePointSet wordChars, CodePointSet nonWordChars) {
-        // (?:(?:^|(?<=\W))(?=\w)|(?<=\w)(?:(?=\W)|$))
-        pushGroup(); // (?:
-        pushGroup(); // (?:
-        addCaret(); // ^
-        nextSequence(); // |
-        pushLookBehindAssertion(false); // (?<=
-        addCharClass(nonWordChars); // \W
-        popGroup(); // )
-        popGroup(); // )
-        pushLookAheadAssertion(false); // (?=
-        addCharClass(wordChars); // \w
-        popGroup(); // )
-        nextSequence(); // |
-        pushLookBehindAssertion(false); // (?<=
-        addCharClass(wordChars); // \w
-        popGroup(); // )
-        pushGroup(); // (?:
-        pushLookAheadAssertion(false); // (?=
-        addCharClass(nonWordChars); // \W
-        popGroup(); // )
-        nextSequence(); // |
-        addDollar(); // $
-        popGroup(); // )
-        popGroup(); // )
+        if (!silent) {
+            astBuilder.addWordBoundaryAssertion(wordChars, nonWordChars);
+        }
     }
 
     private void buildWordNonBoundaryAssertion(CodePointSet wordChars, CodePointSet nonWordChars) {
         // (?:(?:^|(?<=\W))(?:(?=\W)|$)|(?<=\w)(?=\w))
-        pushGroup(); // (?:
-        pushGroup(); // (?:
-        addCaret(); // ^
-        nextSequence(); // |
-        pushLookBehindAssertion(false); // (?<=
-        addCharClass(nonWordChars); // \W
-        popGroup(); // )
-        popGroup(); // )
-        pushGroup(); // (?:
-        pushLookAheadAssertion(false); // (?=
-        addCharClass(nonWordChars); // \W
-        popGroup(); // )
-        nextSequence(); // |
-        addDollar(); // $
-        popGroup(); // )
-        nextSequence(); // |
-        pushLookBehindAssertion(false); // (?<=
-        addCharClass(wordChars); // \w
-        popGroup(); // )
-        pushLookAheadAssertion(false); // (?=
-        addCharClass(wordChars); // \w
-        popGroup(); // )
-        popGroup(); // )
+        if (!silent) {
+            astBuilder.addWordNonBoundaryAssertion(wordChars, nonWordChars);
+        }
     }
 
     /**
@@ -1308,12 +1271,12 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                     CodePointSet property;
                     if (UNICODE_POSIX_CHAR_CLASSES.containsKey(propertySpec.toLowerCase())) {
                         property = getUnicodePosixCharClass(propertySpec.toLowerCase());
-                    } else if (UnicodeProperties.isSupportedGeneralCategory(propertySpec, true)) {
-                        property = trimToEncoding(UnicodeProperties.getProperty("General_Category=" + propertySpec, true));
-                    } else if (UnicodeProperties.isSupportedScript(propertySpec, true)) {
-                        property = trimToEncoding(UnicodeProperties.getProperty("Script=" + propertySpec, true));
-                    } else if (UnicodeProperties.isSupportedProperty(propertySpec, true)) {
-                        property = trimToEncoding(UnicodeProperties.getProperty(propertySpec, true));
+                    } else if (UNICODE.isSupportedGeneralCategory(propertySpec)) {
+                        property = trimToEncoding(UNICODE.getProperty("General_Category=" + propertySpec));
+                    } else if (UNICODE.isSupportedScript(propertySpec)) {
+                        property = trimToEncoding(UNICODE.getProperty("Script=" + propertySpec));
+                    } else if (UNICODE.isSupportedProperty(propertySpec)) {
+                        property = trimToEncoding(UNICODE.getProperty(propertySpec));
                     } else {
                         bailOut("unsupported Unicode property " + propertySpec);
                         // So that the property variable is always written to.
@@ -1349,30 +1312,34 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         int restorePosition = position;
         if (curChar() >= '1' && curChar() <= '9') {
             // Joni only considers backreferences numbered <= 1000.
-            String number = getUpTo(4, RubyRegexParser::isDecDigit);
+            String number = getUpTo(4, RegexLexer::isDecimalDigit);
             int groupNumber = Integer.parseInt(number);
             if (groupNumber > 1000) {
                 position = restorePosition;
                 return false;
             }
             if (containsNamedCaptureGroups()) {
-                throw syntaxErrorAt(RbErrorMessages.NUMBERED_BACKREF_CALL_IS_NOT_ALLOWED, restorePosition);
+                throw syntaxErrorAt(RbErrorMessages.NUMBERED_BACKREF_CALL_IS_NOT_ALLOWED, restorePosition, ErrorCode.InvalidBackReference);
             }
             if (groupNumber > numberOfCaptureGroups()) {
-                throw syntaxErrorAt(RbErrorMessages.invalidGroupReference(number), restorePosition);
+                throw syntaxErrorAt(RbErrorMessages.invalidGroupReference(number), restorePosition, ErrorCode.InvalidBackReference);
             }
-            if (lookbehindDepth > 0) {
-                throw syntaxErrorAt(RbErrorMessages.INVALID_PATTERN_IN_LOOK_BEHIND, restorePosition);
-            }
+            notAllowedInLookbehind(restorePosition);
             if (groupNumber > groupIndex && groupNumber >= 10) {
                 // forward references >= 10 are interpreted as octal escapes instead
                 position = restorePosition;
                 return false;
             }
-            buildBackreference(groupNumber);
+            buildBackreference(groupNumber, false);
             return true;
         } else {
             return false;
+        }
+    }
+
+    private void notAllowedInLookbehind(int errorPosition) {
+        if (lookbehindDepth > 0) {
+            throw syntaxErrorAt(RbErrorMessages.INVALID_PATTERN_IN_LOOK_BEHIND, errorPosition, ErrorCode.InvalidLookbehind);
         }
     }
 
@@ -1387,7 +1354,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             List<Integer> groupNumbers = parseGroupReference('>', true, true, true, true);
             int nameEnd = position - 1;
             // named references cannot point forward, so filter out reference > groupIndex
-            buildNamedBackreference(groupNumbers.stream().filter(groupNumber -> groupNumber <= groupIndex).toArray(n -> new Integer[n]), inPattern.substring(nameStart, nameEnd));
+            buildNamedBackreference(groupNumbers.stream().filter(groupNumber -> groupNumber <= groupIndex).toArray(Integer[]::new), inPattern.substring(nameStart, nameEnd));
             return true;
         } else {
             return false;
@@ -1398,34 +1365,34 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         String groupName;
         List<Integer> groupNumbers = null;
         int beginPos = position;
-        if (curChar() == '-' || isDecDigit(curChar())) {
+        if (curChar() == '-' || RegexLexer.isDecimalDigit(curChar())) {
             if (!allowNumeric) {
-                throw syntaxErrorHere(RbErrorMessages.INVALID_GROUP_NAME);
+                throw syntaxErrorHere(RbErrorMessages.INVALID_GROUP_NAME, ErrorCode.InvalidBackReference);
             }
             int sign = match("-") ? -1 : 1;
-            groupName = getMany(RubyRegexParser::isDecDigit);
+            groupName = getMany(RegexLexer::isDecimalDigit);
             int groupNumber;
             try {
                 groupNumber = sign * Integer.parseInt(groupName);
             } catch (NumberFormatException e) {
-                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos, ErrorCode.InvalidBackReference);
             }
             if (groupNumber < 0) {
                 groupNumber = numberOfCaptureGroups() + 1 + groupNumber;
             }
             if (containsNamedCaptureGroups()) {
-                throw syntaxErrorAt(RbErrorMessages.NUMBERED_BACKREF_CALL_IS_NOT_ALLOWED, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.NUMBERED_BACKREF_CALL_IS_NOT_ALLOWED, beginPos, ErrorCode.InvalidBackReference);
             }
             if (resolveReference) {
                 if (groupNumber < 0 || groupNumber > numberOfCaptureGroups()) {
-                    throw syntaxErrorAt(RbErrorMessages.invalidGroupReference(groupName), beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.invalidGroupReference(groupName), beginPos, ErrorCode.InvalidBackReference);
                 }
                 groupNumbers = new ArrayList<>(1);
                 groupNumbers.add(groupNumber);
             }
         } else {
             if (!allowNamed) {
-                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos, ErrorCode.InvalidBackReference);
             }
             groupName = getMany(c -> {
                 if (allowLevels) {
@@ -1435,57 +1402,53 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                 }
             });
             if (groupName.isEmpty()) {
-                throw syntaxErrorAt(RbErrorMessages.MISSING_GROUP_NAME, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.MISSING_GROUP_NAME, beginPos, ErrorCode.InvalidBackReference);
             }
             if (resolveReference) {
                 if (namedCaptureGroups == null || !namedCaptureGroups.containsKey(groupName)) {
-                    throw syntaxErrorAt(RbErrorMessages.unknownGroupName(groupName), beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.unknownGroupName(groupName), beginPos, ErrorCode.InvalidBackReference);
                 }
                 groupNumbers = namedCaptureGroups.get(groupName);
             }
         }
         if (allowLevels && (curChar() == '+' || curChar() == '-')) {
             advance(); // consume sign
-            String level = getMany(RubyRegexParser::isDecDigit);
+            String level = getMany(RegexLexer::isDecimalDigit);
             if (level.isEmpty()) {
-                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos, ErrorCode.InvalidBackReference);
             }
             bailOut("backreferences to other levels are not supported");
         }
         if (!match(Character.toString(terminator))) {
-            throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos);
+            throw syntaxErrorAt(RbErrorMessages.INVALID_GROUP_NAME, beginPos, ErrorCode.InvalidBackReference);
         }
-        if (lookbehindDepth > 0) {
-            throw syntaxErrorAt(RbErrorMessages.INVALID_PATTERN_IN_LOOK_BEHIND, beginPos);
-        }
+        notAllowedInLookbehind(beginPos);
         return groupNumbers;
     }
 
     private void buildNamedBackreference(Integer[] groupNumbers, String name) {
         if (groupNumbers.length == 0) {
-            throw syntaxErrorHere(RbErrorMessages.undefinedReference(name));
+            throw syntaxErrorHere(RbErrorMessages.undefinedReference(name), ErrorCode.InvalidBackReference);
         } else if (groupNumbers.length == 1) {
-            buildBackreference(groupNumbers[0]);
+            buildBackreference(groupNumbers[0], true);
         } else {
             pushGroup();
-            buildBackreference(groupNumbers[groupNumbers.length - 1]);
+            buildBackreference(groupNumbers[groupNumbers.length - 1], true);
             for (int i = groupNumbers.length - 2; i >= 0; i--) {
                 nextSequence();
-                buildBackreference(groupNumbers[i]);
+                buildBackreference(groupNumbers[i], true);
             }
             popGroup();
         }
     }
 
-    private void buildBackreference(int groupNumber) {
+    private void buildBackreference(int groupNumber, boolean namedReference) {
         if (isCaptureGroupOpen(groupNumber)) {
             // Ruby syntax allows references to an open capture group. However, such a reference can
             // never match anything as the capture group is reset on entry.
             addDeadNode();
-        } else if (getLocalFlags().isIgnoreCase()) {
-            bailOut("case insensitive backreferences not supported");
         } else {
-            addBackReference(groupNumber);
+            addBackReference(groupNumber, namedReference);
         }
     }
 
@@ -1573,7 +1536,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             List<Integer> targetGroups = parseGroupReference('>', true, true, false, true);
             int nameEnd = position - 1;
             if (targetGroups.size() > 1) {
-                throw syntaxErrorHere(RbErrorMessages.multiplexCall(inPattern.substring(nameStart, nameEnd)));
+                throw syntaxErrorHere(RbErrorMessages.multiplexCall(inPattern.substring(nameStart, nameEnd)), ErrorCode.InvalidSubexpressionCall);
             }
             addSubexpressionCall(targetGroups.get(0));
             hasSubexpressionCalls = true;
@@ -1595,17 +1558,17 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         if (match("u{")) {
             getMany(c -> ASCII_POSIX_CHAR_CLASSES.get("space").contains(c));
             while (!match("}")) {
-                String code = getMany(RubyRegexParser::isHexDigit);
+                String code = getMany(RegexLexer::isHexDigit);
                 try {
                     int codePoint = Integer.parseInt(code, 16);
                     if (codePoint > 0x10FFFF) {
-                        throw syntaxErrorAt(RbErrorMessages.invalidUnicodeEscape(code), beginPos);
+                        throw syntaxErrorAt(RbErrorMessages.invalidUnicodeEscape(code), beginPos, ErrorCode.InvalidEscape);
                     }
                     buildChar(codePoint);
                 } catch (NumberFormatException e) {
-                    throw syntaxErrorAt(RbErrorMessages.badEscape(code), beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.badEscape(code), beginPos, ErrorCode.InvalidEscape);
                 }
-                getMany(c -> WHITESPACE.get(c));
+                getMany(WHITESPACE::get);
             }
             return true;
         } else {
@@ -1653,10 +1616,10 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             case 'c':
             case 'C': {
                 if (atEnd()) {
-                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_CONTROL, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_CONTROL, beginPos, ErrorCode.InvalidEscape);
                 }
                 if (ch == 'C' && !match("-")) {
-                    throw syntaxErrorAt(RbErrorMessages.INVALID_CONTROL_CODE_SYNTAX, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.INVALID_CONTROL_CODE_SYNTAX, beginPos, ErrorCode.InvalidEscape);
                 }
                 int c = consumeChar();
                 if (c == '?') {
@@ -1669,13 +1632,13 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             }
             case 'M': {
                 if (atEnd()) {
-                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_META, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_META, beginPos, ErrorCode.InvalidEscape);
                 }
                 if (!match("-")) {
-                    throw syntaxErrorAt(RbErrorMessages.INVALID_META_CODE_SYNTAX, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.INVALID_META_CODE_SYNTAX, beginPos, ErrorCode.InvalidEscape);
                 }
                 if (atEnd()) {
-                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_META, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.END_PATTERN_AT_META, beginPos, ErrorCode.InvalidEscape);
                 }
                 int c = consumeChar();
                 if (c == '\\') {
@@ -1701,7 +1664,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         switch (curChar()) {
             case 'x': {
                 advance();
-                String code = getUpTo(2, RubyRegexParser::isHexDigit);
+                String code = getUpTo(2, RegexLexer::isHexDigit);
                 int byteValue = Integer.parseInt(code, 16);
                 if (byteValue > 0x7F) {
                     // This is a non-ASCII byte escape. The escaped character might be part of a
@@ -1720,22 +1683,22 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                 advance();
                 String code;
                 if (match("{")) {
-                    code = getMany(RubyRegexParser::isHexDigit);
-                    mustMatch("}");
+                    code = getMany(RegexLexer::isHexDigit);
+                    mustMatch("}", RbErrorMessages.EXPECTED_BRACE, ErrorCode.InvalidEscape);
                 } else {
-                    code = getUpTo(4, RubyRegexParser::isHexDigit);
+                    code = getUpTo(4, RegexLexer::isHexDigit);
                     if (code.length() < 4) {
-                        throw syntaxErrorAt(RbErrorMessages.incompleteEscape(code), beginPos);
+                        throw syntaxErrorAt(RbErrorMessages.incompleteEscape(code), beginPos, ErrorCode.InvalidEscape);
                     }
                 }
                 try {
                     int codePoint = Integer.parseInt(code, 16);
                     if (codePoint > 0x10FFFF) {
-                        throw syntaxErrorAt(RbErrorMessages.invalidUnicodeEscape(code), beginPos);
+                        throw syntaxErrorAt(RbErrorMessages.invalidUnicodeEscape(code), beginPos, ErrorCode.InvalidEscape);
                     }
                     return Optional.of(codePoint);
                 } catch (NumberFormatException e) {
-                    throw syntaxErrorAt(RbErrorMessages.badEscape(code), beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.badEscape(code), beginPos, ErrorCode.InvalidEscape);
                 }
             }
             case '0':
@@ -1746,10 +1709,10 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             case '5':
             case '6':
             case '7': {
-                String code = getUpTo(3, RubyRegexParser::isOctDigit);
+                String code = getUpTo(3, RegexLexer::isOctalDigit);
                 int codePoint = Integer.parseInt(code, 8);
                 if (codePoint > 0xFF) {
-                    throw syntaxErrorAt(RbErrorMessages.TOO_BIG_NUMBER, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.TOO_BIG_NUMBER, beginPos, ErrorCode.InvalidEscape);
                 }
                 return Optional.of(codePoint);
             }
@@ -1776,7 +1739,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     private void buildCharClass() {
         if (!silent) {
             if (getLocalFlags().isIgnoreCase()) {
-                List<Pair<Integer, int[]>> multiCodePointExpansions = caseClosureMultiCodePoint();
+                List<Pair<Integer, int[]>> multiCodePointExpansions = MultiCharacterCaseFolding.caseClosureMultiCodePoint(CaseFoldData.CaseFoldAlgorithm.Ruby, curCharClass);
                 if (multiCodePointExpansions.size() > 0) {
                     pushGroup();
                     addCharClass(curCharClass.toCodePointSet());
@@ -1784,8 +1747,13 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                         nextSequence();
                         int from = pair.getLeft();
                         int[] to = pair.getRight();
+                        // Only allow crossing the ASCII boundary for characters in
+                        // `fullyFoldableCharacters`. Since `from` is not ASCII (ASCII characters
+                        // don't have multi-codepoint expansions), `to` cannot be ASCII either
+                        // if `from` is not in `fullyFoldableCharacters`.
                         boolean dropAsciiOnStart = !fullyFoldableCharacters.get().contains(from);
-                        RubyCaseFolding.caseFoldUnfoldString(to, inSource.getEncoding().getFullSet(), dropAsciiOnStart, astBuilder);
+                        MultiCharacterCaseFolding.caseFoldUnfoldString(CaseFoldData.CaseFoldAlgorithm.Ruby, to, inSource.getEncoding().getFullSet(), dropAsciiOnStart, true, astBuilder, null,
+                                        astBuilder.getCompilationBuffer());
                     }
                     popGroup();
                 } else {
@@ -1806,7 +1774,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         int firstPosInside = position;
         classBody: while (true) {
             if (atEnd()) {
-                throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_CHARACTER_SET, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_CHARACTER_SET, beginPos, ErrorCode.InvalidCharacterClass);
             }
             int rangeStart = position;
             Optional<Integer> lowerBound;
@@ -1845,7 +1813,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             // a hyphen following a nested char class is never interpreted as a range operator
             if (!wasNestedCharClass && match("-")) {
                 if (atEnd()) {
-                    throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_CHARACTER_SET, beginPos);
+                    throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_CHARACTER_SET, beginPos, ErrorCode.InvalidCharacterClass);
                 }
                 Optional<Integer> upperBound;
                 ch = consumeChar();
@@ -1886,7 +1854,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                 // both the left operand and the range operator
                 if (!wasNestedCharClass) {
                     if (!lowerBound.isPresent() || !upperBound.isPresent() || upperBound.get() < lowerBound.get()) {
-                        throw syntaxErrorAt(RbErrorMessages.badCharacterRange(inPattern.substring(rangeStart, position)), rangeStart);
+                        throw syntaxErrorAt(RbErrorMessages.badCharacterRange(inPattern.substring(rangeStart, position)), rangeStart, ErrorCode.InvalidCharacterClass);
                     }
                     curCharClassAddRange(lowerBound.get(), upperBound.get());
                 }
@@ -1988,7 +1956,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
         if (match(":]")) {
             if (!UNICODE_POSIX_CHAR_CLASSES.containsKey(className)) {
-                throw syntaxErrorAt(RbErrorMessages.INVALID_POSIX_BRACKET_TYPE, restorePosition);
+                throw syntaxErrorAt(RbErrorMessages.INVALID_POSIX_BRACKET_TYPE, restorePosition, ErrorCode.InvalidCharacterClass);
             }
             CodePointSet charSet;
             if (getLocalFlags().isAscii()) {
@@ -2011,87 +1979,14 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
-    /**
-     * Calls the argument on any element of the character class which has a case-folding.
-     */
-    private void caseFoldCharClass(BiConsumer<Integer, int[]> caseFoldItem) {
-        if (curCharClass.get().size() < RubyCaseFoldingData.CASE_FOLD.size()) {
-            for (Range r : curCharClass) {
-                RubyCaseFoldingData.CASE_FOLD.subMap(r.lo, r.hi + 1).forEach((Integer from, int[] to) -> {
-                    caseFoldItem.accept(from, to);
-                });
-            }
-        } else {
-            RubyCaseFoldingData.CASE_FOLD.forEach((Integer from, int[] to) -> {
-                if (curCharClass.get().contains(from)) {
-                    caseFoldItem.accept(from, to);
-                }
-            });
-        }
-    }
-
     private boolean acceptableCaseFold(int from, int to) {
         // Characters which are not "fully case-foldable" are only treated as equivalent if the
         // relation doesn't cross the ASCII boundary.
         return fullyFoldableCharacters.get().contains(from) || isAscii(from) == isAscii(to);
     }
 
-    /**
-     * This method modifies {@code curCharClass} to contains its closure on case mapping.
-     */
     private void caseClosure() {
-        charClassTmp.clear();
-
-        caseFoldCharClass((from, to) -> {
-            if (to.length == 1) {
-                // Add the case-folded version to the character class...
-                if (acceptableCaseFold(from, to[0])) {
-                    charClassTmp.addCodePoint(to[0]);
-                }
-            }
-            // ... and also any characters which case-fold to the same.
-            for (int unfolding : RubyCaseUnfoldingTrie.findSingleCharUnfoldings(to)) {
-                if (unfolding != from && acceptableCaseFold(from, unfolding)) {
-                    charClassTmp.addCodePoint(unfolding);
-                }
-            }
-        });
-
-        // We also handle all the characters which might have no case-folding, i.e. they case-fold
-        // to themselves.
-        for (Range r : curCharClass) {
-            for (int codepoint = r.lo; codepoint <= r.hi; codepoint++) {
-                for (int unfolding : RubyCaseUnfoldingTrie.findSingleCharUnfoldings(codepoint)) {
-                    if (acceptableCaseFold(codepoint, unfolding)) {
-                        charClassTmp.addCodePoint(unfolding);
-                    }
-                }
-            }
-        }
-
-        // Only include characters that are admissible in the given encoding.
-        charClassTmp.intersectWith(inSource.getEncoding().getFullSet());
-
-        curCharClass.addSet(charClassTmp.get());
-    }
-
-    /**
-     * Finds any characters in {@link #curCharClass} that have multi-codepoint expansions.
-     * 
-     * @return a list of pairs, with the first element being the expanded codepoint and the second
-     *         element the expansion
-     */
-    private List<Pair<Integer, int[]>> caseClosureMultiCodePoint() {
-        List<Pair<Integer, int[]>> multiCodePointExpansions = new ArrayList<>();
-
-        caseFoldCharClass((from, to) -> {
-            if (to.length > 1) {
-                assert !isAscii(from);
-                multiCodePointExpansions.add(Pair.create(from, to));
-            }
-        });
-
-        return multiCodePointExpansions;
+        MultiCharacterCaseFolding.caseClosure(CaseFoldData.CaseFoldAlgorithm.Ruby, curCharClass, charClassTmp, this::acceptableCaseFold, inSource.getEncoding().getFullSet(), true);
     }
 
     /**
@@ -2120,12 +2015,9 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         Quantifier quantifier = parseQuantifier(ch);
         if (quantifier != null) {
             if (canHaveQuantifier) {
-                addQuantifier(Token.createQuantifier(quantifier.lower, quantifier.upper, quantifier.greedy));
-                if (quantifier.possessive) {
-                    wrapCurTermInAtomicGroup();
-                }
+                addQuantifier(Token.createQuantifier(quantifier.lower, quantifier.upper, quantifier.greedy, quantifier.possessive, ch != '{'));
             } else {
-                throw syntaxErrorAt(RbErrorMessages.NOTHING_TO_REPEAT, start);
+                throw syntaxErrorAt(RbErrorMessages.NOTHING_TO_REPEAT, start, ErrorCode.InvalidQuantifier);
             }
         } else {
             string(consumeChar());
@@ -2145,12 +2037,12 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                 Optional<BigInteger> lowerBound = Optional.empty();
                 Optional<BigInteger> upperBound = Optional.empty();
                 boolean canBeNonGreedy = true;
-                String lower = getMany(RubyRegexParser::isDecDigit);
+                String lower = getMany(RegexLexer::isDecimalDigit);
                 if (!lower.isEmpty()) {
                     lowerBound = Optional.of(new BigInteger(lower));
                 }
                 if (match(",")) {
-                    String upper = getMany(RubyRegexParser::isDecDigit);
+                    String upper = getMany(RegexLexer::isDecimalDigit);
                     if (!upper.isEmpty()) {
                         upperBound = Optional.of(new BigInteger(upper));
                     }
@@ -2163,14 +2055,14 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                     return null;
                 }
                 if (lowerBound.isPresent() && upperBound.isPresent() && lowerBound.get().compareTo(upperBound.get()) > 0) {
-                    throw syntaxErrorAt(RbErrorMessages.MIN_REPEAT_GREATER_THAN_MAX_REPEAT, start);
+                    throw syntaxErrorAt(RbErrorMessages.MIN_REPEAT_GREATER_THAN_MAX_REPEAT, start, ErrorCode.InvalidQuantifier);
                 }
                 boolean greedy = true;
                 if (canBeNonGreedy && match("?")) {
                     greedy = false;
                 }
-                return new Quantifier(lowerBound.orElse(BigInteger.ZERO).intValue(),
-                                upperBound.orElse(BigInteger.valueOf(Quantifier.INFINITY)).intValue(),
+                return new Quantifier(quantifierBoundsToIntValue(lowerBound.orElse(BigInteger.ZERO)),
+                                quantifierBoundsToIntValue(upperBound.orElse(BigInteger.valueOf(Quantifier.INFINITY))),
                                 greedy, false);
             }
         } else {
@@ -2203,6 +2095,13 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         }
     }
 
+    private static int quantifierBoundsToIntValue(BigInteger i) {
+        if (i.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+            return Quantifier.INFINITY;
+        }
+        return i.intValue();
+    }
+
     /**
      * Parses one of the many syntactic forms that start with a parenthesis, assuming that the
      * parenthesis was already parsed. These consist of the following:
@@ -2220,7 +2119,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      */
     private void parens() {
         if (atEnd()) {
-            throw syntaxErrorAtEnd(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorAtEnd(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
         if (match("?")) {
             final int ch1 = consumeChar();
@@ -2268,7 +2167,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                     break;
 
                 case '(':
-                    conditionalBackreference();
+                    conditionalBackReference();
                     break;
 
                 case '~':
@@ -2285,7 +2184,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
                     break;
 
                 default:
-                    throw syntaxErrorAt(RbErrorMessages.unknownExtension(ch1), position - 1);
+                    throw syntaxErrorAt(RbErrorMessages.unknownExtension(ch1), position - 1, ErrorCode.InvalidGroup);
             }
         } else {
             group(!containsNamedCaptureGroups());
@@ -2300,10 +2199,10 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
     private String parseGroupName(char terminator) {
         String groupName = getMany(c -> c != terminator);
         if (!match(Character.toString(terminator))) {
-            throw syntaxErrorHere(RbErrorMessages.unterminatedName(terminator));
+            throw syntaxErrorHere(RbErrorMessages.unterminatedName(terminator), ErrorCode.InvalidNamedGroup);
         }
         if (groupName.isEmpty()) {
-            throw syntaxErrorHere(RbErrorMessages.MISSING_GROUP_NAME);
+            throw syntaxErrorHere(RbErrorMessages.MISSING_GROUP_NAME, ErrorCode.InvalidNamedGroup);
         }
         return groupName;
     }
@@ -2315,7 +2214,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         int beginPos = position - 2;
         while (true) {
             if (atEnd()) {
-                throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_COMMENT, beginPos);
+                throw syntaxErrorAt(RbErrorMessages.UNTERMINATED_COMMENT, beginPos, ErrorCode.UnmatchedParenthesis);
             }
             int ch = consumeChar();
             if (ch == '\\' && !atEnd()) {
@@ -2349,7 +2248,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             }
             canHaveQuantifier = true;
         } else {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
     }
 
@@ -2360,13 +2259,14 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
      * @param negate {@code true} if the assertion to be pushed is a negative lookahead assertion
      */
     private void lookahead(boolean negate) {
+        notAllowedInLookbehind(position);
         pushLookAheadAssertion(negate);
         disjunction();
         if (match(")")) {
             popGroup();
             canHaveQuantifier = true;
         } else {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
     }
 
@@ -2382,7 +2282,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             popGroup();
             canHaveQuantifier = true;
         } else {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
     }
 
@@ -2397,36 +2297,47 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             popGroup();
             canHaveQuantifier = true;
         } else {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
     }
 
     /**
-     * Parses a conditional backreference, assuming that the prefix '(?(' was already parsed.
+     * Parses a conditional back-reference, assuming that the prefix '(?(' was already parsed.
      */
-    private void conditionalBackreference() {
-        bailOut("conditional backreference groups not supported");
+    private void conditionalBackReference() {
+        List<Integer> groupNumbers;
+        boolean namedReference;
         if (match("<")) {
-            parseGroupReference('>', true, true, true, true);
-            mustMatch(")");
+            namedReference = curChar() != '-' && !RegexLexer.isDecimalDigit(curChar());
+            groupNumbers = parseGroupReference('>', true, true, true, true);
+            mustMatch(")", RbErrorMessages.EXPECTED_PAREN, ErrorCode.InvalidBackReference);
         } else if (match("'")) {
-            parseGroupReference('\'', true, true, true, true);
-            mustMatch(")");
-        } else if (isDecDigit(curChar())) {
-            parseGroupReference(')', true, false, true, true);
+            namedReference = curChar() != '-' && !RegexLexer.isDecimalDigit(curChar());
+            groupNumbers = parseGroupReference('\'', true, true, true, true);
+            mustMatch(")", RbErrorMessages.EXPECTED_PAREN, ErrorCode.InvalidBackReference);
+        } else if (RegexLexer.isDecimalDigit(curChar())) {
+            namedReference = false;
+            groupNumbers = parseGroupReference(')', true, false, true, true);
         } else {
-            throw syntaxErrorHere(RbErrorMessages.INVALID_GROUP_NAME);
+            throw syntaxErrorHere(RbErrorMessages.INVALID_GROUP_NAME, ErrorCode.InvalidBackReference);
         }
-        disjunction();
+        pushConditionalBackReferenceGroup(groupNumbers.get(0), namedReference);
+        alternative();
         if (match("|")) {
-            disjunction();
+            nextSequence();
+            canHaveQuantifier = false;
+            alternative();
             if (curChar() == '|') {
-                throw syntaxErrorHere(RbErrorMessages.CONDITIONAL_BACKREF_WITH_MORE_THAN_TWO_BRANCHES);
+                throw syntaxErrorHere(RbErrorMessages.CONDITIONAL_BACKREF_WITH_MORE_THAN_TWO_BRANCHES, ErrorCode.InvalidGroup);
             }
+        } else {
+            // Generate the implicit empty else-branch, if it was not specified.
+            nextSequence();
         }
         if (!match(")")) {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
+        popGroup();
         canHaveQuantifier = true;
     }
 
@@ -2439,7 +2350,7 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
         if (match(")")) {
             bailOut("absent expressions not supported");
         } else {
-            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN);
+            throw syntaxErrorHere(RbErrorMessages.UNTERMINATED_SUBPATTERN, ErrorCode.UnmatchedParenthesis);
         }
         canHaveQuantifier = true;
     }
@@ -2458,20 +2369,20 @@ public final class RubyRegexParser implements RegexValidator, RegexParser {
             } else if (RubyFlags.isValidFlagChar(ch)) {
                 if (negative) {
                     if (RubyFlags.isTypeFlag(ch)) {
-                        throw syntaxErrorHere(RbErrorMessages.UNDEFINED_GROUP_OPTION);
+                        throw syntaxErrorHere(RbErrorMessages.UNDEFINED_GROUP_OPTION, ErrorCode.InvalidInlineFlag);
                     }
                     newFlags = newFlags.delFlag(ch);
                 } else {
                     newFlags = newFlags.addFlag(ch);
                 }
             } else if (Character.isAlphabetic(ch)) {
-                throw syntaxErrorHere(RbErrorMessages.UNDEFINED_GROUP_OPTION);
+                throw syntaxErrorHere(RbErrorMessages.UNDEFINED_GROUP_OPTION, ErrorCode.InvalidInlineFlag);
             } else {
-                throw syntaxErrorHere(RbErrorMessages.MISSING_DASH_COLON_PAREN);
+                throw syntaxErrorHere(RbErrorMessages.MISSING_DASH_COLON_PAREN, ErrorCode.InvalidInlineFlag);
             }
 
             if (atEnd()) {
-                throw syntaxErrorAtEnd(RbErrorMessages.MISSING_FLAG_DASH_COLON_PAREN);
+                throw syntaxErrorAtEnd(RbErrorMessages.MISSING_FLAG_DASH_COLON_PAREN, ErrorCode.InvalidInlineFlag);
             }
             ch = consumeChar();
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -125,11 +125,10 @@ public class VerifyTruffleProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         if (roundEnv.processingOver()) {
-            return false;
+            return true;
         }
 
-        ProcessorContext context = ProcessorContext.enter(processingEnv);
-        try {
+        try (ProcessorContext context = ProcessorContext.enter(processingEnv)) {
             TruffleTypes types = context.getTypes();
             TypeElement virtualFrameType = ElementUtils.castTypeElement(types.VirtualFrame);
             TypeElement frameType = ElementUtils.castTypeElement(types.Frame);
@@ -221,18 +220,16 @@ public class VerifyTruffleProcessor extends AbstractProcessor {
                 }
             }
 
-            return false;
-        } finally {
-            ProcessorContext.leave();
+            return true;
         }
     }
 
     void assertNoErrorExpected(Element element) {
-        ExpectError.assertNoErrorExpected(processingEnv, element);
+        ExpectError.assertNoErrorExpected(element);
     }
 
     void emitError(String message, Element element) {
-        if (ExpectError.isExpectedError(processingEnv, element, message)) {
+        if (ExpectError.isExpectedError(element, message)) {
             return;
         }
         processingEnv.getMessager().printMessage(Kind.ERROR, message, element);

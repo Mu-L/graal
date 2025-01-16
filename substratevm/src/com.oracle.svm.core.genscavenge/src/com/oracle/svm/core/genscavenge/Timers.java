@@ -24,6 +24,8 @@
  */
 package com.oracle.svm.core.genscavenge;
 
+import com.oracle.svm.core.Isolates;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.log.Log;
 
 /**
@@ -46,10 +48,12 @@ final class Timer implements AutoCloseable {
         return name;
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public Timer open() {
         return openAt(System.nanoTime());
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     Timer openAt(long nanoTime) {
         openNanos = nanoTime;
         wasOpened = true;
@@ -59,10 +63,12 @@ final class Timer implements AutoCloseable {
     }
 
     @Override
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public void close() {
         closeAt(System.nanoTime());
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     void closeAt(long nanoTime) {
         closeNanos = nanoTime;
         wasClosed = true;
@@ -77,11 +83,12 @@ final class Timer implements AutoCloseable {
         collectedNanos = 0L;
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public long getOpenedTime() {
         if (!wasOpened) {
             /* If a timer was not opened, pretend it was opened at the start of the VM. */
             assert openNanos == 0;
-            openNanos = HeapImpl.getChunkProvider().getFirstAllocationTime();
+            return Isolates.getStartTimeNanos();
         }
         return openNanos;
     }
@@ -100,10 +107,6 @@ final class Timer implements AutoCloseable {
     long getLastIntervalNanos() {
         return getClosedTime() - getOpenedTime();
     }
-
-    static long getTimeSinceFirstAllocation(long nanos) {
-        return nanos - HeapImpl.getChunkProvider().getFirstAllocationTime();
-    }
 }
 
 /** Collection timers primarily for {@link GCImpl}. */
@@ -111,17 +114,25 @@ final class Timers {
     final Timer blackenImageHeapRoots = new Timer("blackenImageHeapRoots");
     final Timer blackenDirtyCardRoots = new Timer("blackenDirtyCardRoots");
     final Timer blackenStackRoots = new Timer("blackenStackRoots");
-    final Timer cheneyScanFromRoots = new Timer("cheneyScanFromRoots");
-    final Timer cheneyScanFromDirtyRoots = new Timer("cheneyScanFromDirtyRoots");
+    final Timer scanFromRoots = new Timer("scanFromRoots");
+    final Timer scanFromDirtyRoots = new Timer("scanFromDirtyRoots");
     final Timer collection = new Timer("collection");
     final Timer cleanCodeCache = new Timer("cleanCodeCache");
     final Timer referenceObjects = new Timer("referenceObjects");
     final Timer promotePinnedObjects = new Timer("promotePinnedObjects");
     final Timer rootScan = new Timer("rootScan");
     final Timer scanGreyObjects = new Timer("scanGreyObjects");
+    final Timer oldPlanning = new Timer("oldPlanning");
+    final Timer oldFixup = new Timer("oldFixup");
+    final Timer oldFixupAlignedChunks = new Timer("oldFixupAlignedChunks");
+    final Timer oldFixupImageHeap = new Timer("oldFixupImageHeap");
+    final Timer oldFixupThreadLocals = new Timer("oldFixupThreadLocals");
+    final Timer oldFixupRuntimeCodeCache = new Timer("oldFixupRuntimeCodeCache");
+    final Timer oldFixupStack = new Timer("oldFixupStack");
+    final Timer oldFixupUnalignedChunks = new Timer("oldFixupUnalignedChunks");
+    final Timer oldCompaction = new Timer("oldCompaction");
+    final Timer oldCompactionRememberedSets = new Timer("oldCompactionRememberedSets");
     final Timer releaseSpaces = new Timer("releaseSpaces");
-    final Timer verifyAfter = new Timer("verifyAfter");
-    final Timer verifyBefore = new Timer("verifyBefore");
     final Timer walkThreadLocals = new Timer("walkThreadLocals");
     final Timer walkRuntimeCodeCache = new Timer("walkRuntimeCodeCache");
     final Timer cleanRuntimeCodeCache = new Timer("cleanRuntimeCodeCache");
@@ -131,13 +142,10 @@ final class Timers {
     }
 
     void resetAllExceptMutator() {
-        Log trace = Log.noopLog();
-        trace.string("[Timers.resetAllExceptMutator:");
-        verifyBefore.reset();
         collection.reset();
         rootScan.reset();
-        cheneyScanFromRoots.reset();
-        cheneyScanFromDirtyRoots.reset();
+        scanFromRoots.reset();
+        scanFromDirtyRoots.reset();
         promotePinnedObjects.reset();
         blackenStackRoots.reset();
         walkThreadLocals.reset();
@@ -146,12 +154,22 @@ final class Timers {
         blackenImageHeapRoots.reset();
         blackenDirtyCardRoots.reset();
         scanGreyObjects.reset();
+        if (SerialGCOptions.useCompactingOldGen()) {
+            oldPlanning.reset();
+            oldFixup.reset();
+            oldFixupAlignedChunks.reset();
+            oldFixupImageHeap.reset();
+            oldFixupThreadLocals.reset();
+            oldFixupRuntimeCodeCache.reset();
+            oldFixupStack.reset();
+            oldFixupUnalignedChunks.reset();
+            oldCompaction.reset();
+            oldCompactionRememberedSets.reset();
+        }
         cleanCodeCache.reset();
         referenceObjects.reset();
         releaseSpaces.reset();
-        verifyAfter.reset();
         /* The mutator timer is *not* reset here. */
-        trace.string("]").newline();
     }
 
     void logAfterCollection(Log log) {
@@ -159,10 +177,9 @@ final class Timers {
             log.newline();
             log.string("  [GC nanoseconds:");
             logOneTimer(log, "    ", collection);
-            logOneTimer(log, "      ", verifyBefore);
             logOneTimer(log, "      ", rootScan);
-            logOneTimer(log, "        ", cheneyScanFromRoots);
-            logOneTimer(log, "        ", cheneyScanFromDirtyRoots);
+            logOneTimer(log, "        ", scanFromRoots);
+            logOneTimer(log, "        ", scanFromDirtyRoots);
             logOneTimer(log, "          ", promotePinnedObjects);
             logOneTimer(log, "          ", blackenStackRoots);
             logOneTimer(log, "          ", walkThreadLocals);
@@ -171,10 +188,21 @@ final class Timers {
             logOneTimer(log, "          ", blackenImageHeapRoots);
             logOneTimer(log, "          ", blackenDirtyCardRoots);
             logOneTimer(log, "          ", scanGreyObjects);
+            if (SerialGCOptions.useCompactingOldGen()) {
+                logOneTimer(log, "      ", oldPlanning);
+                logOneTimer(log, "      ", oldFixup);
+                logOneTimer(log, "          ", oldFixupAlignedChunks);
+                logOneTimer(log, "          ", oldFixupImageHeap);
+                logOneTimer(log, "          ", oldFixupThreadLocals);
+                logOneTimer(log, "          ", oldFixupRuntimeCodeCache);
+                logOneTimer(log, "          ", oldFixupStack);
+                logOneTimer(log, "          ", oldFixupUnalignedChunks);
+                logOneTimer(log, "      ", oldCompaction);
+                logOneTimer(log, "          ", oldCompactionRememberedSets);
+            }
             logOneTimer(log, "      ", cleanCodeCache);
             logOneTimer(log, "      ", referenceObjects);
             logOneTimer(log, "      ", releaseSpaces);
-            logOneTimer(log, "      ", verifyAfter);
             logGCLoad(log, "    ", "GCLoad", collection, mutator);
             log.string("]");
         }

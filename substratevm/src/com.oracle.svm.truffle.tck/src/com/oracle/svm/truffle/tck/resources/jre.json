@@ -105,6 +105,17 @@
     ]
   },
   {
+    "name" : "java.util.concurrent.ForkJoinPool",
+    "methods" : [
+      { "name" : "deregisterWorker" ,
+        "justification" : "Calls ForkJoinPool.tryTerminate but always with now=false",
+        "parameterTypes" : [
+          "java.util.concurrent.ForkJoinWorkerThread",
+          "java.lang.Throwable"
+        ]}
+    ]
+  },
+  {
     "name" : "java.util.concurrent.ForkJoinWorkerThread",
     "methods" : [
         { "name" : "run" ,
@@ -143,12 +154,43 @@
     ]
   },
   {
+    "name" : "java.security.ProtectionDomain",
+    "methods" : [
+      { "name" : "seeAllp" ,
+        "parameterTypes" : [],
+        "justification" : "Safe operation, calls SecurityManager and catches a SecurityException to determine if toString should print all permissions."
+      }
+    ]
+  },
+  {
     "name" : "java.security.Provider",
     "methods" : [
         { "name" : "check" ,
           "parameterTypes" : [
               "java.lang.String"
         ]}
+    ]
+  },
+  {
+    "name" : "java.security.Provider$Service",
+    "methods" : [
+      { "name" : "getKeyClass" ,
+        "parameterTypes" : [
+          "java.lang.String"
+        ],
+        "justification" : "On SVM security providers are statically configured."
+      }
+    ]
+  },
+  {
+    "name" : "java.security.Provider$Service",
+    "methods" : [
+      { "name" : "newInstance" ,
+        "parameterTypes" : [
+          "java.lang.Object"
+        ],
+        "justification" : "On SVM security providers are statically configured."
+      }
     ]
   },
   {
@@ -222,11 +264,50 @@
     ]
   },
   {
+    "name": "java.lang.reflect.Proxy",
+    "methods": [
+      {
+        "name": "getInvocationHandler",
+        "parameterTypes" : [
+          "java.lang.Object"
+        ],
+        "justification": "On SVM proxies are statically configured."
+      }
+    ]
+  },
+  {
+    "name": "java.lang.runtime.ObjectMethods",
+    "methods":[
+      {
+        "name": "bootstrap",
+        "justification": "Bootstrap method for record's toString, hashCode and equals methods."
+      }
+    ]
+  },
+  {
+    "name": "java.lang.runtime.SwitchBootstraps",
+    "methods":[
+      {
+        "name": "typeSwitch",
+        "justification": "Bootstrap method for switch on a reference type."
+      },
+      {
+        "name": "enumSwitch",
+        "justification": "Bootstrap method for switch on enum constants."
+      }
+    ]
+  },
+  {
     "name": "java.math.BigInteger",
     "methods": [
       {
         "name": "multiply",
         "justification": "JDK 19 introduced parallelMultiply(BI) that shares its implementation with multiply(BI), which causes a spurious privileged call being found in the latter, so we explicitly deny parallelMultiply(BI) and allow multiply(BI) to avoid this false positive."
+      },
+      {
+        "name": "square",
+        "parameterTypes" : [],
+        "justification": "square() calls a method which has both serial and parallel implementations; however, it will always use the serial implementation."
       }
     ]
   },
@@ -239,6 +320,15 @@
       }
     ]
   },
+  {
+    "name": "java.util.ResourceBundle",
+    "methods": [
+      {
+        "name": "loadBundle",
+        "justification": "On SVM resource bundles are statically configured."
+      }
+    ]
+  },
   {  
     "name": "java.util.ServiceLoader$ModuleServicesLookupIterator",
     "methods": [
@@ -247,6 +337,18 @@
         "parameterTypes" : [
           "java.lang.Module"
         ]
+      }
+    ]
+  },
+  {
+    "name": "java.lang.ClassLoader",
+    "methods": [
+      {
+        "name": "getResourceAsStream",
+        "parameterTypes" : [
+          "java.lang.String"
+        ],
+        "justification": "All the resources loaded by this method are registered using ResourcesFeature, so this call is safe."
       }
     ]
   }

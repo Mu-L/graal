@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2022, Oracle and/or its affiliates.
+ * Copyright (c) 2016, 2024, Oracle and/or its affiliates.
  *
  * All rights reserved.
  *
@@ -29,47 +29,6 @@
  */
 package com.oracle.truffle.llvm.runtime;
 
-import com.oracle.truffle.api.Assumption;
-import com.oracle.truffle.api.CallTarget;
-import com.oracle.truffle.api.CompilerAsserts;
-import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.RootCallTarget;
-import com.oracle.truffle.api.Truffle;
-import com.oracle.truffle.api.TruffleFile;
-import com.oracle.truffle.api.TruffleLanguage.ContextReference;
-import com.oracle.truffle.api.TruffleLanguage.Env;
-import com.oracle.truffle.api.TruffleLogger;
-import com.oracle.truffle.api.TruffleSafepoint;
-import com.oracle.truffle.api.nodes.ControlFlowException;
-import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.source.Source;
-import com.oracle.truffle.llvm.api.Toolchain;
-import com.oracle.truffle.llvm.runtime.IDGenerater.BitcodeID;
-import com.oracle.truffle.llvm.runtime.LLVMArgumentBuffer.LLVMArgumentArray;
-import com.oracle.truffle.llvm.runtime.LLVMLanguage.LLVMThreadLocalValue;
-import com.oracle.truffle.llvm.runtime.PlatformCapability.OS;
-import com.oracle.truffle.llvm.runtime.debug.LLVMSourceContext;
-import com.oracle.truffle.llvm.runtime.except.LLVMIllegalSymbolIndexException;
-import com.oracle.truffle.llvm.runtime.except.LLVMLinkerException;
-import com.oracle.truffle.llvm.runtime.global.LLVMGlobal;
-import com.oracle.truffle.llvm.runtime.global.LLVMGlobalContainer;
-import com.oracle.truffle.llvm.runtime.instruments.trace.LLVMTracerInstrument;
-import com.oracle.truffle.llvm.runtime.memory.LLVMMemory;
-import com.oracle.truffle.llvm.runtime.memory.LLVMMemory.HandleContainer;
-import com.oracle.truffle.llvm.runtime.memory.LLVMStack;
-import com.oracle.truffle.llvm.runtime.memory.LLVMThreadingStack;
-import com.oracle.truffle.llvm.runtime.nodes.vars.AggregateTLGlobalInPlaceNode;
-import com.oracle.truffle.llvm.runtime.options.SulongEngineOption;
-import com.oracle.truffle.llvm.runtime.pointer.LLVMManagedPointer;
-import com.oracle.truffle.llvm.runtime.pointer.LLVMNativePointer;
-import com.oracle.truffle.llvm.runtime.pointer.LLVMPointer;
-import com.oracle.truffle.llvm.runtime.pthread.LLVMPThreadContext;
-
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.Pair;
-
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -86,7 +45,49 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
+import org.graalvm.collections.EconomicMap;
+import org.graalvm.collections.EconomicSet;
+import org.graalvm.collections.Equivalence;
+import org.graalvm.collections.Pair;
+
+import com.oracle.truffle.api.Assumption;
+import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerAsserts;
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.InternalResource.OS;
+import com.oracle.truffle.api.RootCallTarget;
+import com.oracle.truffle.api.Truffle;
+import com.oracle.truffle.api.TruffleFile;
+import com.oracle.truffle.api.TruffleLanguage.ContextReference;
+import com.oracle.truffle.api.TruffleLanguage.Env;
+import com.oracle.truffle.api.TruffleLogger;
+import com.oracle.truffle.api.TruffleSafepoint;
+import com.oracle.truffle.api.nodes.ControlFlowException;
+import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.profiles.BranchProfile;
+import com.oracle.truffle.api.source.Source;
+import com.oracle.truffle.llvm.api.Toolchain;
+import com.oracle.truffle.llvm.runtime.IDGenerater.BitcodeID;
+import com.oracle.truffle.llvm.runtime.LLVMArgumentBuffer.LLVMArgumentArray;
+import com.oracle.truffle.llvm.runtime.LLVMLanguage.LLVMThreadLocalValue;
+import com.oracle.truffle.llvm.runtime.debug.LLVMSourceContext;
+import com.oracle.truffle.llvm.runtime.except.LLVMIllegalSymbolIndexException;
+import com.oracle.truffle.llvm.runtime.except.LLVMLinkerException;
+import com.oracle.truffle.llvm.runtime.global.LLVMGlobal;
+import com.oracle.truffle.llvm.runtime.global.LLVMGlobalContainer;
+import com.oracle.truffle.llvm.runtime.instruments.trace.LLVMTracerInstrument;
+import com.oracle.truffle.llvm.runtime.memory.LLVMMemory;
+import com.oracle.truffle.llvm.runtime.memory.LLVMMemory.HandleContainer;
+import com.oracle.truffle.llvm.runtime.memory.LLVMStack;
+import com.oracle.truffle.llvm.runtime.memory.LLVMThreadingStack;
+import com.oracle.truffle.llvm.runtime.nodes.vars.AggregateTLGlobalInPlaceNode;
+import com.oracle.truffle.llvm.runtime.options.SulongEngineOption;
+import com.oracle.truffle.llvm.runtime.pointer.LLVMManagedPointer;
+import com.oracle.truffle.llvm.runtime.pointer.LLVMNativePointer;
+import com.oracle.truffle.llvm.runtime.pointer.LLVMPointer;
+import com.oracle.truffle.llvm.runtime.pthread.LLVMPThreadContext;
 
 public final class LLVMContext {
     public static final String SULONG_INIT_CONTEXT = "__sulong_init_context";
@@ -106,8 +107,23 @@ public final class LLVMContext {
     private final Object libraryPathsLock = new Object();
     private final Object truffleFilesLock = new Object();
     private final Toolchain toolchain;
-    @CompilationFinal private Path internalLibraryPath;
-    @CompilationFinal private TruffleFile internalLibraryPathFile;
+
+    public static final class InternalLocator {
+
+        private InternalLocator() {
+        }
+
+        public static LibraryLocator INSTANCE = new LibraryLocator() {
+
+            @Override
+            protected Object locateLibrary(LLVMContext context, String lib, Object reason) {
+                return context.internalLibraryLocator.locateLibrary(context, lib, reason);
+            }
+        };
+    }
+
+    private InternalLibraryLocator internalLibraryLocator;
+
     private final List<TruffleFile> truffleFiles = new ArrayList<>();
     private final List<String> internalLibraryNames;
 
@@ -123,7 +139,7 @@ public final class LLVMContext {
     private final List<LLVMThread> runningThreads = new ArrayList<>();
 
     private final ReentrantLock threadInitLock = new ReentrantLock();
-    private final List<Thread> allRunningThreads = new ArrayList<>();
+    private final EconomicSet<Thread> allRunningThreads = EconomicSet.create(Equivalence.IDENTITY_WITH_SYSTEM_HASHCODE);
     private final List<AggregateTLGlobalInPlaceNode> threadLocalGlobalInitializer = new ArrayList<>();
 
     @CompilationFinal private LLVMThreadingStack threadingStack;
@@ -233,7 +249,7 @@ public final class LLVMContext {
 
         this.mainArguments = getMainArguments(env);
 
-        this.windowsContext = language.getCapability(PlatformCapability.class).getOS().equals(OS.Windows) ? new LLVMContextWindows() : null;
+        this.windowsContext = language.getCapability(PlatformCapability.class).getOS().equals(OS.WINDOWS) ? new LLVMContextWindows() : null;
 
         addLibraryPaths(SulongEngineOption.getPolyglotOptionSearchPaths(env));
 
@@ -293,14 +309,7 @@ public final class LLVMContext {
 
         this.threadingStack = new LLVMThreadingStack(Thread.currentThread(), parseStackSize(env.getOptions().get(SulongEngineOption.STACK_SIZE)));
 
-        String languageHome = language.getLLVMLanguageHome();
-        if (languageHome != null) {
-            PlatformCapability<?> sysContextExt = language.getCapability(PlatformCapability.class);
-            internalLibraryPath = Paths.get(languageHome).resolve(sysContextExt.getSulongLibrariesPath());
-            internalLibraryPathFile = env.getInternalTruffleFile(internalLibraryPath.toUri());
-            // add internal library location also to the external library lookup path
-            addLibraryPath(internalLibraryPath.toString());
-        }
+        internalLibraryLocator = language.getCapability(InternalLibraryLocator.class);
 
         for (ContextExtension ext : contextExtensions) {
             ext.initialize(this);
@@ -313,11 +322,16 @@ public final class LLVMContext {
              * and the llvm language cache will return the call target of future parsing of these
              * libraries.
              */
-            String[] sulongLibraryNames = language.getCapability(PlatformCapability.class).getSulongDefaultLibraries();
+            PlatformCapability<?> platformCapability = language.getCapability(PlatformCapability.class);
+            String[] sulongLibraryNames = platformCapability.getSulongDefaultLibraries();
             if (language.isDefaultInternalLibraryCacheEmpty()) {
                 for (int i = sulongLibraryNames.length - 1; i >= 0; i--) {
-                    TruffleFile file = InternalLibraryLocator.INSTANCE.locateLibrary(this, sulongLibraryNames[i], "<default bitcode library>");
-                    Source librarySource = Source.newBuilder("llvm", file).internal(isInternalLibraryFile(file)).build();
+                    String libraryName = sulongLibraryNames[i];
+                    Source librarySource = internalLibraryLocator.locateSource(this, libraryName, "<default bitcode library>");
+                    if (librarySource == null) {
+                        throw new InternalError("Could not locate library " + libraryName + " with locator " + internalLibraryLocator + ".");
+                    }
+
                     // use the source cache in the language.
                     env.parseInternal(librarySource);
                     language.setDefaultInternalLibraryCache(librarySource);
@@ -326,8 +340,8 @@ public final class LLVMContext {
             setLibsulongAuxFunction(SULONG_INIT_CONTEXT);
             setLibsulongAuxFunction(SULONG_DISPOSE_CONTEXT);
             setLibsulongAuxFunction(START_METHOD_NAME);
-            CallTarget builtinsLibrary = env.parseInternal(Source.newBuilder("llvm",
-                            env.getInternalTruffleFile(internalLibraryPath.resolve(language.getCapability(PlatformCapability.class).getBuiltinsLibrary()).toUri())).internal(true).build());
+            Source builtinsSource = internalLibraryLocator.locateSource(this, platformCapability.getBuiltinsLibrary(), "<builtins library>");
+            CallTarget builtinsLibrary = env.parseInternal(builtinsSource);
             builtinsLibrary.call();
         } catch (IOException e) {
             throw new IllegalStateException(e);
@@ -404,11 +418,6 @@ public final class LLVMContext {
         } else {
             return key.get(this);
         }
-    }
-
-    public Path getInternalLibraryPath() {
-        assert isInitialized();
-        return internalLibraryPath;
     }
 
     private static long parseStackSize(String v) {
@@ -542,7 +551,7 @@ public final class LLVMContext {
         }
 
         Thread[] allThreads;
-        try (TLSInitializerAccess access = getTLSInitializerAccess()) {
+        try (TLSInitializerAccess access = getTLSInitializerAccess(true)) {
             allThreads = access.getAllRunningThreads();
         }
 
@@ -591,14 +600,26 @@ public final class LLVMContext {
         // join all created pthread - threads
         pThreadContext.joinAllThreads();
 
-        // Ensure that thread destructors are run before global memory blocks
-        // have been deallocated by cleanUpNoGuestCode. Otherwise disposeThread
-        // will be called after finalizeContext when it is too late. [GR-39952]
-        language.disposeThread(this, Thread.currentThread());
+        boolean cancelling = env.getContext().isCancelling();
+
+        /*
+         * If the context is being cancelled, we must not run any guest code.
+         * 'LLVMLanguage.disposeThread' may call e.g. pthread destructors which can be arbitrary
+         * guest code.
+         */
+        if (!cancelling) {
+            // Ensure that thread destructors are run before global memory blocks
+            // have been deallocated by cleanUpNoGuestCode. Otherwise disposeThread
+            // will be called after finalizeContext when it is too late. [GR-39952]
+            language.disposeThread(this, Thread.currentThread());
+        }
 
         TruffleSafepoint sp = TruffleSafepoint.getCurrent();
         boolean prev = sp.setAllowActions(false);
         try {
+            if (cancelling) {
+                language.disposeThreadNoGuestCode(this, Thread.currentThread());
+            }
             cleanUpNoGuestCode();
         } finally {
             sp.setAllowActions(prev);
@@ -658,33 +679,8 @@ public final class LLVMContext {
      * @param libraries a (potentially unmodifiable) list of dependencies
      */
     @SuppressWarnings("unchecked")
-    public List<String> preprocessDependencies(List<String> libraries, TruffleFile file) {
-        return language.getCapability(PlatformCapability.class).preprocessDependencies(this, file, libraries);
-    }
-
-    public static final class InternalLibraryLocator extends LibraryLocator {
-
-        public static final InternalLibraryLocator INSTANCE = new InternalLibraryLocator();
-
-        @Override
-        protected TruffleFile locateLibrary(LLVMContext context, String lib, Object reason) {
-            if (context.internalLibraryPath == null) {
-                throw new LLVMLinkerException(String.format("Cannot load \"%s\". Internal library path not set", lib));
-            }
-            TruffleFile absPath = context.internalLibraryPathFile.resolve(lib);
-            if (absPath.exists()) {
-                return absPath;
-            }
-            return context.env.getInternalTruffleFile(lib);
-        }
-    }
-
-    public boolean isInternalLibraryFile(TruffleFile file) {
-        return file.normalize().startsWith(internalLibraryPathFile);
-    }
-
-    public boolean isInternalLibraryPath(Path path) {
-        return path.normalize().startsWith(internalLibraryPath);
+    public List<String> preprocessDependencies(List<String> libraries, String libraryName, boolean isInternal) {
+        return language.getCapability(PlatformCapability.class).preprocessDependencies(this, libraryName, isInternal, libraries);
     }
 
     public TruffleFile getOrAddTruffleFile(TruffleFile file) {
@@ -830,6 +826,13 @@ public final class LLVMContext {
                 return symbolFinalStorage[id][index];
             } catch (ArrayIndexOutOfBoundsException | NullPointerException e) {
                 exception.enter();
+                if (LibraryLocator.loggingEnabled()) {
+                    loaderLogger.log(Level.FINEST, Arrays.toString(e.getStackTrace()));
+                    loaderLogger.log(Level.FINEST, "symbol is: " + symbol.getName());
+                    loaderLogger.log(Level.FINEST, "id is: " + id);
+                    loaderLogger.log(Level.FINEST, "id name is: " + bitcodeID.getName());
+                    loaderLogger.log(Level.FINEST, "index is: " + index);
+                }
                 throw new LLVMIllegalSymbolIndexException("cannot find symbol");
             }
         } else {
@@ -837,6 +840,13 @@ public final class LLVMContext {
                 return symbolDynamicStorage[id][index];
             } catch (ArrayIndexOutOfBoundsException | NullPointerException e) {
                 exception.enter();
+                if (LibraryLocator.loggingEnabled()) {
+                    loaderLogger.log(Level.FINEST, Arrays.toString(e.getStackTrace()));
+                    loaderLogger.log(Level.FINEST, "symbol is: " + symbol.getName());
+                    loaderLogger.log(Level.FINEST, "id is: " + id);
+                    loaderLogger.log(Level.FINEST, "id name is: " + bitcodeID.getName());
+                    loaderLogger.log(Level.FINEST, "index is: " + index);
+                }
                 throw new LLVMIllegalSymbolIndexException("cannot find symbol");
             }
         }
@@ -1036,8 +1046,12 @@ public final class LLVMContext {
     public final class TLSInitializerAccess implements AutoCloseable {
 
         @TruffleBoundary
-        private TLSInitializerAccess() {
-            threadInitLock.lock();
+        private TLSInitializerAccess(boolean interruptible) {
+            if (interruptible) {
+                TruffleSafepoint.setBlockedThreadInterruptible(null, ReentrantLock::lockInterruptibly, threadInitLock);
+            } else {
+                threadInitLock.lock();
+            }
         }
 
         @TruffleBoundary
@@ -1058,7 +1072,7 @@ public final class LLVMContext {
 
         @TruffleBoundary
         public Thread[] getAllRunningThreads() {
-            return allRunningThreads.toArray(Thread[]::new);
+            return allRunningThreads.toArray(new Thread[allRunningThreads.size()]);
         }
 
         @TruffleBoundary
@@ -1077,8 +1091,8 @@ public final class LLVMContext {
         }
     }
 
-    public TLSInitializerAccess getTLSInitializerAccess() {
-        return new TLSInitializerAccess();
+    public TLSInitializerAccess getTLSInitializerAccess(boolean interruptible) {
+        return new TLSInitializerAccess(interruptible);
     }
 
     @TruffleBoundary

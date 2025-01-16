@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,11 +41,9 @@
 
 package org.graalvm.wasm.predefined.wasi.fd;
 
-import com.oracle.truffle.api.TruffleFile;
-import com.oracle.truffle.api.nodes.Node;
-import org.graalvm.wasm.memory.WasmMemory;
-
 import java.util.Objects;
+
+import com.oracle.truffle.api.TruffleFile;
 
 /**
  * Wrapper around a pair (virtual directory, host directory).
@@ -57,9 +55,8 @@ import java.util.Objects;
  * ({@link #containedVirtualFile(TruffleFile)} and {@link #containedHostFile(TruffleFile)}).</li>
  * </ul>
  * <p>
- * These methods are only called from
- * {@link DirectoryFd#pathOpen(Node, WasmMemory, int, int, int, short, long, long, short, int)},
- * which is currently the only way to create new {@link Fd} objects.
+ * These methods are only called from {@link DirectoryFd}, which is currently the only way to
+ * interact with {@link Fd} objects.
  */
 final class PreopenedDirectory {
 
@@ -69,9 +66,19 @@ final class PreopenedDirectory {
     private final TruffleFile hostPath;
 
     /**
+     * The length of the host path used for comparisons.
+     */
+    private final int hostPathLength;
+
+    /**
      * Virtual path of this pre-opened directory.
      */
     private final TruffleFile virtualPath;
+
+    /**
+     * The length of the virtual path used for comparisons.
+     */
+    private final int virtualPathLength;
 
     PreopenedDirectory(TruffleFile hostPath, TruffleFile virtualPath) {
         Objects.requireNonNull(hostPath);
@@ -79,7 +86,27 @@ final class PreopenedDirectory {
         assert hostPath.isAbsolute() : "hostRoot must be absolute";
 
         this.hostPath = hostPath.normalize();
+        this.hostPathLength = this.hostPath.getPath().length();
         this.virtualPath = virtualPath.normalize();
+        this.virtualPathLength = this.virtualPath.getPath().length();
+    }
+
+    private static String getRelativePath(TruffleFile virtualFile, TruffleFile rootPath, int rootPathLength) {
+        String virtualPath = virtualFile.getPath();
+        final int virtualFileLength = virtualPath.length();
+        if (virtualFileLength == rootPathLength) {
+            return "";
+        }
+        if (rootPathLength == 1) {
+            if (rootPath.isAbsolute()) {
+                // root path, no trailing slash
+                return virtualPath.substring(1);
+            } else if (rootPath.getPath().equals(".")) {
+                return virtualPath;
+            }
+        }
+        // remove trailing slash
+        return virtualPath.substring(rootPathLength + 1);
     }
 
     /**
@@ -92,7 +119,7 @@ final class PreopenedDirectory {
         final TruffleFile result = virtualFile.normalize();
 
         // Checks that the given path did not resolve to a file outside virtualRoot.
-        return result.startsWith(virtualPath) ? result : null;
+        return result.startsWith(virtualPath) || (!result.isAbsolute() && virtualPathLength == 1 && virtualPath.getPath().equals(".")) ? result : null;
     }
 
     /**
@@ -117,8 +144,23 @@ final class PreopenedDirectory {
 
         final TruffleFile resolvedVirtualTruffleFile = containedVirtualFile(virtualTruffleFile);
         if (resolvedVirtualTruffleFile != null) {
-            final String relativePathToRoot = resolvedVirtualTruffleFile.getPath().substring(virtualPath.getPath().length() + 1);
+            final String relativePathToRoot = getRelativePath(resolvedVirtualTruffleFile, virtualPath, virtualPathLength);
             return containedHostFile(hostPath.resolve(relativePathToRoot));
+        }
+        return null;
+    }
+
+    /**
+     * Returns the normalized virtual file for the given host file if it is contained in this
+     * pre-opened directory, or {@code null} otherwise.
+     */
+    TruffleFile hostFileToVirtualFile(TruffleFile hostTruffleFile) {
+        Objects.requireNonNull(hostTruffleFile);
+
+        final TruffleFile resolvedHostTruffleFile = containedHostFile(hostTruffleFile);
+        if (resolvedHostTruffleFile != null) {
+            final String resolvedPathToRoot = getRelativePath(resolvedHostTruffleFile, hostPath, hostPathLength);
+            return containedVirtualFile(virtualPath.resolve(resolvedPathToRoot));
         }
         return null;
     }

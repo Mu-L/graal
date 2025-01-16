@@ -26,10 +26,10 @@ package com.oracle.svm.graal.isolated;
 
 import java.lang.reflect.Array;
 
-import org.graalvm.compiler.core.common.CompressEncoding;
+import jdk.graal.compiler.core.common.CompressEncoding;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.graal.meta.SubstrateMemoryAccessProvider;
@@ -188,21 +188,6 @@ final class IsolateAwareConstantReflectionProvider extends SubstrateConstantRefl
         ConstantDataConverter.fromClient(result, resultData);
     }
 
-    @Override
-    public JavaConstant boxPrimitive(JavaConstant primitive) {
-        if (!isIsolatedCompilation()) {
-            return super.boxPrimitive(primitive);
-        }
-        if (!canBoxPrimitive(primitive)) {
-            return null;
-        }
-        ConstantData resultData = StackValue.get(ConstantData.class);
-        ConstantData primitiveData = StackValue.get(ConstantData.class);
-        ConstantDataConverter.fromCompiler(primitive, primitiveData);
-        boxPrimitive0(IsolatedCompileContext.get().getClient(), primitiveData, resultData);
-        return ConstantDataConverter.toCompiler(resultData);
-    }
-
     @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
     private static void boxPrimitive0(@SuppressWarnings("unused") ClientIsolateThread client, ConstantData primitiveData, ConstantData resultData) {
         JavaConstant primitive = ConstantDataConverter.toClient(primitiveData);
@@ -251,7 +236,7 @@ final class IsolateAwareConstantReflectionProvider extends SubstrateConstantRefl
     private static ImageHeapRef<DynamicHub> getHubConstantAsImageHeapRef(@SuppressWarnings("unused") ClientIsolateThread client, ConstantData hubData) {
         JavaConstant hub = ConstantDataConverter.toClient(hubData);
         Object target = SubstrateObjectConstant.asObject(hub);
-        return (target instanceof DynamicHub) ? ImageHeapObjects.ref((DynamicHub) target) : WordFactory.nullPointer();
+        return (target instanceof DynamicHub) ? ImageHeapObjects.ref((DynamicHub) target) : Word.nullPointer();
     }
 
     @Override

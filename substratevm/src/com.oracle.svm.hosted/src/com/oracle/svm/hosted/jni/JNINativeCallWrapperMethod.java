@@ -30,38 +30,34 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.nodes.ConstantNode;
-import org.graalvm.compiler.nodes.InvokeWithExceptionNode;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.java.MonitorEnterNode;
-import org.graalvm.compiler.nodes.java.MonitorExitNode;
-import org.graalvm.compiler.nodes.java.MonitorIdNode;
-
+import com.oracle.graal.pointsto.infrastructure.ResolvedSignature;
 import com.oracle.graal.pointsto.infrastructure.WrappedJavaMethod;
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.HostedProviders;
 import com.oracle.svm.core.c.CGlobalDataFactory;
 import com.oracle.svm.core.graal.code.CGlobalDataInfo;
 import com.oracle.svm.core.graal.nodes.CGlobalDataLoadAddressNode;
-import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.jni.access.JNINativeLinkage;
 import com.oracle.svm.core.jni.headers.JNIEnvironment;
 import com.oracle.svm.core.jni.headers.JNIObjectHandle;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
 import com.oracle.svm.hosted.annotation.CustomSubstitutionMethod;
 import com.oracle.svm.hosted.c.CGlobalDataFeature;
-import com.oracle.svm.hosted.code.SimpleSignature;
 import com.oracle.svm.hosted.heap.SVMImageHeapScanner;
 import com.oracle.svm.util.ReflectionUtil;
 
-import jdk.vm.ci.meta.Constant;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.nodes.InvokeWithExceptionNode;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.ValueNode;
+import jdk.graal.compiler.nodes.java.MonitorEnterNode;
+import jdk.graal.compiler.nodes.java.MonitorExitNode;
+import jdk.graal.compiler.nodes.java.MonitorIdNode;
 import jdk.vm.ci.meta.JavaConstant;
-import jdk.vm.ci.meta.JavaType;
+import jdk.vm.ci.meta.LineNumberTable;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
-import jdk.vm.ci.meta.ResolvedJavaType;
-import jdk.vm.ci.meta.Signature;
 
 /**
  * Generated code for calling a specific native method from Java code. The wrapper takes care of
@@ -69,6 +65,10 @@ import jdk.vm.ci.meta.Signature;
  * handles and for unboxing an object return value.
  */
 class JNINativeCallWrapperMethod extends CustomSubstitutionMethod {
+    /** Line number that indicates a native method to {@link StackTraceElement}. */
+    private static final int NATIVE_LINE_NUMBER = -2;
+    private static final LineNumberTable LINE_NUMBER_TABLE = new LineNumberTable(new int[]{1}, new int[]{NATIVE_LINE_NUMBER});
+
     private final JNINativeLinkage linkage;
     private final Field linkageBuiltInAddressField = ReflectionUtil.lookupField(JNINativeLinkage.class, "builtInAddress");
 
@@ -92,11 +92,21 @@ class JNINativeCallWrapperMethod extends CustomSubstitutionMethod {
     }
 
     @Override
-    public StructuredGraph buildGraph(DebugContext debug, ResolvedJavaMethod method, HostedProviders providers, Purpose purpose) {
-        JNIGraphKit kit = new JNIGraphKit(debug, providers, method);
-        StructuredGraph graph = kit.getGraph();
+    public LineNumberTable getLineNumberTable() {
+        return LINE_NUMBER_TABLE;
+    }
 
-        InvokeWithExceptionNode handleFrame = kit.nativeCallPrologue();
+    @Override
+    public StackTraceElement asStackTraceElement(int bci) {
+        StackTraceElement ste = super.asStackTraceElement(bci);
+        ste = new StackTraceElement(ste.getClassLoaderName(), ste.getModuleName(), ste.getModuleVersion(), ste.getClassName(), ste.getMethodName(), ste.getFileName(), NATIVE_LINE_NUMBER);
+        assert ste.isNativeMethod();
+        return ste;
+    }
+
+    @Override
+    public StructuredGraph buildGraph(DebugContext debug, AnalysisMethod method, HostedProviders providers, Purpose purpose) {
+        JNIGraphKit kit = new JNIGraphKit(debug, providers, method);
 
         ValueNode callAddress;
         if (linkage.isBuiltInFunction()) {
@@ -105,63 +115,73 @@ class JNINativeCallWrapperMethod extends CustomSubstitutionMethod {
             callAddress = kit.unique(new CGlobalDataLoadAddressNode(builtinAddress));
             SVMImageHeapScanner.instance().rescanField(linkage, linkageBuiltInAddressField);
         } else {
-            callAddress = kit.nativeCallAddress(kit.createObject(linkage));
+            callAddress = kit.invokeNativeCallAddress(kit.createObject(linkage));
         }
 
-        ValueNode environment = kit.environment();
+        List<ValueNode> javaArguments = kit.getInitialArguments();
 
-        JavaType javaReturnType = method.getSignature().getReturnType(null);
-        JavaType[] javaArgumentTypes = method.toParameterTypes();
-        List<ValueNode> javaArguments = kit.loadArguments(javaArgumentTypes);
+        /*
+         * Acquire the lock upfront because when in a virtual thread, contention could cause
+         * migration to a different carrier thread with a different JNI environment and local handle
+         * set before the native call.
+         */
+        if (getOriginal().isSynchronized()) {
+            ValueNode monitorObject;
+            if (method.isStatic()) {
+                JavaConstant hubConstant = (JavaConstant) kit.getConstantReflection().asObjectHub(method.getDeclaringClass());
+                monitorObject = ConstantNode.forConstant(hubConstant, kit.getMetaAccess(), kit.getGraph());
+            } else {
+                monitorObject = kit.maybeCreateExplicitNullCheck(javaArguments.get(0));
+            }
+            MonitorIdNode monitorId = kit.getGraph().add(new MonitorIdNode(kit.getFrameState().lockDepth(false)));
+            MonitorEnterNode monitorEnter = kit.append(new MonitorEnterNode(monitorObject, monitorId));
+            kit.getFrameState().pushLock(monitorEnter.object(), monitorEnter.getMonitorId());
+            monitorEnter.setStateAfter(kit.getFrameState().create(kit.bci(), monitorEnter));
+        }
+
+        ValueNode environment = kit.invokeEnvironment();
+
+        /* After the JNI prologue, we must not invoke methods that may throw an exception. */
+        InvokeWithExceptionNode handleFrame = kit.invokeNativeCallPrologue();
+
+        AnalysisType javaReturnType = method.getSignature().getReturnType();
+        List<AnalysisType> javaArgumentTypes = method.toParameterList();
 
         List<ValueNode> jniArguments = new ArrayList<>(2 + javaArguments.size());
-        List<JavaType> jniArgumentTypes = new ArrayList<>(2 + javaArguments.size());
-        JavaType environmentType = providers.getMetaAccess().lookupJavaType(JNIEnvironment.class);
-        JavaType objectHandleType = providers.getMetaAccess().lookupJavaType(JNIObjectHandle.class);
+        List<AnalysisType> jniArgumentTypes = new ArrayList<>(2 + javaArguments.size());
+        AnalysisType environmentType = kit.getMetaAccess().lookupJavaType(JNIEnvironment.class);
+        AnalysisType objectHandleType = kit.getMetaAccess().lookupJavaType(JNIObjectHandle.class);
         jniArguments.add(environment);
         jniArgumentTypes.add(environmentType);
         if (method.isStatic()) {
-            JavaConstant clazz = providers.getConstantReflection().asJavaClass(method.getDeclaringClass());
-            ConstantNode clazzNode = ConstantNode.forConstant(clazz, providers.getMetaAccess(), graph);
-            ValueNode box = kit.boxObjectInLocalHandle(clazzNode);
+            JavaConstant clazz = kit.getConstantReflection().asJavaClass(method.getDeclaringClass());
+            ConstantNode clazzNode = ConstantNode.forConstant(clazz, kit.getMetaAccess(), kit.getGraph());
+            /* Thrown exceptions may cause a memory leak, see GR-54276. */
+            ValueNode box = kit.invokeBoxObjectInLocalHandle(clazzNode);
             jniArguments.add(box);
             jniArgumentTypes.add(objectHandleType);
         }
         for (int i = 0; i < javaArguments.size(); i++) {
             ValueNode arg = javaArguments.get(i);
-            JavaType argType = javaArgumentTypes[i];
-            if (javaArgumentTypes[i].getJavaKind().isObject()) {
+            AnalysisType argType = javaArgumentTypes.get(i);
+            if (argType.getJavaKind().isObject()) {
                 ValueNode obj = javaArguments.get(i);
-                arg = kit.boxObjectInLocalHandle(obj);
+                /* Thrown exceptions may cause a memory leak, see GR-54276. */
+                arg = kit.invokeBoxObjectInLocalHandle(obj);
                 argType = objectHandleType;
             }
             jniArguments.add(arg);
             jniArgumentTypes.add(argType);
         }
         assert jniArguments.size() == jniArgumentTypes.size();
-        JavaType jniReturnType = javaReturnType;
+        AnalysisType jniReturnType = javaReturnType;
         if (jniReturnType.getJavaKind().isObject()) {
             jniReturnType = objectHandleType;
         }
 
-        if (getOriginal().isSynchronized()) {
-            ValueNode monitorObject;
-            if (method.isStatic()) {
-                Constant hubConstant = providers.getConstantReflection().asObjectHub(method.getDeclaringClass());
-                DynamicHub hub = (DynamicHub) SubstrateObjectConstant.asObject(hubConstant);
-                monitorObject = ConstantNode.forConstant(SubstrateObjectConstant.forObject(hub), providers.getMetaAccess(), graph);
-            } else {
-                monitorObject = kit.maybeCreateExplicitNullCheck(javaArguments.get(0));
-            }
-            MonitorIdNode monitorId = graph.add(new MonitorIdNode(kit.getFrameState().lockDepth(false)));
-            MonitorEnterNode monitorEnter = kit.append(new MonitorEnterNode(monitorObject, monitorId));
-            kit.getFrameState().pushLock(monitorEnter.object(), monitorEnter.getMonitorId());
-            monitorEnter.setStateAfter(kit.getFrameState().create(kit.bci(), monitorEnter));
-        }
-
         kit.getFrameState().clearLocals();
 
-        Signature jniSignature = new SimpleSignature(jniArgumentTypes, jniReturnType);
+        var jniSignature = ResolvedSignature.fromList(jniArgumentTypes, jniReturnType);
         ValueNode returnValue = kit.createCFunctionCall(callAddress, jniArguments, jniSignature, StatusSupport.STATUS_IN_NATIVE, false);
 
         if (getOriginal().isSynchronized()) {
@@ -172,13 +192,17 @@ class JNINativeCallWrapperMethod extends CustomSubstitutionMethod {
         }
 
         if (javaReturnType.getJavaKind().isObject()) {
-            returnValue = kit.unboxHandle(returnValue); // before destroying handles in epilogue
+            /*
+             * Must be invoked before the handles are destroyed in the epilogue. Thrown exceptions
+             * may cause a memory leak, see GR-54276.
+             */
+            returnValue = kit.invokeUnboxHandle(returnValue);
         }
-        kit.nativeCallEpilogue(handleFrame);
-        kit.rethrowPendingException();
+        kit.invokeNativeCallEpilogue(handleFrame);
+        kit.invokeRethrowPendingException();
         if (javaReturnType.getJavaKind().isObject()) {
             // Just before return to always run the epilogue and never suppress a pending exception
-            returnValue = kit.checkObjectType(returnValue, (ResolvedJavaType) javaReturnType, false);
+            returnValue = kit.checkObjectType(returnValue, javaReturnType, false);
         }
         kit.createReturn(returnValue, javaReturnType.getJavaKind());
 

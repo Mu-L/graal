@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,27 +24,38 @@
  */
 package com.oracle.svm.graal.meta;
 
+import static com.oracle.svm.core.util.VMError.intentionallyUnimplemented;
 import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
-import static com.oracle.svm.core.util.VMError.unimplemented;
+import static com.oracle.svm.core.util.VMError.shouldNotReachHereAtRuntime;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
-import java.util.Arrays;
 
-import org.graalvm.compiler.core.common.util.TypeConversion;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.svm.core.BuildPhaseProvider.AfterHeapLayout;
+import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
+import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.code.CodeInfo;
+import com.oracle.svm.core.code.ImageCodeInfo;
+import com.oracle.svm.core.deopt.Deoptimizer;
+import com.oracle.svm.core.graal.code.ExplicitCallingConvention;
+import com.oracle.svm.core.graal.code.StubCallingConvention;
+import com.oracle.svm.core.graal.code.SubstrateCallingConventionKind;
+import com.oracle.svm.core.graal.meta.SharedRuntimeMethod;
+import com.oracle.svm.core.graal.phases.SubstrateSafepointInsertionPhase;
 import com.oracle.svm.core.heap.UnknownObjectField;
 import com.oracle.svm.core.heap.UnknownPrimitiveField;
-import com.oracle.svm.core.deopt.Deoptimizer;
-import com.oracle.svm.core.graal.code.StubCallingConvention;
-import com.oracle.svm.core.graal.meta.SharedRuntimeMethod;
-import com.oracle.svm.core.hub.AnnotationsEncoding;
+import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
 import com.oracle.svm.core.util.HostedStringDeduplication;
+import com.oracle.svm.core.util.VMError;
 
+import jdk.graal.compiler.api.replacements.Snippet;
+import jdk.graal.compiler.core.common.util.TypeConversion;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ConstantPool;
 import jdk.vm.ci.meta.DefaultProfilingInfo;
@@ -52,7 +63,6 @@ import jdk.vm.ci.meta.ExceptionHandler;
 import jdk.vm.ci.meta.LineNumberTable;
 import jdk.vm.ci.meta.LocalVariableTable;
 import jdk.vm.ci.meta.ProfilingInfo;
-import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 import jdk.vm.ci.meta.SpeculationLog;
@@ -60,46 +70,59 @@ import jdk.vm.ci.meta.TriState;
 
 public class SubstrateMethod implements SharedRuntimeMethod {
 
+    private static final int FLAG_BIT_BRIDGE = 0;
+    private static final int FLAG_BIT_NEVER_INLINE = 1;
+    private static final int FLAG_BIT_UNINTERRUPTIBLE = 2;
+    private static final int FLAG_BIT_NEEDS_SAFEPOINT_CHECK = 3;
+    private static final int FLAG_BIT_ENTRY_POINT = 4;
+    private static final int FLAG_BIT_SNIPPET = 5;
+    private static final int FLAG_BIT_FOREIGN_CALL_TARGET = 6;
+    private static final int FLAG_BIT_CALLING_CONVENTION_KIND = 7;
+    private static final int NUM_BITS_CALLING_CONVENTION_KIND = 2;
+    private static final int FLAG_BIT_CALLEE_SAVED_REGISTERS = 9;
+
+    private final int flags;
     private final byte[] encodedLineNumberTable;
     private final int modifiers;
     private final String name;
     private final int hashCode;
-    private final boolean hasStubCallingConvention;
     private SubstrateType declaringClass;
-    private int encodedGraphStartOffset;
-    @UnknownPrimitiveField private int vTableIndex;
-    private Object annotationsEncoding;
+    @UnknownPrimitiveField(availability = ReadyForCompilation.class) private int encodedGraphStartOffset;
+    @UnknownPrimitiveField(availability = AfterHeapLayout.class) private int vTableIndex;
 
     /**
-     * A pointer to the compiled code of the corresponding method in the native image. Used as
-     * destination address if this method is called in a direct call.
+     * A metadata object describing the image code that contains the compiled code of this method.
+     * This is not a {@link CodeInfo} structure because those are not available until runtime.
      */
-    @UnknownPrimitiveField private int codeOffsetInImage;
+    private final ImageCodeInfo imageCodeInfo;
 
     /**
-     * A pointer to the deoptimization target code in the native image. Used as destination address
-     * for deoptimization. This is only != 0, if there _is_ a deoptimization target method in the
-     * image for this method.
+     * The offset of the first instruction of the compiled code in the image code described by
+     * {@link #imageCodeInfo}. Used to compute the destination address in a direct call.
      */
-    @UnknownPrimitiveField private int deoptOffsetInImage;
+    @UnknownPrimitiveField(availability = AfterHeapLayout.class) private int imageCodeOffset;
 
-    @UnknownObjectField(types = {SubstrateMethod[].class, SubstrateMethod.class}, canBeNull = true)//
+    /**
+     * The offset of the deoptimization target code in the image code described by
+     * {@link #imageCodeInfo}. Used to compute the destination address for deoptimization. This is
+     * only != 0 if there actually is a deoptimization target method in the image for this method.
+     */
+    @UnknownPrimitiveField(availability = AfterHeapLayout.class) private int imageCodeDeoptOffset;
+
+    @UnknownObjectField(types = {SubstrateMethod[].class, SubstrateMethod.class}, canBeNull = true, availability = ReadyForCompilation.class)//
     protected Object implementations;
-
-    private final boolean neverInline;
-    private final boolean bridge;
 
     private SubstrateSignature signature;
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public SubstrateMethod(ResolvedJavaMethod original, HostedStringDeduplication stringTable) {
+    public SubstrateMethod(AnalysisMethod original, ImageCodeInfo codeInfo, HostedStringDeduplication stringTable) {
+        imageCodeInfo = codeInfo;
         encodedLineNumberTable = EncodedLineNumberTable.encode(original.getLineNumberTable());
 
         assert original.getAnnotation(CEntryPoint.class) == null : "Can't compile entry point method";
 
         modifiers = original.getModifiers();
         name = stringTable.deduplicate(original.getName(), true);
-        neverInline = original.hasNeverInlineDirective();
 
         /*
          * AnalysisMethods of snippets are stored in a hash map of SubstrateReplacements. The
@@ -109,22 +132,35 @@ public class SubstrateMethod implements SharedRuntimeMethod {
          * in a synthetic hash-code field (see NativeImageHeap.ObjectInfo.identityHashCode).
          */
         hashCode = original.hashCode();
-        implementations = new SubstrateMethod[0];
         encodedGraphStartOffset = -1;
-        bridge = original.isBridge();
-        hasStubCallingConvention = StubCallingConvention.Utils.hasStubCallingConvention(original);
+
+        SubstrateCallingConventionKind callingConventionKind = ExplicitCallingConvention.Util.getCallingConventionKind(original, original.isEntryPoint());
+        flags = makeFlag(original.isBridge(), FLAG_BIT_BRIDGE) |
+                        makeFlag(original.hasNeverInlineDirective(), FLAG_BIT_NEVER_INLINE) |
+                        makeFlag(Uninterruptible.Utils.isUninterruptible(original), FLAG_BIT_UNINTERRUPTIBLE) |
+                        makeFlag(SubstrateSafepointInsertionPhase.needSafepointCheck(original), FLAG_BIT_NEEDS_SAFEPOINT_CHECK) |
+                        makeFlag(original.isEntryPoint(), FLAG_BIT_ENTRY_POINT) |
+                        makeFlag(original.isAnnotationPresent(Snippet.class), FLAG_BIT_SNIPPET) |
+                        makeFlag(original.isAnnotationPresent(SubstrateForeignCallTarget.class), FLAG_BIT_FOREIGN_CALL_TARGET) |
+                        makeFlag(callingConventionKind.ordinal(), FLAG_BIT_CALLING_CONVENTION_KIND, NUM_BITS_CALLING_CONVENTION_KIND) |
+                        makeFlag(StubCallingConvention.Utils.hasStubCallingConvention(original), FLAG_BIT_CALLEE_SAVED_REGISTERS);
     }
 
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public boolean setAnnotationsEncoding(Object annotationsEncoding) {
-        boolean result = this.annotationsEncoding != annotationsEncoding;
-        this.annotationsEncoding = annotationsEncoding;
-        return result;
+    private static int makeFlag(boolean value, int flagBit) {
+        return value ? 1 << flagBit : 0;
     }
 
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public Object getAnnotationsEncoding() {
-        return annotationsEncoding;
+    private static int makeFlag(int value, int flagBit, int numBits) {
+        VMError.guarantee(value >= 0 && value < (1 << numBits), "flag value out of range");
+        return value << flagBit;
+    }
+
+    private boolean getFlag(int flagBit) {
+        return (flags & (1 << flagBit)) != 0;
+    }
+
+    private int getFlag(int flagBit, int numBits) {
+        return (flags >> flagBit) & ((1 << numBits) - 1);
     }
 
     public byte[] getEncodedLineNumberTable() {
@@ -144,21 +180,14 @@ public class SubstrateMethod implements SharedRuntimeMethod {
         this.declaringClass = declaringClass;
     }
 
-    public boolean setImplementations(SubstrateMethod[] rawImplementations) {
-        Object newImplementations;
+    public void setImplementations(SubstrateMethod[] rawImplementations) {
         if (rawImplementations.length == 0) {
-            newImplementations = null;
+            implementations = null;
         } else if (rawImplementations.length == 1) {
-            newImplementations = rawImplementations[0];
-        } else if (!(this.implementations instanceof SubstrateMethod[]) || !Arrays.equals((SubstrateMethod[]) this.implementations, rawImplementations)) {
-            newImplementations = rawImplementations;
+            implementations = rawImplementations[0];
         } else {
-            newImplementations = this.implementations;
+            implementations = rawImplementations;
         }
-
-        boolean result = this.implementations != newImplementations;
-        this.implementations = newImplementations;
-        return result;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -166,26 +195,38 @@ public class SubstrateMethod implements SharedRuntimeMethod {
         return implementations;
     }
 
-    public void setSubstrateData(int vTableIndex, int codeOffsetInImage, int deoptOffsetInImage) {
+    public void setSubstrateData(int vTableIndex, int imageCodeOffset, int imageCodeDeoptOffset) {
         this.vTableIndex = vTableIndex;
-        this.codeOffsetInImage = codeOffsetInImage;
-        this.deoptOffsetInImage = deoptOffsetInImage;
+        this.imageCodeOffset = imageCodeOffset;
+        this.imageCodeDeoptOffset = imageCodeDeoptOffset;
     }
 
     @Override
-    public boolean hasCodeOffsetInImage() {
-        return codeOffsetInImage != 0;
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public ImageCodeInfo getImageCodeInfo() {
+        return imageCodeInfo;
     }
 
     @Override
-    public int getCodeOffsetInImage() {
-        assert codeOffsetInImage != 0;
-        return codeOffsetInImage;
+    public boolean hasImageCodeOffset() {
+        return imageCodeOffset != 0;
     }
 
     @Override
-    public int getDeoptOffsetInImage() {
-        return deoptOffsetInImage;
+    public int getImageCodeOffset() {
+        assert imageCodeOffset != 0;
+        return imageCodeOffset;
+    }
+
+    @Override
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public int getImageCodeDeoptOffset() {
+        return imageCodeDeoptOffset;
+    }
+
+    @Override
+    public boolean forceIndirectCall() {
+        return false;
     }
 
     @Override
@@ -198,13 +239,13 @@ public class SubstrateMethod implements SharedRuntimeMethod {
     }
 
     @Override
-    public boolean isEntryPoint() {
-        return false;
+    public SubstrateCallingConventionKind getCallingConventionKind() {
+        return SubstrateCallingConventionKind.values()[getFlag(FLAG_BIT_CALLING_CONVENTION_KIND, NUM_BITS_CALLING_CONVENTION_KIND)];
     }
 
     @Override
     public boolean hasCalleeSavedRegisters() {
-        return hasStubCallingConvention;
+        return getFlag(FLAG_BIT_CALLEE_SAVED_REGISTERS);
     }
 
     @Override
@@ -226,6 +267,31 @@ public class SubstrateMethod implements SharedRuntimeMethod {
     @Override
     public boolean canDeoptimize() {
         return true;
+    }
+
+    @Override
+    public boolean isUninterruptible() {
+        return getFlag(FLAG_BIT_UNINTERRUPTIBLE);
+    }
+
+    @Override
+    public boolean needSafepointCheck() {
+        return getFlag(FLAG_BIT_NEEDS_SAFEPOINT_CHECK);
+    }
+
+    @Override
+    public boolean isEntryPoint() {
+        return getFlag(FLAG_BIT_ENTRY_POINT);
+    }
+
+    @Override
+    public boolean isSnippet() {
+        return getFlag(FLAG_BIT_SNIPPET);
+    }
+
+    @Override
+    public boolean isForeignCallTarget() {
+        return getFlag(FLAG_BIT_FOREIGN_CALL_TARGET);
     }
 
     @Override
@@ -306,7 +372,7 @@ public class SubstrateMethod implements SharedRuntimeMethod {
 
     @Override
     public ExceptionHandler[] getExceptionHandlers() {
-        throw shouldNotReachHere();
+        throw shouldNotReachHereAtRuntime(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -322,37 +388,37 @@ public class SubstrateMethod implements SharedRuntimeMethod {
 
     @Override
     public void reprofile() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public ConstantPool getConstantPool() {
-        throw shouldNotReachHere();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public Annotation[] getAnnotations() {
-        return AnnotationsEncoding.decodeAnnotations(annotationsEncoding).getAnnotations();
+        throw VMError.unimplemented("Annotations are not available for JIT compilation at image run time");
     }
 
     @Override
     public Annotation[] getDeclaredAnnotations() {
-        return getAnnotations();
+        throw VMError.unimplemented("Annotations are not available for JIT compilation at image run time");
     }
 
     @Override
     public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
-        return AnnotationsEncoding.decodeAnnotations(annotationsEncoding).getAnnotation(annotationClass);
+        throw VMError.unimplemented("Annotations are not available for JIT compilation at image run time");
     }
 
     @Override
     public Annotation[][] getParameterAnnotations() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public Type[] getGenericParameterTypes() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -364,7 +430,7 @@ public class SubstrateMethod implements SharedRuntimeMethod {
     public boolean hasNeverInlineDirective() {
         // If there is no graph in the image, then the method must never be considered
         // for inlining (because any attempt to inline it would fail).
-        return neverInline || encodedGraphStartOffset < 0;
+        return getFlag(FLAG_BIT_NEVER_INLINE) || encodedGraphStartOffset < 0;
     }
 
     @Override
@@ -384,12 +450,12 @@ public class SubstrateMethod implements SharedRuntimeMethod {
 
     @Override
     public Constant getEncoding() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public boolean isInVirtualMethodTable(ResolvedJavaType resolved) {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -399,22 +465,22 @@ public class SubstrateMethod implements SharedRuntimeMethod {
 
     @Override
     public boolean isVarArgs() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public boolean isBridge() {
-        return bridge;
+        return getFlag(FLAG_BIT_BRIDGE);
     }
 
     @Override
     public boolean isDefault() {
-        throw unimplemented();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public SpeculationLog getSpeculationLog() {
-        throw shouldNotReachHere();
+        throw intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override

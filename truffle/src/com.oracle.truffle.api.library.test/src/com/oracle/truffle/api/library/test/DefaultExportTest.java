@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -254,7 +254,6 @@ public class DefaultExportTest extends AbstractParametrizedLibraryTest {
     @ExportLibrary(value = DefaultLibrary.class, receiverType = Integer.class)
     static class DefaultExportError2 {
 
-        @ExpectError("Exported methods with explicit receiver must be static.")
         @ExportMessage
         int abstractMethod(Integer receiverObject) {
             return 42;
@@ -266,7 +265,6 @@ public class DefaultExportTest extends AbstractParametrizedLibraryTest {
     static class DefaultExportError3 {
 
         @ExportMessage
-        @ExpectError("Invalid exported type. Expected 'Integer' but was 'Object'. %")
         static int abstractMethod(Object receiverObject) {
             return 42;
         }

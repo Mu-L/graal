@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -62,7 +62,7 @@ public class OtherPackageBaseObject implements TruffleObject {
     }
 
     @ExportMessage
-    public String m1(@Cached("this.value") int cachedValue) {
+    public String m1(@Cached(value = "this.value", neverDefault = false) int cachedValue) {
         return "m1_base";
     }
 
@@ -76,7 +76,7 @@ public class OtherPackageBaseObject implements TruffleObject {
 
     @ExportMessage
     public static class M3 {
-        @Specialization(guards = "receiver.value == value")
+        @Specialization(guards = "receiver.value == value", limit = "3")
         public static String doDefault(OtherPackageBaseObject receiver, @Cached("receiver.value") int value) {
             return "m3_base";
         }

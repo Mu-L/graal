@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,12 +38,15 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleContext;
 import com.oracle.truffle.api.instrumentation.AllocationEvent;
 import com.oracle.truffle.api.instrumentation.AllocationEventFilter;
@@ -68,7 +71,8 @@ import com.oracle.truffle.tools.profiler.impl.ProfilerToolFactory;
  * while the heap monitor was not collecting data are not tracked.
  *
  * <p>
- * Usage example: {@link HeapMonitorSnippets#example}
+ * Usage example: {@snippet file = "com/oracle/truffle/tools/profiler/HeapMonitor.java" region =
+ * "HeapMonitorSnippets#example"}
  *
  * @see #takeSummary()
  * @see #takeMetaObjectSummary()
@@ -86,7 +90,8 @@ public final class HeapMonitor implements Closeable {
     private final ConcurrentLinkedQueue<ObjectWeakReference> newReferences = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<ObjectWeakReference> processedReferences = new ConcurrentLinkedQueue<>();
     private final Map<LanguageInfo, Map<String, HeapSummary>> summaryData = new LinkedHashMap<>();
-    private Thread referenceThread;
+    private ExecutorService referenceExecutorService;
+    private Future<?> referenceFuture;
 
     private volatile boolean closed;
     private boolean collecting;
@@ -134,16 +139,24 @@ public final class HeapMonitor implements Closeable {
             activeBinding.dispose();
             activeBinding = null;
         }
-        if (closed && referenceThread != null && referenceThread.isAlive()) {
-            referenceThread.interrupt();
-            referenceThread = null;
+        if (closed && referenceFuture != null) {
+            referenceFuture.cancel(true);
+            referenceFuture = null;
         }
         if (!collecting || closed) {
             return;
         }
         clearData();
-        if (referenceThread == null) {
-            this.referenceThread = new Thread(() -> {
+        if (referenceExecutorService == null) {
+            referenceExecutorService = JoinableExecutors.newSingleThreadExecutor((r) -> {
+                Thread t = env.createSystemThread(r);
+                t.setName("HeapMonitor Cleanup");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        if (referenceFuture == null) {
+            referenceFuture = referenceExecutorService.submit(() -> {
                 while (!closed) {
                     cleanReferenceQueue();
                     try {
@@ -153,10 +166,7 @@ public final class HeapMonitor implements Closeable {
                     }
                 }
             });
-            this.referenceThread.setName("HeapMonitor Cleanup");
-            this.referenceThread.setDaemon(true);
         }
-        referenceThread.start();
         this.activeBinding = env.getInstrumenter().attachAllocationListener(AllocationEventFilter.ANY, new Listener());
     }
 
@@ -178,6 +188,7 @@ public final class HeapMonitor implements Closeable {
      * @throws IllegalStateException if the heap monitor was already closed
      * @since 19.0
      */
+    @SuppressWarnings("javadoc")
     public synchronized void setCollecting(boolean collecting) {
         if (closed) {
             throw new IllegalStateException("Heap Allocation Monitor is already closed.");
@@ -207,6 +218,7 @@ public final class HeapMonitor implements Closeable {
      * @throws IllegalStateException if the heap monitor was already closed
      * @since 19.0
      */
+    @SuppressWarnings("javadoc")
     public HeapSummary takeSummary() {
         if (closed) {
             throw new IllegalStateException("Heap Allocation Monitor is already closed.");
@@ -236,6 +248,7 @@ public final class HeapMonitor implements Closeable {
      * @throws IllegalStateException if the heap monitor was already closed
      * @since 19.0
      */
+    @SuppressWarnings("javadoc")
     public Map<LanguageInfo, Map<String, HeapSummary>> takeMetaObjectSummary() {
         cleanReferenceQueue();
         processNewReferences();
@@ -332,10 +345,28 @@ public final class HeapMonitor implements Closeable {
      * @since 19.0
      */
     @Override
-    public synchronized void close() {
-        closed = true;
-        resetMonitor();
-        clearData();
+    public void close() {
+        ExecutorService toShutDown;
+        synchronized (this) {
+            closed = true;
+            resetMonitor();
+            clearData();
+            toShutDown = referenceExecutorService;
+        }
+        if (toShutDown != null) {
+            toShutDown.shutdownNow();
+            while (true) {
+                try {
+                    if (toShutDown.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS)) {
+                        break;
+                    } else {
+                        throw new RuntimeException("Failed to shutdown background thread.");
+                    }
+                } catch (InterruptedException ie) {
+                    // continue to awaitTermination
+                }
+            }
+        }
     }
 
     private void cleanReferenceQueue() {
@@ -368,7 +399,7 @@ public final class HeapMonitor implements Closeable {
         }
     }
 
-    private class Listener implements AllocationListener {
+    private final class Listener implements AllocationListener {
 
         public void onEnter(AllocationEvent event) {
             // nothing to do
@@ -454,8 +485,8 @@ class HeapMonitorSnippets {
 
     @SuppressWarnings("unused")
     public void example() throws InterruptedException {
-        // @formatter:off
-        // BEGIN: HeapMonitorSnippets#example
+        // @formatter:off // @replace regex='.*' replacement=''
+        // @start region="HeapMonitorSnippets#example"
         try (Context context = Context.create()) {
             HeapMonitor monitor = HeapMonitor.find(context.getEngine());
             monitor.setCollecting(true);
@@ -473,7 +504,7 @@ class HeapMonitorSnippets {
             monitor.setCollecting(false);
         }
         // Print the number of live instances per meta object every 100ms.
-        // END: HeapMonitorSnippets#example
-        // @formatter:on
+        // @end region="HeapMonitorSnippets#example"
+        // @formatter:on // @replace regex='.*' replacement=''
     }
 }

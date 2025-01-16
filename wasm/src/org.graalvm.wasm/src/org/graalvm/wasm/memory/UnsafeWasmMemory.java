@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -45,10 +45,16 @@ import static java.lang.StrictMath.addExact;
 import static java.lang.StrictMath.multiplyExact;
 import static org.graalvm.wasm.constants.Sizes.MEMORY_PAGE_SIZE;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
 
+import org.graalvm.wasm.api.Vector128;
 import org.graalvm.wasm.exception.Failure;
 import org.graalvm.wasm.exception.WasmException;
 
@@ -67,17 +73,18 @@ public final class UnsafeWasmMemory extends WasmMemory {
 
     private static final Unsafe unsafe;
     private static final long addressOffset;
+    private static final VarHandle SIZE_FIELD;
 
-    private UnsafeWasmMemory(long declaredMinSize, long declaredMaxSize, long initialSize, long maxAllowedSize, boolean indexType64) {
-        super(declaredMinSize, declaredMaxSize, initialSize, maxAllowedSize, indexType64);
+    private UnsafeWasmMemory(long declaredMinSize, long declaredMaxSize, long initialSize, long maxAllowedSize, boolean indexType64, boolean shared) {
+        super(declaredMinSize, declaredMaxSize, initialSize, maxAllowedSize, indexType64, shared);
         this.size = declaredMinSize;
         final long byteSize = byteSize();
         this.buffer = allocateBuffer(byteSize);
         this.startAddress = getBufferAddress(buffer);
     }
 
-    UnsafeWasmMemory(long declaredMinSize, long declaredMaxSize, long maxAllowedSize, boolean indexType64) {
-        this(declaredMinSize, declaredMaxSize, declaredMinSize, maxAllowedSize, indexType64);
+    UnsafeWasmMemory(long declaredMinSize, long declaredMaxSize, long maxAllowedSize, boolean indexType64, boolean shared) {
+        this(declaredMinSize, declaredMaxSize, declaredMinSize, maxAllowedSize, indexType64, shared);
     }
 
     @TruffleBoundary
@@ -104,7 +111,15 @@ public final class UnsafeWasmMemory extends WasmMemory {
         }
     }
 
+    private static void validateAtomicAddress(Node node, long address, int length) {
+        if ((address & (length - 1)) != 0) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            throw trapUnalignedAtomic(node, address, length);
+        }
+    }
+
     @Override
+    @TruffleBoundary
     public void reset() {
         size = declaredMinSize;
         buffer = allocateBuffer(byteSize());
@@ -114,7 +129,7 @@ public final class UnsafeWasmMemory extends WasmMemory {
 
     @Override
     public long size() {
-        return size;
+        return (long) SIZE_FIELD.getVolatile(this);
     }
 
     @Override
@@ -124,125 +139,121 @@ public final class UnsafeWasmMemory extends WasmMemory {
 
     @Override
     @TruffleBoundary
-    public boolean grow(long extraPageSize) {
+    public synchronized long grow(long extraPageSize) {
+        final long previousSize = size();
         if (extraPageSize == 0) {
             invokeGrowCallback();
-            return true;
-        } else if (compareUnsigned(extraPageSize, maxAllowedSize) <= 0 && compareUnsigned(size() + extraPageSize, maxAllowedSize) <= 0) {
+            return previousSize;
+        } else if (compareUnsigned(extraPageSize, maxAllowedSize) <= 0 && compareUnsigned(previousSize + extraPageSize, maxAllowedSize) <= 0) {
             // Condition above and limit on maxPageSize (see ModuleLimits#MAX_MEMORY_SIZE) ensure
             // computation of targetByteSize does not overflow.
-            final long targetByteSize = multiplyExact(addExact(size(), extraPageSize), MEMORY_PAGE_SIZE);
+            final long targetByteSize = multiplyExact(addExact(previousSize, extraPageSize), MEMORY_PAGE_SIZE);
             final long sourceByteSize = byteSize();
             ByteBuffer updatedBuffer = allocateBuffer(targetByteSize);
             final long updatedStartAddress = getBufferAddress(updatedBuffer);
+            final long updatedSize = previousSize + extraPageSize;
             unsafe.copyMemory(startAddress, updatedStartAddress, sourceByteSize);
             buffer = updatedBuffer;
             startAddress = updatedStartAddress;
-            size += extraPageSize;
-            currentMinSize = size;
+            currentMinSize = updatedSize;
+            SIZE_FIELD.setVolatile(this, updatedSize);
             invokeGrowCallback();
-            return true;
+            return previousSize;
         } else {
-            return false;
+            return -1;
         }
     }
 
     @Override
     public int load_i32(Node node, long address) {
         validateAddress(node, address, 4);
-        final int value = unsafe.getInt(startAddress + address);
-        return value;
+        return unsafe.getInt(startAddress + address);
     }
 
     @Override
     public long load_i64(Node node, long address) {
         validateAddress(node, address, 8);
-        final long value = unsafe.getLong(startAddress + address);
-        return value;
+        return unsafe.getLong(startAddress + address);
     }
 
     @Override
     public float load_f32(Node node, long address) {
         validateAddress(node, address, 4);
-        final float value = unsafe.getFloat(startAddress + address);
-        return value;
+        return unsafe.getFloat(startAddress + address);
     }
 
     @Override
     public double load_f64(Node node, long address) {
         validateAddress(node, address, 8);
-        final double value = unsafe.getDouble(startAddress + address);
-        return value;
+        return unsafe.getDouble(startAddress + address);
     }
 
     @Override
     public int load_i32_8s(Node node, long address) {
         validateAddress(node, address, 1);
-        final int value = unsafe.getByte(startAddress + address);
-        return value;
+        return unsafe.getByte(startAddress + address);
     }
 
     @Override
     public int load_i32_8u(Node node, long address) {
         validateAddress(node, address, 1);
-        final int value = 0x0000_00ff & unsafe.getByte(startAddress + address);
-        return value;
+        return 0x0000_00ff & unsafe.getByte(startAddress + address);
     }
 
     @Override
     public int load_i32_16s(Node node, long address) {
         validateAddress(node, address, 2);
-        final int value = unsafe.getShort(startAddress + address);
-        return value;
+        return unsafe.getShort(startAddress + address);
     }
 
     @Override
     public int load_i32_16u(Node node, long address) {
         validateAddress(node, address, 2);
-        final int value = 0x0000_ffff & unsafe.getShort(startAddress + address);
-        return value;
+        return 0x0000_ffff & unsafe.getShort(startAddress + address);
     }
 
     @Override
     public long load_i64_8s(Node node, long address) {
         validateAddress(node, address, 1);
-        final long value = unsafe.getByte(startAddress + address);
-        return value;
+        return unsafe.getByte(startAddress + address);
     }
 
     @Override
     public long load_i64_8u(Node node, long address) {
         validateAddress(node, address, 1);
-        final long value = 0x0000_0000_0000_00ffL & unsafe.getByte(startAddress + address);
-        return value;
+        return 0x0000_0000_0000_00ffL & unsafe.getByte(startAddress + address);
     }
 
     @Override
     public long load_i64_16s(Node node, long address) {
         validateAddress(node, address, 2);
-        final long value = unsafe.getShort(startAddress + address);
-        return value;
+        return unsafe.getShort(startAddress + address);
     }
 
     @Override
     public long load_i64_16u(Node node, long address) {
         validateAddress(node, address, 2);
-        final long value = 0x0000_0000_0000_ffffL & unsafe.getShort(startAddress + address);
-        return value;
+        return 0x0000_0000_0000_ffffL & unsafe.getShort(startAddress + address);
     }
 
     @Override
     public long load_i64_32s(Node node, long address) {
         validateAddress(node, address, 4);
-        final long value = unsafe.getInt(startAddress + address);
-        return value;
+        return unsafe.getInt(startAddress + address);
     }
 
     @Override
     public long load_i64_32u(Node node, long address) {
         validateAddress(node, address, 4);
-        final long value = 0x0000_0000_ffff_ffffL & unsafe.getInt(startAddress + address);
-        return value;
+        return 0x0000_0000_ffff_ffffL & unsafe.getInt(startAddress + address);
+    }
+
+    @Override
+    public Vector128 load_i128(Node node, long address) {
+        validateAddress(node, address, Vector128.BYTES);
+        byte[] bytes = new byte[Vector128.BYTES];
+        unsafe.copyMemory(null, startAddress + address, bytes, Unsafe.ARRAY_BYTE_BASE_OFFSET, Vector128.BYTES);
+        return new Vector128(bytes);
     }
 
     @Override
@@ -302,6 +313,626 @@ public final class UnsafeWasmMemory extends WasmMemory {
     }
 
     @Override
+    public void store_i128(Node node, long address, Vector128 value) {
+        validateAddress(node, address, 16);
+        unsafe.copyMemory(value.getBytes(), Unsafe.ARRAY_BYTE_BASE_OFFSET, null, startAddress + address, 16);
+    }
+
+    @Override
+    public int atomic_load_i32(Node node, long address) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return unsafe.getIntVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public long atomic_load_i64(Node node, long address) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        return unsafe.getLongVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public int atomic_load_i32_8u(Node node, long address) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        return 0x0000_00ff & unsafe.getByteVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public int atomic_load_i32_16u(Node node, long address) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        return 0x0000_ffff & unsafe.getShortVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public long atomic_load_i64_8u(Node node, long address) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        return 0x0000_0000_0000_00ffL & unsafe.getByteVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public long atomic_load_i64_16u(Node node, long address) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        return 0x0000_0000_0000_ffffL & unsafe.getShortVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public long atomic_load_i64_32u(Node node, long address) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return 0x0000_0000_ffff_ffffL & unsafe.getIntVolatile(null, startAddress + address);
+    }
+
+    @Override
+    public void atomic_store_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        unsafe.putIntVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        unsafe.putLongVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i32_8(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        unsafe.putByteVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i32_16(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        unsafe.putShortVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i64_8(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        unsafe.putByteVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i64_16(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        unsafe.putShortVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public void atomic_store_i64_32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        unsafe.putIntVolatile(null, startAddress + address, value);
+    }
+
+    @Override
+    public int atomic_rmw_add_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v + value)) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_add_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v + value)) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_add_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return unsafe.getAndAddInt(null, startAddress + address, value);
+    }
+
+    @Override
+    public long atomic_rmw_add_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v + value)) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_add_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v + value)) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_add_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v = unsafe.getAndAddInt(null, startAddress + address, value);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_add_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        return unsafe.getAndAddLong(null, startAddress + address, value);
+    }
+
+    @Override
+    public int atomic_rmw_sub_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v - value)) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_sub_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v - value)) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_sub_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return unsafe.getAndAddInt(null, startAddress + address, -value);
+    }
+
+    @Override
+    public long atomic_rmw_sub_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v - value)) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_sub_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v - value)) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_sub_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v = unsafe.getAndAddInt(null, startAddress + address, -value);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_sub_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        return unsafe.getAndAddLong(null, startAddress + address, -value);
+    }
+
+    @Override
+    public int atomic_rmw_and_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v & value)) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_and_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v & value)) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_and_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v & value) != v);
+        return v;
+    }
+
+    @Override
+    public long atomic_rmw_and_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v & value)) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_and_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v & value)) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_and_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v & value) != v);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_and_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        long v;
+        do {
+            v = unsafe.getLongVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeLong(startAddress, address, v, v & value) != v);
+        return v;
+    }
+
+    @Override
+    public int atomic_rmw_or_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v | value)) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_or_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v | value)) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_or_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v | value) != v);
+        return v;
+    }
+
+    @Override
+    public long atomic_rmw_or_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v | value)) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_or_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v | value)) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_or_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v | value) != v);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_or_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        long v;
+        do {
+            v = unsafe.getLongVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeLong(startAddress, address, v, v | value) != v);
+        return v;
+    }
+
+    @Override
+    public int atomic_rmw_xor_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v ^ value)) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_xor_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v ^ value)) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_xor_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v ^ value) != v);
+        return v;
+    }
+
+    @Override
+    public long atomic_rmw_xor_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, (byte) (v ^ value)) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xor_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, (short) (v ^ value)) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xor_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v;
+        do {
+            v = unsafe.getIntVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeInt(startAddress, address, v, v ^ value) != v);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xor_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        long v;
+        do {
+            v = unsafe.getLongVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeLong(startAddress, address, v, v ^ value) != v);
+        return v;
+    }
+
+    @Override
+    public int atomic_rmw_xchg_i32_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, value) != v);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_xchg_i32_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, value) != v);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_xchg_i32(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return unsafe.getAndSetInt(null, startAddress + address, value);
+    }
+
+    @Override
+    public long atomic_rmw_xchg_i64_8u(Node node, long address, byte value) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v;
+        do {
+            v = unsafe.getByteVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeByte(startAddress, address, v, value) != v);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xchg_i64_16u(Node node, long address, short value) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v;
+        do {
+            v = unsafe.getShortVolatile(null, startAddress + address);
+        } while (UnsafeUtilities.compareAndExchangeShort(startAddress, address, v, value) != v);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xchg_i64_32u(Node node, long address, int value) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v = unsafe.getAndSetInt(null, startAddress + address, value);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_xchg_i64(Node node, long address, long value) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        return unsafe.getAndSetLong(null, startAddress + address, value);
+    }
+
+    @Override
+    public int atomic_rmw_cmpxchg_i32_8u(Node node, long address, byte expected, byte replacement) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v = UnsafeUtilities.compareAndExchangeByte(startAddress, address, expected, replacement);
+        return 0x0000_00ff & v;
+    }
+
+    @Override
+    public int atomic_rmw_cmpxchg_i32_16u(Node node, long address, short expected, short replacement) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v = UnsafeUtilities.compareAndExchangeShort(startAddress, address, expected, replacement);
+        return 0x0000_ffff & v;
+    }
+
+    @Override
+    public int atomic_rmw_cmpxchg_i32(Node node, long address, int expected, int replacement) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        return UnsafeUtilities.compareAndExchangeInt(startAddress, address, expected, replacement);
+    }
+
+    @Override
+    public long atomic_rmw_cmpxchg_i64_8u(Node node, long address, byte expected, byte replacement) {
+        validateAddress(node, address, 1);
+        validateAtomicAddress(node, address, 1);
+        byte v = UnsafeUtilities.compareAndExchangeByte(startAddress, address, expected, replacement);
+        return 0x0000_0000_0000_00ffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_cmpxchg_i64_16u(Node node, long address, short expected, short replacement) {
+        validateAddress(node, address, 2);
+        validateAtomicAddress(node, address, 2);
+        short v = UnsafeUtilities.compareAndExchangeShort(startAddress, address, expected, replacement);
+        return 0x0000_0000_0000_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_cmpxchg_i64_32u(Node node, long address, int expected, int replacement) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        int v = UnsafeUtilities.compareAndExchangeInt(startAddress, address, expected, replacement);
+        return 0x0000_0000_ffff_ffffL & v;
+    }
+
+    @Override
+    public long atomic_rmw_cmpxchg_i64(Node node, long address, long expected, long replacement) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        return UnsafeUtilities.compareAndExchangeLong(startAddress, address, expected, replacement);
+    }
+
+    @Override
+    @TruffleBoundary
+    public int atomic_notify(Node node, long address, int count) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        if (!this.isShared()) {
+            return 0;
+        }
+        return invokeNotifyCallback(node, address, count);
+    }
+
+    @Override
+    @TruffleBoundary
+    public int atomic_wait32(Node node, long address, int expected, long timeout) {
+        validateAddress(node, address, 4);
+        validateAtomicAddress(node, address, 4);
+        if (!this.isShared()) {
+            throw trapUnsharedMemory(node);
+        }
+        return invokeWaitCallback(node, address, expected, timeout, false);
+    }
+
+    @Override
+    @TruffleBoundary
+    public int atomic_wait64(Node node, long address, long expected, long timeout) {
+        validateAddress(node, address, 8);
+        validateAtomicAddress(node, address, 8);
+        if (!this.isShared()) {
+            throw trapUnsharedMemory(node);
+        }
+        return invokeWaitCallback(node, address, expected, timeout, true);
+    }
+
+    @Override
     public void initialize(byte[] source, int sourceOffset, long destinationOffset, int length) {
         for (int i = 0; i < length; i++) {
             unsafe.putByte(startAddress + destinationOffset + i, source[sourceOffset + i]);
@@ -330,7 +961,7 @@ public final class UnsafeWasmMemory extends WasmMemory {
 
     @Override
     public WasmMemory duplicate() {
-        final UnsafeWasmMemory other = new UnsafeWasmMemory(declaredMinSize, declaredMaxSize, size, maxAllowedSize, indexType64);
+        final UnsafeWasmMemory other = new UnsafeWasmMemory(declaredMinSize, declaredMaxSize, size, maxAllowedSize, indexType64, shared);
         unsafe.copyMemory(this.startAddress, other.startAddress, this.byteSize());
         return other;
     }
@@ -358,13 +989,67 @@ public final class UnsafeWasmMemory extends WasmMemory {
         return buffer.duplicate();
     }
 
+    @Override
+    @TruffleBoundary
+    public int copyFromStream(Node node, InputStream stream, int offset, int length) throws IOException {
+        if (outOfBounds(offset, length)) {
+            throw trapOutOfBounds(node, offset, length);
+        }
+        int totalBytesRead = 0;
+        for (int i = 0; i < length; i++) {
+            int byteRead = stream.read();
+            if (byteRead == -1) {
+                if (totalBytesRead == 0) {
+                    return -1;
+                }
+                break;
+            }
+            unsafe.putByte(startAddress + offset + i, (byte) byteRead);
+            totalBytesRead++;
+        }
+        return totalBytesRead;
+    }
+
+    @Override
+    @TruffleBoundary
+    public void copyToStream(Node node, OutputStream stream, int offset, int length) throws IOException {
+        if (outOfBounds(offset, length)) {
+            throw trapOutOfBounds(node, offset, length);
+        }
+        for (int i = 0; i < length; i++) {
+            byte b = unsafe.getByte(startAddress + offset + i);
+            stream.write(b & 0x0000_00ff);
+        }
+    }
+
+    @Override
+    public void copyToBuffer(Node node, byte[] dst, long srcOffset, int dstOffset, int length) {
+        if (outOfBounds(srcOffset, length)) {
+            throw trapOutOfBounds(node, srcOffset, length);
+        }
+        unsafe.copyMemory(null, startAddress + srcOffset, dst, Unsafe.ARRAY_BYTE_BASE_OFFSET + (long) dstOffset * Unsafe.ARRAY_BYTE_INDEX_SCALE, length);
+    }
+
+    @Override
+    public boolean isUnsafe() {
+        return true;
+    }
+
+    @SuppressWarnings("deprecation"/* JDK-8277863 */)
+    private static long getObjectFieldOffset(Field field) {
+        return unsafe.objectFieldOffset(field);
+    }
+
     static {
         try {
+            var lookup = MethodHandles.lookup();
+            SIZE_FIELD = lookup.findVarHandle(UnsafeWasmMemory.class, "size", long.class);
+
             final Field f = Unsafe.class.getDeclaredField("theUnsafe");
             f.setAccessible(true);
             unsafe = (Unsafe) f.get(null);
             Field addressField = Buffer.class.getDeclaredField("address");
-            addressOffset = unsafe.objectFieldOffset(addressField);
+            addressOffset = getObjectFieldOffset(addressField);
         } catch (Exception e) {
             throw CompilerDirectives.shouldNotReachHere(e);
         }

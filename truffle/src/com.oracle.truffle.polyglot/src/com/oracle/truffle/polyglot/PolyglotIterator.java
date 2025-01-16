@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,8 +40,15 @@
  */
 package com.oracle.truffle.polyglot;
 
+import java.lang.reflect.Type;
+import java.util.ConcurrentModificationException;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -49,22 +56,23 @@ import com.oracle.truffle.api.interop.StopIterationException;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.profiles.BranchProfile;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
 import com.oracle.truffle.api.utilities.TriState;
 import com.oracle.truffle.polyglot.PolyglotIteratorFactory.CacheFactory.HasNextNodeGen;
 import com.oracle.truffle.polyglot.PolyglotIteratorFactory.CacheFactory.NextNodeGen;
-
-import java.lang.reflect.Type;
-import java.util.ConcurrentModificationException;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.Objects;
+import org.graalvm.polyglot.Context;
 
 class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
 
     final Object guestObject;
     final PolyglotLanguageContext languageContext;
     final Cache cache;
+    /**
+     * Strong reference to the creator {@link Context} to prevent it from being garbage collected
+     * and closed while this iterator is still reachable.
+     */
+    final Context contextAnchor;
     /**
      * Caches value returned from the {@link #hasNext()}. The {@link PolyglotIterator} needs to
      * preserve the Java {@link Iterator} contract requiring that when the
@@ -89,6 +97,7 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
         this.guestObject = array;
         this.languageContext = languageContext;
         this.cache = Cache.lookup(languageContext, array.getClass(), elementClass, elementType);
+        this.contextAnchor = languageContext.context.getContextAPI();
         lastHasNext = TriState.UNDEFINED;
     }
 
@@ -110,7 +119,7 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
     @Override
     public boolean hasNext() {
         if (lastHasNext == TriState.UNDEFINED) {
-            lastHasNext = TriState.valueOf((Boolean) cache.hasNext.call(languageContext, guestObject));
+            lastHasNext = TriState.valueOf((Boolean) cache.hasNext.call(null, languageContext, guestObject));
         }
         return lastHasNext == TriState.TRUE ? true : false;
     }
@@ -126,7 +135,7 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
             if (lastHasNext == TriState.TRUE) {
                 lastHasNext = TriState.UNDEFINED;
             }
-            return (T) cache.next.call(languageContext, guestObject, prevHasNext);
+            return (T) cache.next.call(null, languageContext, guestObject, prevHasNext);
         } catch (NoSuchElementException noSuchElementException) {
             lastHasNext = TriState.FALSE;
             throw noSuchElementException;
@@ -183,7 +192,7 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
             }
             assert cache.receiverClass == receiverClass;
             assert cache.valueClass == valueClass;
-            assert cache.valueType == valueType;
+            assert Objects.equals(cache.valueType, valueType);
             return cache;
         }
 
@@ -257,14 +266,15 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
             }
 
             @Specialization(limit = "LIMIT")
-            @SuppressWarnings("unused")
+            @SuppressWarnings({"unused", "truffle-static-method"})
             Object doCached(PolyglotLanguageContext languageContext, Object receiver, Object[] args,
+                            @Bind Node node,
                             @CachedLibrary("receiver") InteropLibrary iterators,
-                            @Cached BranchProfile error) {
+                            @Cached InlinedBranchProfile error) {
                 try {
                     return iterators.hasIteratorNextElement(receiver);
                 } catch (UnsupportedMessageException e) {
-                    error.enter();
+                    error.enter(node);
                     throw PolyglotInteropErrors.iteratorUnsupported(languageContext, receiver, cache.valueType, "hasNext");
                 }
             }
@@ -282,29 +292,30 @@ class PolyglotIterator<T> implements Iterator<T>, PolyglotWrapper {
             }
 
             @Specialization(limit = "LIMIT")
-            @SuppressWarnings("unused")
+            @SuppressWarnings({"unused", "truffle-static-method"})
             Object doCached(PolyglotLanguageContext languageContext, Object receiver, Object[] args,
+                            @Bind Node node,
                             @CachedLibrary("receiver") InteropLibrary iterators,
                             @Cached PolyglotToHostNode toHost,
-                            @Cached BranchProfile error,
-                            @Cached BranchProfile stop) {
+                            @Cached InlinedBranchProfile error,
+                            @Cached InlinedBranchProfile stop) {
                 TriState lastHasNext = (TriState) args[ARGUMENT_OFFSET];
                 try {
                     Object next = iterators.getIteratorNextElement(receiver);
                     if (lastHasNext == TriState.FALSE) {
-                        error.enter();
+                        error.enter(node);
                         throw PolyglotInteropErrors.iteratorConcurrentlyModified(languageContext, receiver, cache.valueType);
                     }
-                    return toHost.execute(languageContext, next, cache.valueClass, cache.valueType);
+                    return toHost.execute(node, languageContext, next, cache.valueClass, cache.valueType);
                 } catch (StopIterationException e) {
-                    stop.enter();
+                    stop.enter(node);
                     if (lastHasNext == TriState.TRUE) {
                         throw PolyglotInteropErrors.iteratorConcurrentlyModified(languageContext, receiver, cache.valueType);
                     } else {
                         throw PolyglotInteropErrors.stopIteration(languageContext, receiver, cache.valueType);
                     }
                 } catch (UnsupportedMessageException e) {
-                    error.enter();
+                    error.enter(node);
                     throw PolyglotInteropErrors.iteratorElementUnreadable(languageContext, receiver, cache.valueType);
                 }
             }

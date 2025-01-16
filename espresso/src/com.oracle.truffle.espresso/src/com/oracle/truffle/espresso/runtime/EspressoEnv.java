@@ -36,11 +36,11 @@ import com.oracle.truffle.espresso.EspressoOptions;
 import com.oracle.truffle.espresso.analysis.hierarchy.ClassHierarchyOracle;
 import com.oracle.truffle.espresso.analysis.hierarchy.DefaultClassHierarchyOracle;
 import com.oracle.truffle.espresso.analysis.hierarchy.NoOpClassHierarchyOracle;
+import com.oracle.truffle.espresso.classfile.perf.TimerCollection;
 import com.oracle.truffle.espresso.jdwp.api.VMEventListenerImpl;
 import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.nodes.interop.EspressoForeignProxyGenerator;
 import com.oracle.truffle.espresso.nodes.interop.PolyglotTypeMappings;
-import com.oracle.truffle.espresso.perf.TimerCollection;
 import com.oracle.truffle.espresso.ref.FinalizationSupport;
 import com.oracle.truffle.espresso.threads.EspressoThreadRegistry;
 
@@ -92,6 +92,8 @@ public final class EspressoEnv {
     public final boolean SoftExit;
     public final boolean AllowHostExit;
     public final boolean Polyglot;
+    public final boolean Continuum;
+    public final boolean BuiltInPolyglotCollections;
     public final boolean HotSwapAPI;
     public final boolean UseBindingsLoader;
     public final boolean EnableSignals;
@@ -100,8 +102,10 @@ public final class EspressoEnv {
     public final boolean EnableAgents;
     public final int TrivialMethodSize;
     public final boolean UseHostFinalReference;
+    public final boolean RegexSubstitutions;
     public final EspressoOptions.JImageMode JImageMode;
     private final PolyglotTypeMappings polyglotTypeMappings;
+    private final boolean enableGenericTypeHints;
     private final HashMap<String, EspressoForeignProxyGenerator.GeneratedProxyBytes> proxyCache;
 
     // Debug option
@@ -118,8 +122,6 @@ public final class EspressoEnv {
 
         this.SoftExit = env.getOptions().get(EspressoOptions.SoftExit);
         this.AllowHostExit = env.getOptions().get(EspressoOptions.ExitHost);
-
-        context.getLanguage().initializeGuestAllocator(env);
         this.timers = TimerCollection.create(env.getOptions().get(EspressoOptions.EnableTimers));
 
         // null if not specified
@@ -134,12 +136,20 @@ public final class EspressoEnv {
         this.EnableManagement = env.getOptions().get(EspressoOptions.EnableManagement);
         this.EnableAgents = env.getOptions().get(EspressoOptions.EnableAgents);
         this.TrivialMethodSize = env.getOptions().get(EspressoOptions.TrivialMethodSize);
+        boolean regexSubstitutions = env.getOptions().get(EspressoOptions.UseTRegex);
+        if (regexSubstitutions && !env.getInternalLanguages().containsKey("regex")) {
+            context.getLogger().warning("UseTRegex is set to true but the 'regex' language is not available. Ignoring UseTRegex.");
+            regexSubstitutions = false;
+        }
+        this.RegexSubstitutions = regexSubstitutions;
         boolean useHostFinalReferenceOption = env.getOptions().get(EspressoOptions.UseHostFinalReference);
         this.UseHostFinalReference = useHostFinalReferenceOption && FinalizationSupport.canUseHostFinalReference();
         if (useHostFinalReferenceOption && !FinalizationSupport.canUseHostFinalReference()) {
-            context.getLogger().warning("--java.UseHostFinalReference is set to 'true' but Espresso cannot access the host java.lang.ref.FinalReference class.\n" +
-                            "Ensure that host system properties '-Despresso.finalization.InjectClasses=true' and '-Despresso.finalization.UnsafeOverride=true' are set.\n" +
-                            "Espresso's guest FinalReference(s) will fallback to WeakReference semantics.");
+            if (env.getOptions().hasBeenSet(EspressoOptions.UseHostFinalReference)) {
+                context.getLogger().warning("--java.UseHostFinalReference is set to 'true' but Espresso cannot access the host java.lang.ref.FinalReference class.\n" +
+                                "Ensure that host system properties '-Despresso.finalization.InjectClasses=true' and '-Despresso.finalization.UnsafeOverride=true' are set.\n" +
+                                "Espresso's guest FinalReference(s) will fallback to WeakReference semantics.");
+            }
         }
 
         String multiThreadingDisabledReason = null;
@@ -159,8 +169,12 @@ public final class EspressoEnv {
         this.multiThreadingDisabled = multiThreadingDisabledReason;
         this.NativeAccessAllowed = env.isNativeAccessAllowed();
         this.Polyglot = env.getOptions().get(EspressoOptions.Polyglot);
+        this.Continuum = env.getOptions().get(EspressoOptions.Continuum);
         this.HotSwapAPI = env.getOptions().get(EspressoOptions.HotSwapAPI);
-        this.polyglotTypeMappings = new PolyglotTypeMappings(env.getOptions().get(EspressoOptions.PolyglotInterfaceMappings), env.getOptions().get(EspressoOptions.PolyglotTypeConverters));
+        this.BuiltInPolyglotCollections = env.getOptions().get(EspressoOptions.BuiltInPolyglotCollections);
+        this.polyglotTypeMappings = new PolyglotTypeMappings(env.getOptions().get(EspressoOptions.PolyglotInterfaceMappings), env.getOptions().get(EspressoOptions.PolyglotTypeConverters),
+                        BuiltInPolyglotCollections);
+        this.enableGenericTypeHints = env.getOptions().get(EspressoOptions.EnableGenericTypeHints);
         this.proxyCache = polyglotTypeMappings.hasMappings() ? new HashMap<>() : null;
         this.UseBindingsLoader = env.getOptions().get(EspressoOptions.UseBindingsLoader);
 
@@ -221,6 +235,10 @@ public final class EspressoEnv {
 
     public PolyglotTypeMappings getPolyglotTypeMappings() {
         return polyglotTypeMappings;
+    }
+
+    public boolean isGenericTypeHintsEnabled() {
+        return enableGenericTypeHints;
     }
 
     public HashMap<String, EspressoForeignProxyGenerator.GeneratedProxyBytes> getProxyCache() {

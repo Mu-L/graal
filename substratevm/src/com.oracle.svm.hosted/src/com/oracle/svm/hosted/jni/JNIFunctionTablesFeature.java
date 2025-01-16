@@ -24,15 +24,12 @@
  */
 package com.oracle.svm.hosted.jni;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.stream.Stream;
 
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
 import org.graalvm.nativeimage.AnnotationAccess;
-import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.hosted.Feature;
@@ -40,18 +37,17 @@ import org.graalvm.nativeimage.hosted.Feature;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
-import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.jni.CallVariant;
 import com.oracle.svm.core.jni.functions.JNIFunctionTables;
 import com.oracle.svm.core.jni.functions.JNIFunctions;
 import com.oracle.svm.core.jni.functions.JNIFunctions.UnimplementedWithJNIEnvArgument;
 import com.oracle.svm.core.jni.functions.JNIFunctions.UnimplementedWithJavaVMArgument;
-import com.oracle.svm.core.jni.functions.JNIFunctionsJDK19OrLater;
+import com.oracle.svm.core.jni.functions.JNIFunctionsJDKLatest;
 import com.oracle.svm.core.jni.functions.JNIInvocationInterface;
 import com.oracle.svm.core.jni.headers.JNIInvokeInterface;
 import com.oracle.svm.core.jni.headers.JNINativeInterface;
-import com.oracle.svm.core.jni.headers.JNINativeInterfaceJDK19OrLater;
+import com.oracle.svm.core.jni.headers.JNINativeInterfaceJDKLatest;
 import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
@@ -63,15 +59,13 @@ import com.oracle.svm.hosted.c.info.StructFieldInfo;
 import com.oracle.svm.hosted.c.info.StructInfo;
 import com.oracle.svm.hosted.code.CEntryPointCallStubSupport;
 import com.oracle.svm.hosted.code.CEntryPointData;
-import com.oracle.svm.hosted.jni.JNIPrimitiveArrayOperationMethod.Operation;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 
-import jdk.vm.ci.meta.ConstantPool;
+import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
-import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
  * Prepares the initialization of the JNI function table structures at image generation time,
@@ -84,24 +78,22 @@ public class JNIFunctionTablesFeature implements Feature {
 
     /**
      * Metadata about the table pointed to by the {@code JNIEnv*} C pointer.
-     * 
+     *
      * @see <a href=
      *      "https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/functions.html#interface_function_table">Documentation
      *      for the Interface Function Table</a>
      */
     private StructInfo functionTableMetadata;
-    private StructInfo functionTableMetadataJDK19OrLater;
+    private StructInfo functionTableMetadataJDKLatest;
 
     /**
      * Metadata about the table pointed to by the {@code JavaVM*} C pointer.
-     * 
+     *
      * @see <a href=
      *      "https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/invocation.html#invocation_api_functions">Documentation
      *      for the Invocation API Function Table</a>
      */
     private StructInfo invokeInterfaceMetadata;
-
-    private ResolvedJavaMethod[] generatedMethods;
 
     @Override
     public List<Class<? extends Feature>> getRequiredFeatures() {
@@ -120,16 +112,16 @@ public class JNIFunctionTablesFeature implements Feature {
         invokeInterfaceMetadata = (StructInfo) nativeLibraries.findElementInfo(invokeInterface);
         AnalysisType functionTable = metaAccess.lookupJavaType(JNINativeInterface.class);
         functionTableMetadata = (StructInfo) nativeLibraries.findElementInfo(functionTable);
-        if (JavaVersionUtil.JAVA_SPEC > 17) {
-            functionTableMetadataJDK19OrLater = (StructInfo) nativeLibraries.findElementInfo(metaAccess.lookupJavaType(JNINativeInterfaceJDK19OrLater.class));
+        if (JavaVersionUtil.JAVA_SPEC > 21) {
+            functionTableMetadataJDKLatest = (StructInfo) nativeLibraries.findElementInfo(metaAccess.lookupJavaType(JNINativeInterfaceJDKLatest.class));
         }
 
         // Manually add functions as entry points so this is only done when JNI features are enabled
         AnalysisType invokes = metaAccess.lookupJavaType(JNIInvocationInterface.class);
         AnalysisType exports = metaAccess.lookupJavaType(JNIInvocationInterface.Exports.class);
         AnalysisType functions = metaAccess.lookupJavaType(JNIFunctions.class);
-        AnalysisType functionsJDK19OrLater = JavaVersionUtil.JAVA_SPEC <= 17 ? null : metaAccess.lookupJavaType(JNIFunctionsJDK19OrLater.class);
-        Stream<AnalysisMethod> analysisMethods = Stream.of(invokes, functions, functionsJDK19OrLater, exports).filter(type -> type != null).flatMap(type -> Stream.of(type.getDeclaredMethods()));
+        AnalysisType functionsJDKLatest = JavaVersionUtil.JAVA_SPEC > 21 ? metaAccess.lookupJavaType(JNIFunctionsJDKLatest.class) : null;
+        Stream<AnalysisMethod> analysisMethods = Stream.of(invokes, functions, functionsJDKLatest, exports).filter(type -> type != null).flatMap(type -> Stream.of(type.getDeclaredMethods(false)));
         Stream<AnalysisMethod> unimplementedMethods = Stream.of((AnalysisMethod) getSingleMethod(metaAccess, UnimplementedWithJNIEnvArgument.class),
                         (AnalysisMethod) getSingleMethod(metaAccess, UnimplementedWithJavaVMArgument.class));
         Stream.concat(analysisMethods, unimplementedMethods).forEach(method -> {
@@ -143,39 +135,6 @@ public class JNIFunctionTablesFeature implements Feature {
                 return data;
             });
         });
-
-        ArrayList<ResolvedJavaMethod> generated = new ArrayList<>();
-        MetaAccessProvider wrappedMetaAccess = metaAccess.getWrapped();
-        ResolvedJavaType generatedMethodClass = wrappedMetaAccess.lookupJavaType(JNIFunctions.class);
-        ConstantPool constantPool = generatedMethodClass.getDeclaredMethods()[0].getConstantPool();
-        // Generate JNI field accessors
-        EnumSet<JavaKind> fldKinds = jniKinds.clone();
-        fldKinds.remove(JavaKind.Void);
-        for (JavaKind kind : fldKinds) {
-            boolean[] trueFalse = {true, false};
-            for (boolean isSetter : trueFalse) {
-                for (boolean isStatic : trueFalse) {
-                    JNIFieldAccessorMethod method = ImageSingletons.lookup(JNIFieldAccessorMethod.Factory.class).create(kind, isSetter, isStatic, generatedMethodClass, constantPool,
-                                    wrappedMetaAccess);
-                    AnalysisMethod analysisMethod = access.getUniverse().lookup(method);
-                    access.getBigBang().addRootMethod(analysisMethod, true).registerAsEntryPoint(method.createEntryPointData());
-                    generated.add(method);
-                }
-            }
-        }
-        // Generate JNI primitive array operations
-        EnumSet<JavaKind> primitiveArrayKinds = jniKinds.clone();
-        primitiveArrayKinds.remove(JavaKind.Void);
-        primitiveArrayKinds.remove(JavaKind.Object);
-        for (JavaKind kind : primitiveArrayKinds) {
-            for (Operation op : Operation.values()) {
-                JNIPrimitiveArrayOperationMethod method = new JNIPrimitiveArrayOperationMethod(kind, op, generatedMethodClass, constantPool, wrappedMetaAccess);
-                AnalysisMethod analysisMethod = access.getUniverse().lookup(method);
-                access.getBigBang().addRootMethod(analysisMethod, true).registerAsEntryPoint(method.createEntryPointData());
-                generated.add(method);
-            }
-        }
-        generatedMethods = generated.toArray(new ResolvedJavaMethod[0]);
     }
 
     @Override
@@ -195,7 +154,7 @@ public class JNIFunctionTablesFeature implements Feature {
     }
 
     private static ResolvedJavaMethod getSingleMethod(MetaAccessProvider metaAccess, Class<?> holder) {
-        ResolvedJavaMethod[] methods = metaAccess.lookupJavaType(holder).getDeclaredMethods();
+        ResolvedJavaMethod[] methods = metaAccess.lookupJavaType(holder).getDeclaredMethods(false);
         assert methods.length == 1;
         return methods[0];
     }
@@ -210,7 +169,7 @@ public class JNIFunctionTablesFeature implements Feature {
         JNIFunctionTables.singleton().initInvokeInterfaceTable(unimplementedWithJavaVMArgument, access);
 
         HostedType invokes = access.getMetaAccess().lookupJavaType(JNIInvocationInterface.class);
-        for (HostedMethod method : invokes.getDeclaredMethods()) {
+        for (HostedMethod method : invokes.getDeclaredMethods(false)) {
             StructFieldInfo field = findFieldFor(invokeInterfaceMetadata, method.getName());
             int offset = field.getOffsetInfo().getProperty();
             JNIFunctionTables.singleton().initInvokeInterfaceEntry(offset, getStubFunctionPointer(access, method));
@@ -223,28 +182,18 @@ public class JNIFunctionTablesFeature implements Feature {
         tables.initFunctionTable(unimplementedWithJNIEnvArgument, access);
 
         HostedType functions = access.getMetaAccess().lookupJavaType(JNIFunctions.class);
-        for (HostedMethod method : functions.getDeclaredMethods()) {
+        for (HostedMethod method : functions.getDeclaredMethods(false)) {
             StructFieldInfo field = findFieldFor(functionTableMetadata, method.getName());
             int offset = field.getOffsetInfo().getProperty();
             tables.initFunctionEntry(offset, getStubFunctionPointer(access, method));
         }
-        if (JavaVersionUtil.JAVA_SPEC > 17) {
-            HostedType functionsJDK19OrLater = access.getMetaAccess().lookupJavaType(JNIFunctionsJDK19OrLater.class);
-            for (HostedMethod method : functionsJDK19OrLater.getDeclaredMethods()) {
-                StructFieldInfo field = findFieldFor(functionTableMetadataJDK19OrLater, method.getName());
+        if (JavaVersionUtil.JAVA_SPEC > 21) {
+            HostedType functionsJDKLatest = access.getMetaAccess().lookupJavaType(JNIFunctionsJDKLatest.class);
+            for (HostedMethod method : functionsJDKLatest.getDeclaredMethods(false)) {
+                StructFieldInfo field = findFieldFor(functionTableMetadataJDKLatest, method.getName());
                 int offset = field.getOffsetInfo().getProperty();
                 tables.initFunctionEntry(offset, getStubFunctionPointer(access, method));
             }
-        }
-        for (ResolvedJavaMethod accessor : generatedMethods) {
-            StructFieldInfo field = findFieldFor(functionTableMetadata, accessor.getName());
-
-            AnalysisUniverse analysisUniverse = access.getUniverse().getBigBang().getUniverse();
-            AnalysisMethod analysisMethod = analysisUniverse.lookup(accessor);
-            HostedMethod hostedMethod = access.getUniverse().lookup(analysisMethod);
-
-            int offset = field.getOffsetInfo().getProperty();
-            tables.initFunctionEntry(offset, new MethodPointer(hostedMethod));
         }
         for (CallVariant variant : CallVariant.values()) {
             CFunctionPointer trampoline = prepareCallTrampoline(access, variant, false);
@@ -269,7 +218,7 @@ public class JNIFunctionTablesFeature implements Feature {
 
     /**
      * Finds the field holding a pointer to a given method in a functions table.
-     * 
+     *
      * @param info the functions table to search in
      * @param name name of the method to search for
      * @return information about the field holding a pointer to the method named {@code name} in

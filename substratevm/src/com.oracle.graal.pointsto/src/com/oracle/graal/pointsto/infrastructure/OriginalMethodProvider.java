@@ -26,19 +26,52 @@ package com.oracle.graal.pointsto.infrastructure;
 
 import java.lang.reflect.Executable;
 
-import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
+import com.oracle.graal.pointsto.util.GraalAccess;
 
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 public interface OriginalMethodProvider {
 
-    static Executable getJavaMethod(SnippetReflectionProvider reflectionProvider, ResolvedJavaMethod method) {
-        if (method instanceof OriginalMethodProvider) {
-            return ((OriginalMethodProvider) method).getJavaMethod();
-        } else {
-            return reflectionProvider.originalMethod(method);
+    /**
+     * Provides a mapping back from a {@link ResolvedJavaMethod} to the original method provided by
+     * the JVMCI implementation of the VM that runs the image generator. This is a best-effort
+     * operation, all callers must be aware that the return value can be null.
+     */
+    static ResolvedJavaMethod getOriginalMethod(ResolvedJavaMethod method) {
+        ResolvedJavaMethod cur = method;
+        while (cur instanceof OriginalMethodProvider originalMethodProvider) {
+            cur = originalMethodProvider.unwrapTowardsOriginalMethod();
         }
+        return cur;
     }
 
-    Executable getJavaMethod();
+    /**
+     * Provides a mapping back from a {@link ResolvedJavaMethod} to a {@link Executable}, i.e., a
+     * mapping from JVMCI back to Java reflection. This is a best-effort operation, all callers must
+     * be aware that the return value can be null.
+     *
+     * A null return value means that there is 1) no reflection representation at all - the provided
+     * JVMCI method is a synthetic method without any class/bytecode backing, or 2) that looking up
+     * the reflection object is not possible due to linking errors.
+     */
+    static Executable getJavaMethod(ResolvedJavaMethod method) {
+        ResolvedJavaMethod originalMethod = getOriginalMethod(method);
+        if (originalMethod != null) {
+            try {
+                return GraalAccess.getOriginalSnippetReflection().originalMethod(originalMethod);
+            } catch (LinkageError ignored) {
+                /*
+                 * Ignore any linking problems and incompatible class change errors. Looking up a
+                 * reflective representation of a JVMCI method is always a best-effort operation.
+                 */
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Do not invoke directly, it is only invoked by static methods from this class. Must be
+     * implemented by all {@link ResolvedJavaMethod} implementations in the native image code base.
+     */
+    ResolvedJavaMethod unwrapTowardsOriginalMethod();
 }

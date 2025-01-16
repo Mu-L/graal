@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -154,8 +154,8 @@ public class AcceptsTest extends AbstractParametrizedLibraryTest {
 
         @ExportMessage
         // invalid receiver type
-        @ExpectError("Invalid parameter type. Expected 'ErrorAccepts1' but was 'Object'. %")
-        static boolean accepts(Object receiver) {
+        static boolean accepts(@ExpectError("Invalid parameter type. Expected 'ErrorAccepts1' but was 'Object'. %") //
+        Object receiver) {
             return true;
         }
 

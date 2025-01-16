@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,6 +51,7 @@ import org.graalvm.options.OptionDescriptor;
 import org.graalvm.options.OptionDescriptors;
 import org.graalvm.options.OptionKey;
 import org.graalvm.options.OptionStability;
+import org.graalvm.polyglot.SandboxPolicy;
 
 /**
  * Describes the attributes of an option whose {@link OptionKey value} is in a static field
@@ -74,7 +75,7 @@ import org.graalvm.options.OptionStability;
  * <p>
  * <b>Example usage:</b>
  *
- * {@link OptionSnippets.MyLanguage}.
+ * {@snippet file="com/oracle/truffle/api/Option.java" region="OptionSnippets.MyLanguage"}.
  *
  * @see OptionDescriptor
  * @see Option.Group
@@ -182,6 +183,18 @@ public @interface Option {
     String usageSyntax() default "";
 
     /**
+     * Specifies the most strict sandbox policy in which the option can be used. The option can be
+     * used for an engine/context with the specified sandbox policy or a weaker one. For example, if
+     * an option specifies {@code ISOLATED} policy, it can be used for an engine/context configured
+     * with sandbox policy {@code TRUSTED}, {@code CONSTRAINED} or {@code ISOLATED}. But it cannot
+     * be used for an engine/context configured with the {@code UNTRUSTED} sandbox policy.
+     *
+     * @see SandboxPolicy
+     * @since 23.0
+     */
+    SandboxPolicy sandbox() default SandboxPolicy.TRUSTED;
+
+    /**
      * Must be applied on classes containing {@link Option option} fields to specify a name prefix
      * if the prefix cannot be inferred by language or instrument.
      * <p>
@@ -219,9 +232,9 @@ public @interface Option {
 
 class OptionSnippets {
 
-    // @formatter:off
+    // @formatter:off // @replace regex='.*' replacement=''
 
-    // BEGIN: OptionSnippets.MyLanguage
+    // @start region="OptionSnippets.MyLanguage"
     @TruffleLanguage.Registration(id = "mylang", name = "My Language",
                                   version = "1.0")
     abstract static class MyLanguage extends TruffleLanguage<Context> {
@@ -251,7 +264,7 @@ class OptionSnippets {
             return new MyLanguageOptionDescriptors();
         }
     }
-    // END: OptionSnippets.MyLanguage
+    // @end region="OptionSnippets.MyLanguage"
 
     static class MyLanguageOptionDescriptors implements OptionDescriptors {
 

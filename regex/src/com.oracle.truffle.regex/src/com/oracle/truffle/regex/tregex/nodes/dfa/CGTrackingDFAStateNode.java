@@ -42,6 +42,7 @@ package com.oracle.truffle.regex.tregex.nodes.dfa;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.strings.TruffleString;
 
 public class CGTrackingDFAStateNode extends DFAStateNode {
 
@@ -52,11 +53,13 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
     private final DFACaptureGroupPartialTransition anchoredFinalStateTransition;
     private final DFACaptureGroupPartialTransition unAnchoredFinalStateTransition;
     private final DFACaptureGroupPartialTransition cgLoopToSelf;
+    private final boolean cgLoopToSelfHasDependency;
 
     public CGTrackingDFAStateNode(short id,
                     byte flags,
                     short loopTransitionIndex,
-                    IndexOfCall indexOfCall,
+                    short indexOfNodeId,
+                    byte indexOfIsFast,
                     short[] successors,
                     Matchers matchers,
                     short[] lastTransitionIndex,
@@ -65,8 +68,9 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
                     DFACaptureGroupLazyTransition preUnAnchoredFinalStateTransition,
                     DFACaptureGroupPartialTransition anchoredFinalStateTransition,
                     DFACaptureGroupPartialTransition unAnchoredFinalStateTransition,
-                    DFACaptureGroupPartialTransition cgLoopToSelf) {
-        super(id, flags, loopTransitionIndex, indexOfCall, successors, matchers, null);
+                    DFACaptureGroupPartialTransition cgLoopToSelf,
+                    boolean cgLoopToSelfHasDependency) {
+        super(id, flags, loopTransitionIndex, indexOfNodeId, indexOfIsFast, successors, matchers, null);
         this.anchoredFinalStateTransition = anchoredFinalStateTransition;
         this.unAnchoredFinalStateTransition = unAnchoredFinalStateTransition;
         this.lastTransitionIndex = lastTransitionIndex;
@@ -74,6 +78,7 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
         this.preAnchoredFinalStateTransition = preAnchoredFinalStateTransition;
         this.preUnAnchoredFinalStateTransition = preUnAnchoredFinalStateTransition;
         this.cgLoopToSelf = cgLoopToSelf;
+        this.cgLoopToSelfHasDependency = cgLoopToSelfHasDependency;
     }
 
     private CGTrackingDFAStateNode(CGTrackingDFAStateNode copy, short copyID) {
@@ -85,6 +90,7 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
         this.anchoredFinalStateTransition = copy.anchoredFinalStateTransition;
         this.unAnchoredFinalStateTransition = copy.unAnchoredFinalStateTransition;
         this.cgLoopToSelf = copy.cgLoopToSelf;
+        this.cgLoopToSelfHasDependency = copy.cgLoopToSelfHasDependency;
     }
 
     private DFACaptureGroupPartialTransition getCGTransitionToSelf() {
@@ -109,12 +115,12 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
     }
 
     @Override
-    void afterIndexOf(TRegexDFAExecutorLocals locals, TRegexDFAExecutorNode executor, final int preLoopIndex, int postLoopIndex) {
+    void afterIndexOf(TRegexDFAExecutorLocals locals, TRegexDFAExecutorNode executor, final int preLoopIndex, int postLoopIndex, TruffleString.CodeRange codeRange) {
         assert locals.getIndex() == preLoopIndex;
         if (locals.getIndex() < postLoopIndex) {
             successorFound(locals, executor, getLoopToSelf());
             locals.setLastIndex();
-            executor.inputSkip(locals);
+            executor.inputSkip(locals, codeRange);
         }
         int secondIndex = locals.getIndex();
         DFACaptureGroupPartialTransition transition = getCGTransitionToSelf();
@@ -122,19 +128,29 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
             while (locals.getIndex() < postLoopIndex) {
                 transition.apply(executor, locals.getCGData(), locals.getLastIndex());
                 locals.setLastIndex();
-                executor.inputSkip(locals);
+                executor.inputSkip(locals, codeRange);
             }
         } else if (postLoopIndex > preLoopIndex) {
             locals.setIndex(postLoopIndex);
-            executor.inputSkipReverse(locals);
+            executor.inputSkipReverse(locals, codeRange);
             locals.setLastIndex();
             if (secondIndex < postLoopIndex) {
-                executor.inputSkipReverse(locals);
+                executor.inputSkipReverse(locals, codeRange);
+            }
+            if (cgLoopToSelfHasDependency && secondIndex < locals.getLastIndex()) {
+                int postLoopMinusTwoIndex = locals.getIndex();
+                executor.inputSkipReverse(locals, codeRange);
+                transition.apply(executor, locals.getCGData(), locals.getIndex());
+                locals.setIndex(postLoopMinusTwoIndex);
+            }
+            if (secondIndex < postLoopIndex) {
                 transition.apply(executor, locals.getCGData(), locals.getIndex());
             }
             locals.setIndex(postLoopIndex);
         }
-        executor.inputIncNextIndexRaw(locals, indexOfCall.encodedLength());
+        if (!executor.inputAtEnd(locals)) {
+            executor.inputIncNextIndexRaw(locals, executor.inputGetCodePointSize(locals, codeRange));
+        }
         if (executor.isSearching()) {
             checkFinalState(locals, executor);
         }
@@ -188,5 +204,21 @@ public class CGTrackingDFAStateNode extends DFAStateNode {
             locals.getCGData().exportResult(executor, (byte) DFACaptureGroupPartialTransition.FINAL_STATE_RESULT_INDEX);
         }
         locals.setResultInt(0);
+    }
+
+    public int getCGTrackingCost() {
+        int cost = getCost(preAnchoredFinalStateTransition) + getCost(preUnAnchoredFinalStateTransition) + getCost(anchoredFinalStateTransition) + getCost(unAnchoredFinalStateTransition);
+        for (DFACaptureGroupLazyTransition t : lazyTransitions) {
+            cost += t.getCost();
+        }
+        return cost;
+    }
+
+    private static int getCost(DFACaptureGroupLazyTransition t) {
+        return t == null ? 0 : t.getCost();
+    }
+
+    private static int getCost(DFACaptureGroupPartialTransition t) {
+        return t == null ? 0 : t.getCost();
     }
 }

@@ -72,6 +72,7 @@ public class PECoffObjectFile extends ObjectFile {
     private PECoffDirectiveSection directives;
     private boolean runtimeDebugInfoGeneration;
 
+    @SuppressWarnings("this-escape")
     private PECoffObjectFile(int pageSize, boolean runtimeDebugInfoGeneration) {
         super(pageSize);
         this.runtimeDebugInfoGeneration = runtimeDebugInfoGeneration;
@@ -86,6 +87,7 @@ public class PECoffObjectFile extends ObjectFile {
         directives = new PECoffDirectiveSection(".drectve", 1);
     }
 
+    @SuppressWarnings("this-escape")
     public PECoffObjectFile(int pageSize) {
         this(pageSize, false);
     }
@@ -124,7 +126,7 @@ public class PECoffObjectFile extends ObjectFile {
 
     @Override
     public PECoffUserDefinedSection newUserDefinedSection(Segment segment, String name, int alignment, ElementImpl impl) {
-        PECoffUserDefinedSection userDefined = new PECoffUserDefinedSection(this, name, alignment, impl);
+        PECoffUserDefinedSection userDefined = new PECoffUserDefinedSection(this, name, alignment, impl, EnumSet.of(PECoffSectionFlag.INITIALIZED_DATA, PECoffSectionFlag.READ));
         assert userDefined.getImpl() == impl;
         if (segment != null) {
             getOrCreateSegment(segment.getName(), name, true, false).add(userDefined);
@@ -670,7 +672,7 @@ public class PECoffObjectFile extends ObjectFile {
         } else if (el instanceof PECoffRelocationTable) {
             rs = (PECoffRelocationTable) el;
         } else {
-            throw new IllegalStateException("section exists but is not an PECoffRelocationTable");
+            throw new IllegalStateException("Section exists but is not an PECoffRelocationTable");
         }
         return rs;
     }

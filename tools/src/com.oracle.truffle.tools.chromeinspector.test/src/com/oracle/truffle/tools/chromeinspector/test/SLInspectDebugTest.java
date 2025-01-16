@@ -201,7 +201,8 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         assertEquals("{\"result\":{},\"id\":1}", tester.getMessages(true).trim());
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
-        assertEquals("{\"result\":{},\"id\":2}", tester.getMessages(true).trim());
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
@@ -243,8 +244,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -331,8 +334,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String slTestURI = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
 
@@ -408,8 +413,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.sendMessage("{\"id\":3,\"method\":\"Debugger.setBreakpointByUrl\",\"params\":{\"lineNumber\":9,\"url\":\"" + srcURL + "\",\"columnNumber\":0,\"condition\":\"\"}}");
@@ -564,8 +571,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -645,8 +655,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -721,8 +734,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -798,8 +814,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -857,8 +876,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":1,\"method\":\"Runtime.enable\"}");
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         long id = tester.getContextId();
@@ -1125,8 +1147,11 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Debugger.setBlackboxPatterns\",\"params\":{\"patterns\":[\"BlackboxedFunc.sl\"]}}");
         tester.sendMessage("{\"id\":4,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
-        assertTrue(tester.compareReceivedMessages("{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+        assertTrue(tester.compareReceivedMessages(
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"result\":{},\"id\":4}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
@@ -1244,8 +1269,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.sendMessage("{\"id\":3,\"method\":\"Debugger.setBreakpointByUrl\",\"params\":{\"lineNumber\":6,\"url\":\"" + srcURL + "\",\"columnNumber\":0,\"condition\":\"\"}}");
@@ -1375,8 +1402,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -1585,8 +1614,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
 
@@ -1666,8 +1697,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
 
@@ -1732,8 +1765,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.sendMessage("{\"id\":3,\"method\":\"Debugger.setPauseOnExceptions\",\"params\":{\"state\":\"uncaught\"}}");
@@ -1781,8 +1816,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         int suspendLine = 15;
@@ -1810,7 +1847,7 @@ public class SLInspectDebugTest {
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"m\",\"value\":{\"description\":\"4\",\"type\":\"number\",\"value\":4},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"b\",\"value\":{\"description\":\"true\",\"type\":\"boolean\",\"value\":true},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"bb\",\"value\":{\"description\":\"true\",\"type\":\"boolean\",\"value\":true},\"configurable\":true,\"writable\":true}," +
-                                                 "{\"isOwn\":true,\"enumerable\":true,\"name\":\"big\",\"value\":{\"description\":\"152415787532388367501905199875019052100\",\"type\":\"number\",\"value\":\"152415787532388367501905199875019052100\"},\"configurable\":true,\"writable\":true}," +
+                                                 "{\"isOwn\":true,\"enumerable\":true,\"name\":\"big\",\"value\":{\"description\":\"152415787532388367501905199875019052100\",\"type\":\"number\",\"value\":152415787532388367501905199875019052100},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"str\",\"value\":{\"description\":\"A String\",\"type\":\"string\",\"value\":\"A String\"},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"f\",\"value\":{\"description\":\"fn() {\\n  return 2;\\n}\",\"className\":\"Function\",\"type\":\"function\",\"objectId\":\"3\"},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"f2\",\"value\":{\"description\":\"0\",\"type\":\"number\",\"value\":0},\"configurable\":true,\"writable\":true}],\"internalProperties\":[]},\"id\":5}\n"));
@@ -1847,7 +1884,7 @@ public class SLInspectDebugTest {
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"m\",\"value\":{\"description\":\"1000\",\"type\":\"number\",\"value\":1000},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"b\",\"value\":{\"description\":\"false\",\"type\":\"boolean\",\"value\":false},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"bb\",\"value\":{\"description\":\"false\",\"type\":\"boolean\",\"value\":false},\"configurable\":true,\"writable\":true}," +
-                                                 "{\"isOwn\":true,\"enumerable\":true,\"name\":\"big\",\"value\":{\"description\":\"23230572289118153328333583928030329684079829544396666111742077337982514410000\",\"type\":\"number\",\"value\":\"23230572289118153328333583928030329684079829544396666111742077337982514410000\"},\"configurable\":true,\"writable\":true}," +
+                                                 "{\"isOwn\":true,\"enumerable\":true,\"name\":\"big\",\"value\":{\"description\":\"23230572289118153328333583928030329684079829544396666111742077337982514410000\",\"type\":\"number\",\"value\":23230572289118153328333583928030329684079829544396666111742077337982514410000},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"str\",\"value\":{\"description\":\"A Different String\",\"type\":\"string\",\"value\":\"A Different String\"},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"f\",\"value\":{\"description\":\"fn() {\\n  return 2;\\n}\",\"className\":\"Function\",\"type\":\"function\",\"objectId\":\"6\"},\"configurable\":true,\"writable\":true}," +
                                                  "{\"isOwn\":true,\"enumerable\":true,\"name\":\"f2\",\"value\":{\"description\":\"fn() {\\n  return 2;\\n}\",\"className\":\"Function\",\"type\":\"function\",\"objectId\":\"7\"},\"configurable\":true,\"writable\":true}],\"internalProperties\":[]},\"id\":11}\n"));
@@ -1870,8 +1907,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -1914,8 +1953,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -1953,8 +1994,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":2,\"method\":\"Debugger.enable\"}");
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);
@@ -2012,8 +2055,10 @@ public class SLInspectDebugTest {
         tester.sendMessage("{\"id\":3,\"method\":\"Runtime.runIfWaitingForDebugger\"}");
         String srcURL = InspectorTester.getStringURI(source.getURI());
         assertTrue(tester.compareReceivedMessages(
-                        "{\"result\":{},\"id\":1}\n" +
-                        "{\"result\":{},\"id\":2}\n" +
+                        "{\"result\":{},\"id\":1}\n"));
+        tester.receiveMessages(
+                        "{\"result\":{\"debuggerId\":\"UniqueDebuggerId.", "},\"id\":2}\n");
+        assertTrue(tester.compareReceivedMessages(
                         "{\"result\":{},\"id\":3}\n" +
                         "{\"method\":\"Runtime.executionContextCreated\",\"params\":{\"context\":{\"origin\":\"\",\"name\":\"test\",\"id\":1}}}\n"));
         tester.eval(source);

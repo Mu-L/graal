@@ -185,7 +185,7 @@ public final class Support {
     }
 
     public static JNIObjectHandle getObjectArgument(JNIObjectHandle thread, int slot) {
-        assert thread.notEqual(nullHandle()) : "JDK-8292657: must not use NULL for the current thread because it does not apply to virtual threads on JDK 19";
+        assert thread.notEqual(nullHandle()) || jvmtiVersion() != JvmtiInterface.JVMTI_VERSION_19 : "JDK-8292657";
         WordPointer handlePtr = StackValue.get(WordPointer.class);
         if (jvmtiFunctions().GetLocalObject().invoke(jvmtiEnv(), thread, 0, slot, handlePtr) != JvmtiError.JVMTI_ERROR_NONE) {
             return nullHandle();
@@ -198,7 +198,7 @@ public final class Support {
      * for instance methods, not static methods.
      */
     public static JNIObjectHandle getReceiver(JNIObjectHandle thread) {
-        assert thread.notEqual(nullHandle()) : "JDK-8292657: must not use NULL for the current thread because it does not apply to virtual threads on JDK 19";
+        assert thread.notEqual(nullHandle()) || jvmtiVersion() != JvmtiInterface.JVMTI_VERSION_19 : "JDK-8292657";
         WordPointer handlePtr = StackValue.get(WordPointer.class);
         JvmtiError result = jvmtiFunctions().GetLocalInstance().invoke(jvmtiEnv(), thread, 0, handlePtr);
         if (result != JvmtiError.JVMTI_ERROR_NONE) {
@@ -367,29 +367,6 @@ public final class Support {
         return jniFunctions().getCallStaticObjectMethodA().invoke(env, clazz, method, args);
     }
 
-    public static JNIObjectHandle callStaticObjectMethodLLLL(JNIEnvironment env, JNIObjectHandle clazz, JNIMethodId method,
-                    JNIObjectHandle l0, JNIObjectHandle l1, JNIObjectHandle l2, JNIObjectHandle l3) {
-
-        JNIValue args = StackValue.get(4, JNIValue.class);
-        args.addressOf(0).setObject(l0);
-        args.addressOf(1).setObject(l1);
-        args.addressOf(2).setObject(l2);
-        args.addressOf(3).setObject(l3);
-        return jniFunctions().getCallStaticObjectMethodA().invoke(env, clazz, method, args);
-    }
-
-    public static JNIObjectHandle callStaticObjectMethodLLLLL(JNIEnvironment env, JNIObjectHandle clazz, JNIMethodId method,
-                    JNIObjectHandle l0, JNIObjectHandle l1, JNIObjectHandle l2, JNIObjectHandle l3, JNIObjectHandle l4) {
-
-        JNIValue args = StackValue.get(5, JNIValue.class);
-        args.addressOf(0).setObject(l0);
-        args.addressOf(1).setObject(l1);
-        args.addressOf(2).setObject(l2);
-        args.addressOf(3).setObject(l3);
-        args.addressOf(4).setObject(l4);
-        return jniFunctions().getCallStaticObjectMethodA().invoke(env, clazz, method, args);
-    }
-
     public static void callStaticVoidMethodLL(JNIEnvironment env, JNIObjectHandle clazz, JNIMethodId method, JNIObjectHandle l0, JNIObjectHandle l1) {
         JNIValue args = StackValue.get(2, JNIValue.class);
         args.addressOf(0).setObject(l0);
@@ -405,6 +382,12 @@ public final class Support {
 
     public static boolean callBooleanMethod(JNIEnvironment env, JNIObjectHandle obj, JNIMethodId method) {
         return jniFunctions().getCallBooleanMethodA().invoke(env, obj, method, nullPointer());
+    }
+
+    public static boolean callBooleanMethodL(JNIEnvironment env, JNIObjectHandle obj, JNIMethodId method, JNIObjectHandle l0) {
+        JNIValue args = StackValue.get(1, JNIValue.class);
+        args.addressOf(0).setObject(l0);
+        return jniFunctions().getCallBooleanMethodA().invoke(env, obj, method, args);
     }
 
     public static long callLongMethodL(JNIEnvironment env, JNIObjectHandle obj, JNIMethodId method, JNIObjectHandle l0) {
@@ -446,12 +429,14 @@ public final class Support {
     }
 
     public static void check(JvmtiError resultCode) {
-        guarantee(resultCode.equals(JvmtiError.JVMTI_ERROR_NONE), "JVMTI call failed with " + resultCode.name());
+        if (!resultCode.equals(JvmtiError.JVMTI_ERROR_NONE)) {
+            throw VMError.shouldNotReachHere("JVMTI call failed with " + resultCode);
+        }
     }
 
-    public static void checkPhase(JvmtiError resultCode) throws WrongPhaseException {
+    public static void checkPhase(JvmtiError resultCode) {
         if (resultCode == JvmtiError.JVMTI_ERROR_WRONG_PHASE) {
-            throw new WrongPhaseException();
+            throw new WrongPhaseError();
         }
         check(resultCode);
     }
@@ -463,7 +448,7 @@ public final class Support {
     private Support() {
     }
 
-    public static class WrongPhaseException extends Exception {
+    public static class WrongPhaseError extends Error {
         private static final long serialVersionUID = 8503239518909756105L;
     }
 }
