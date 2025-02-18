@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -44,14 +44,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -69,6 +72,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -93,13 +97,16 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.PolyglotAccess;
 import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.SandboxPolicy;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 import org.graalvm.polyglot.io.FileSystem;
 import org.graalvm.polyglot.io.IOAccess;
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -109,6 +116,7 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.ContextLocal;
 import com.oracle.truffle.api.ContextThreadLocal;
 import com.oracle.truffle.api.InstrumentInfo;
+import com.oracle.truffle.api.InternalResource;
 import com.oracle.truffle.api.Option;
 import com.oracle.truffle.api.ThreadLocalAction;
 import com.oracle.truffle.api.TruffleContext;
@@ -116,15 +124,21 @@ import com.oracle.truffle.api.TruffleFile;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.Env;
 import com.oracle.truffle.api.TruffleLogger;
+import com.oracle.truffle.api.TruffleStackTrace;
+import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.ContextsListener;
 import com.oracle.truffle.api.instrumentation.EventBinding;
 import com.oracle.truffle.api.instrumentation.ThreadsActivationListener;
 import com.oracle.truffle.api.instrumentation.ThreadsListener;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
+import com.oracle.truffle.api.interop.InteropLibrary;
+import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.test.ReflectionUtils;
 import com.oracle.truffle.api.test.TestAPIAccessor;
+import com.oracle.truffle.api.test.polyglot.InternalResourceTest.TemporaryResourceCacheRoot;
 import com.oracle.truffle.tck.tests.TruffleTestAssumptions;
 
 public class ContextPreInitializationTest {
@@ -133,15 +147,32 @@ public class ContextPreInitializationTest {
     static final String SECOND = "ContextPreInitializationSecond";
     static final String INTERNAL = "ContextPreInitializationInternal";
     static final String SHARED = "ContextPreInitializationShared";
+    static final String CONSTRAINED = "ContextPreInitializationConstrained";
+
     private static final AtomicInteger NEXT_ORDER_INDEX = new AtomicInteger();
     private static final String SYS_OPTION1_KEY = "polyglot." + FIRST + ".Option1";
     private static final String SYS_OPTION2_KEY = "polyglot." + FIRST + ".Option2";
     private static final List<CountingContext> emittedContexts = new ArrayList<>();
     private static final Set<String> patchableLanguages = new HashSet<>();
 
+    private static String originalDynamicCompilationThresholds;
+
     @BeforeClass
     public static void runWithWeakEncapsulationOnly() {
         TruffleTestAssumptions.assumeWeakEncapsulation();
+        // Workaround for issue GR-31197: Compiler tests are passing
+        // engine.DynamicCompilationThresholds option from command line.
+        originalDynamicCompilationThresholds = System.getProperty("polyglot.engine.DynamicCompilationThresholds");
+        if (originalDynamicCompilationThresholds != null) {
+            System.getProperties().remove("polyglot.engine.DynamicCompilationThresholds");
+        }
+    }
+
+    @AfterClass
+    public static void tearDownClass() {
+        if (originalDynamicCompilationThresholds != null) {
+            System.setProperty("polyglot.engine.DynamicCompilationThresholds", originalDynamicCompilationThresholds);
+        }
     }
 
     @Before
@@ -166,7 +197,7 @@ public class ContextPreInitializationTest {
 
         final Class<?> holderClz = Class.forName("org.graalvm.polyglot.Engine$ImplHolder", true, ContextPreInitializationTest.class.getClassLoader());
         final Method preInitMethod = holderClz.getDeclaredMethod("resetPreInitializedEngine");
-        preInitMethod.setAccessible(true);
+        ReflectionUtils.setAccessible(preInitMethod, true);
         preInitMethod.invoke(null);
     }
 
@@ -982,7 +1013,7 @@ public class ContextPreInitializationTest {
         // In context pre-initialization there is no sdk Context to set log handler,
         // logging is done to System.err
         final PrintStream origErr = System.err;
-        final ByteArrayOutputStream preInitErr = new ByteArrayOutputStream();
+        final ByteArrayOutputStream preInitErr = new CheckCloseByteArrayOutputStream();
         String origLogFile = System.getProperty("polyglot.log.file");
         try (PrintStream printStream = new PrintStream(preInitErr)) {
             System.setErr(printStream);
@@ -1107,7 +1138,7 @@ public class ContextPreInitializationTest {
             log.log(Level.FINEST, "patch:finest");
         });
         final PrintStream origErr = System.err;
-        final ByteArrayOutputStream preInitErr = new ByteArrayOutputStream();
+        final ByteArrayOutputStream preInitErr = new CheckCloseByteArrayOutputStream();
         String origLogFile = System.getProperty("polyglot.log.file");
         try (PrintStream printStream = new PrintStream(preInitErr)) {
             System.setErr(printStream);
@@ -1142,7 +1173,7 @@ public class ContextPreInitializationTest {
         try {
             Class<?> clz = Class.forName("com.oracle.truffle.polyglot.PolyglotEngineImpl");
             Method m = clz.getDeclaredMethod("getEngineLogger");
-            m.setAccessible(true);
+            ReflectionUtils.setAccessible(m, true);
             return (TruffleLogger) m.invoke(engine);
         } catch (ReflectiveOperationException e) {
             throw new RuntimeException(e);
@@ -1176,7 +1207,7 @@ public class ContextPreInitializationTest {
             log.log(Level.FINEST, "bound2:patch:finest");
         });
         final PrintStream origErr = System.err;
-        final ByteArrayOutputStream preInitErr = new ByteArrayOutputStream();
+        final ByteArrayOutputStream preInitErr = new CheckCloseByteArrayOutputStream();
         String origLogFile = System.getProperty("polyglot.log.file");
         try (PrintStream printStream = new PrintStream(preInitErr)) {
             System.setErr(printStream);
@@ -1215,9 +1246,52 @@ public class ContextPreInitializationTest {
     }
 
     @Test
+    public void testJavaLoggerFailedPatch() throws Exception {
+        TestHandler testHandler = new TestHandler(FIRST);
+        failedPatch(Context.newBuilder().logHandler(testHandler));
+        assertEquals(2, testHandler.logs.size());
+        assertEquals("patchContext", testHandler.logs.get(0).getMessage());
+        assertEquals("initializeContext", testHandler.logs.get(1).getMessage());
+    }
+
+    @Test
+    public void testStreamLoggerFailedPatch() throws Exception {
+        ByteArrayOutputStream logStream = new CheckCloseByteArrayOutputStream();
+        failedPatch(Context.newBuilder().logHandler(logStream));
+        String logContent = logStream.toString();
+        assertTrue(logContent.contains("patchContext"));
+        assertTrue(logContent.contains("initializeContext"));
+    }
+
+    private static void failedPatch(Context.Builder builder) throws Exception {
+        doContextPreinitialize(FIRST);
+        BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, (env) -> {
+            env.getLogger("").log(Level.INFO, "initializeContext");
+        });
+        BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT, (env) -> {
+            env.getLogger("").log(Level.INFO, "patchContext");
+        });
+        assertEquals(1, emittedContexts.size());
+        CountingContext firstLangContext = findContext(FIRST, emittedContexts);
+        assertNotNull(firstLangContext);
+        assertEquals(1, firstLangContext.createContextCount);
+        assertEquals(1, firstLangContext.initializeContextCount);
+        assertEquals(0, firstLangContext.patchContextCount);
+        assertEquals(0, firstLangContext.disposeContextCount);
+        assertEquals(1, firstLangContext.initializeThreadCount);
+        assertEquals(1, firstLangContext.disposeThreadCount);
+        try (Context ctx = builder.option(String.format("log.%s.level", FIRST), "INFO").build()) {
+            Value res = ctx.eval(Source.create(FIRST, "test"));
+            assertEquals("test", res.asString());
+            Collection<? extends CountingContext> firstLangContexts = findContexts(FIRST, emittedContexts);
+            assertEquals(2, firstLangContexts.size());
+        }
+    }
+
+    @Test
     public void testFileSystemSwitch() throws Exception {
         setPatchable(FIRST);
-        Path tmpDir = Files.createTempDirectory("testFileSystemSwitch");
+        Path tmpDir = Files.createTempDirectory("testFileSystemSwitch").toRealPath();
         Path buildHome = tmpDir.resolve("build");
         Path execHome = tmpDir.resolve("exec");
         Files.createDirectories(buildHome);
@@ -1316,11 +1390,8 @@ public class ContextPreInitializationTest {
         assertEquals(0, firstLangCtx.initializeContextCount);
         assertEquals(1, firstLangCtx.patchContextCount);
         assertEquals(1, firstLangCtx.disposeContextCount);
-        assertEquals(0, firstLangCtx.initializeThreadCount);    // initializeThread is called only
-                                                                // on TruffleLanguages with
-                                                                // initialized contexts
-        assertEquals(1, firstLangCtx.disposeThreadCount);       // disposeThread is called on all
-                                                                // TruffleLanguages
+        assertEquals(0, firstLangCtx.initializeThreadCount);
+        assertEquals(0, firstLangCtx.disposeThreadCount);
     }
 
     @Test
@@ -1370,7 +1441,7 @@ public class ContextPreInitializationTest {
         assertEquals(1, firstLangCtx.patchContextCount);
         assertEquals(1, firstLangCtx.disposeContextCount);
         assertEquals(0, firstLangCtx.initializeThreadCount);
-        assertEquals(1, firstLangCtx.disposeThreadCount);
+        assertEquals(0, firstLangCtx.disposeThreadCount);
 
         assertEquals(1, secondLangCtx2.createContextCount);
         assertEquals(1, secondLangCtx2.initializeContextCount);
@@ -1398,7 +1469,7 @@ public class ContextPreInitializationTest {
         assertEquals(1, firstLangCtx.patchContextCount);
         assertEquals(1, firstLangCtx.disposeContextCount);
         assertEquals(0, firstLangCtx.initializeThreadCount);
-        assertEquals(1, firstLangCtx.disposeThreadCount);
+        assertEquals(0, firstLangCtx.disposeThreadCount);
         assertEquals(1, secondLangCtx2.createContextCount);
         assertEquals(1, secondLangCtx2.initializeContextCount);
         assertEquals(0, secondLangCtx2.patchContextCount);
@@ -1410,7 +1481,7 @@ public class ContextPreInitializationTest {
         assertEquals(0, firstLangCtx2.patchContextCount);
         assertEquals(1, firstLangCtx2.disposeContextCount);
         assertEquals(0, firstLangCtx2.initializeThreadCount);
-        assertEquals(1, firstLangCtx2.disposeThreadCount);
+        assertEquals(0, firstLangCtx2.disposeThreadCount);
     }
 
     @Test
@@ -1767,7 +1838,7 @@ public class ContextPreInitializationTest {
                     assertTrue(env.isCreateThreadAllowed());
                     assertFalse(env.isHostLookupAllowed());
                     assertTrue(env.isNativeAccessAllowed());
-                    assertTrue(env.isPolyglotEvalAllowed());
+                    assertTrue(env.isPolyglotEvalAllowed(null));
                     assertTrue(env.isPolyglotBindingsAccessAllowed());
                     assertEquals(testId, env.getTimeZone());
                     firstContextInitialized.set(true);
@@ -1777,7 +1848,7 @@ public class ContextPreInitializationTest {
                     assertFalse(env.isCreateThreadAllowed());
                     assertFalse(env.isHostLookupAllowed());
                     assertFalse(env.isNativeAccessAllowed());
-                    assertFalse(env.isPolyglotEvalAllowed());
+                    assertFalse(env.isPolyglotEvalAllowed(null));
                     assertFalse(env.isPolyglotBindingsAccessAllowed());
                     assertFalse(env.getOptions().get(ContextPreInitializationTestSharedLanguage.Option1));
                     assertEquals(systemDefault, env.getTimeZone());
@@ -1901,7 +1972,7 @@ public class ContextPreInitializationTest {
                 assertFalse(env.isHostLookupAllowed());
                 assertFalse(env.isNativeAccessAllowed());
                 // polyglot access currently defaults to true for preinit. See GR-14657.
-                assertTrue(env.isPolyglotEvalAllowed());
+                assertTrue(env.isPolyglotEvalAllowed(null));
                 assertTrue(env.isPolyglotBindingsAccessAllowed());
                 assertEquals(systemDefault, env.getTimeZone());
                 firstContextInitialized.set(true);
@@ -2048,12 +2119,12 @@ public class ContextPreInitializationTest {
     }
 
     private void triggerPreinitialization(Engine engine) throws ReflectiveOperationException {
-        TestAPIAccessor.engineAccess().preinitializeContext(findImpl().getAPIAccess().getReceiver(engine));
+        TestAPIAccessor.engineAccess().preinitializeContext(findImpl().getAPIAccess().getEngineReceiver(engine));
     }
 
     AbstractPolyglotImpl findImpl() throws ReflectiveOperationException {
         Method getImplMethod = Engine.class.getDeclaredMethod("getImpl");
-        getImplMethod.setAccessible(true);
+        ReflectionUtils.setAccessible(getImplMethod, true);
         return (AbstractPolyglotImpl) getImplMethod.invoke(null);
     }
 
@@ -2393,6 +2464,494 @@ public class ContextPreInitializationTest {
         assertEquals(2, firstLangCtx.disposeThreadCount);
     }
 
+    @Test
+    public void testSandboxPolicySuccess() throws Exception {
+        Assume.assumeFalse("Restricted Truffle compiler options are specified on the command line.", executedWithXCompOptions());
+        setPatchable(CONSTRAINED);
+        doContextPreinitialize(CONSTRAINED);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(1, contexts.size());
+        CountingContext constrainedLangCtx = findContext(CONSTRAINED, contexts);
+        assertNotNull(constrainedLangCtx);
+        assertEquals(1, constrainedLangCtx.createContextCount);
+        assertEquals(1, constrainedLangCtx.initializeContextCount);
+        assertEquals(0, constrainedLangCtx.patchContextCount);
+        assertEquals(0, constrainedLangCtx.disposeContextCount);
+        assertEquals(1, constrainedLangCtx.initializeThreadCount);
+        assertEquals(1, constrainedLangCtx.disposeThreadCount);
+        try (Context ctx = Context.newBuilder(CONSTRAINED).sandbox(SandboxPolicy.CONSTRAINED).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream()).option(
+                        ContextPreInitializationConstrainedInstrument.ID, "true").option(CONSTRAINED + ".Constrained", "true").build()) {
+            Value res = ctx.eval(Source.create(CONSTRAINED, "test"));
+            assertEquals("test", res.asString());
+            contexts = new ArrayList<>(emittedContexts);
+            assertEquals(1, contexts.size());
+            assertEquals(1, constrainedLangCtx.createContextCount);
+            assertEquals(1, constrainedLangCtx.initializeContextCount);
+            assertEquals(1, constrainedLangCtx.patchContextCount);
+            assertEquals(0, constrainedLangCtx.disposeContextCount);
+            assertEquals(2, constrainedLangCtx.initializeThreadCount);
+            assertEquals(1, constrainedLangCtx.disposeThreadCount);
+        }
+    }
+
+    @Test
+    public void testSandboxPolicyLanguageFailure() throws Exception {
+        Assume.assumeFalse("Restricted Truffle compiler options are specified on the command line.", executedWithXCompOptions());
+        setPatchable(FIRST);
+        doContextPreinitialize(FIRST);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(1, contexts.size());
+        CountingContext firstLangCtx = findContext(FIRST, contexts);
+        assertNotNull(firstLangCtx);
+        assertEquals(1, firstLangCtx.createContextCount);
+        assertEquals(1, firstLangCtx.initializeContextCount);
+        assertEquals(0, firstLangCtx.patchContextCount);
+        assertEquals(0, firstLangCtx.disposeContextCount);
+        assertEquals(1, firstLangCtx.initializeThreadCount);
+        assertEquals(1, firstLangCtx.disposeThreadCount);
+
+        AbstractPolyglotTest.assertFails(() -> {
+            Context.newBuilder(FIRST).sandbox(SandboxPolicy.CONSTRAINED).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream()).build();
+        }, IllegalArgumentException.class, (e) -> {
+            assertTrue(e.getMessage().contains("The language ContextPreInitializationFirst can only be used up to the TRUSTED sandbox policy."));
+        });
+    }
+
+    @Test
+    public void testSandboxPolicyInstrumentFailure() throws Exception {
+        Assume.assumeFalse("Restricted Truffle compiler options are specified on the command line.", executedWithXCompOptions());
+        setPatchable(CONSTRAINED);
+        doContextPreinitialize(CONSTRAINED);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(1, contexts.size());
+        CountingContext constrainedLangCtx = findContext(CONSTRAINED, contexts);
+        assertNotNull(constrainedLangCtx);
+        assertEquals(1, constrainedLangCtx.createContextCount);
+        assertEquals(1, constrainedLangCtx.initializeContextCount);
+        assertEquals(0, constrainedLangCtx.patchContextCount);
+        assertEquals(0, constrainedLangCtx.disposeContextCount);
+        assertEquals(1, constrainedLangCtx.initializeThreadCount);
+        assertEquals(1, constrainedLangCtx.disposeThreadCount);
+        AbstractPolyglotTest.assertFails(() -> {
+            Context.newBuilder(CONSTRAINED).sandbox(SandboxPolicy.CONSTRAINED).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream()).option(
+                            ContextPreInitializationFirstInstrument.ID, "true").build();
+        }, IllegalArgumentException.class, (e) -> {
+            assertTrue(e.getMessage().contains("The instrument ContextPreInitializationFirstInstrument can only be used up to the TRUSTED sandbox policy."));
+        });
+    }
+
+    @Test
+    public void testSandboxPolicyInstrumentOptionFailure() throws Exception {
+        Assume.assumeFalse("Restricted Truffle compiler options are specified on the command line.", executedWithXCompOptions());
+        setPatchable(CONSTRAINED);
+        doContextPreinitialize(CONSTRAINED);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(1, contexts.size());
+        CountingContext constrainedLangCtx = findContext(CONSTRAINED, contexts);
+        assertNotNull(constrainedLangCtx);
+        assertEquals(1, constrainedLangCtx.createContextCount);
+        assertEquals(1, constrainedLangCtx.initializeContextCount);
+        assertEquals(0, constrainedLangCtx.patchContextCount);
+        assertEquals(0, constrainedLangCtx.disposeContextCount);
+        assertEquals(1, constrainedLangCtx.initializeThreadCount);
+        assertEquals(1, constrainedLangCtx.disposeThreadCount);
+        AbstractPolyglotTest.assertFails(() -> {
+            Context.newBuilder(CONSTRAINED).sandbox(SandboxPolicy.CONSTRAINED).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream()).option(
+                            ContextPreInitializationConstrainedInstrument.ID, "true").option(ContextPreInitializationConstrainedInstrument.ID + ".Trusted", "true").build();
+        }, IllegalArgumentException.class, (e) -> {
+            assertTrue(e.getMessage().contains("The option ContextPreInitializationConstrainedInstrument.Trusted can only be used up to the TRUSTED sandbox policy."));
+        });
+    }
+
+    @Test
+    public void testSandboxPolicyLanguageOptionFailure() throws Exception {
+        Assume.assumeFalse("Restricted Truffle compiler options are specified on the command line.", executedWithXCompOptions());
+        setPatchable(CONSTRAINED);
+        doContextPreinitialize(CONSTRAINED);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(1, contexts.size());
+        CountingContext constrainedLangCtx = findContext(CONSTRAINED, contexts);
+        assertNotNull(constrainedLangCtx);
+        assertEquals(1, constrainedLangCtx.createContextCount);
+        assertEquals(1, constrainedLangCtx.initializeContextCount);
+        assertEquals(0, constrainedLangCtx.patchContextCount);
+        assertEquals(0, constrainedLangCtx.disposeContextCount);
+        assertEquals(1, constrainedLangCtx.initializeThreadCount);
+        assertEquals(1, constrainedLangCtx.disposeThreadCount);
+        AbstractPolyglotTest.assertFails(() -> {
+            Context.newBuilder(CONSTRAINED).sandbox(SandboxPolicy.CONSTRAINED).out(OutputStream.nullOutputStream()).err(OutputStream.nullOutputStream()).option(CONSTRAINED + ".Trusted",
+                            "true").build();
+        }, IllegalArgumentException.class, (e) -> {
+            assertTrue(e.getMessage().contains("The option ContextPreInitializationConstrained.Trusted can only be used up to the TRUSTED sandbox policy."));
+        });
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testLanguageInternalResources() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<TruffleFile> files = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceBuildTimeVerifier(files));
+            doContextPreinitialize(FIRST);
+            assertFalse(files.isEmpty());
+        }
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(runtimeCacheRoot, FIRST);
+        try (TemporaryResourceCacheRoot imageExecutionCacheRoot = new TemporaryResourceCacheRoot(runtimeCacheRoot, true)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT, newResourceExecutionTimeVerifier(files, runtimeCacheRoot.toString()));
+            try (Context ctx = Context.create()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testInternalResourcesInNonPreInitializedEngine() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<TruffleFile> files = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceBuildTimeVerifier(files));
+            doContextPreinitialize(FIRST);
+            assertFalse(files.isEmpty());
+        }
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(runtimeCacheRoot, FIRST);
+        System.setProperty("polyglot.engine.resourcePath", runtimeCacheRoot.toString());
+        try (Engine engine = Engine.create()) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT, (env) -> {
+                throw CompilerDirectives.shouldNotReachHere("Pre-initialized context should not be used.");
+            });
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceNonPreInitializedContextVerifier(runtimeCacheRoot.toString()));
+            try (Context ctx = Context.newBuilder().engine(engine).build()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        } finally {
+            System.getProperties().remove("polyglot.engine.resourcePath");
+            TemporaryResourceCacheRoot.reset(false);
+        }
+    }
+
+    private static Consumer<Env> newResourceBuildTimeVerifier(List<TruffleFile> files) {
+        return (env) -> {
+            try {
+                TruffleFile root = env.getInternalResource(ContextPreInitializationResource.class);
+                assertNotNull(root);
+                assertTrue(root.isAbsolute());
+                TruffleFile resource = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                assertNotNull(resource);
+                assertTrue(resource.isAbsolute());
+                assertEquals(ContextPreInitializationResource.FILE_CONTENT, new String(resource.readAllBytes(), StandardCharsets.UTF_8));
+                files.add(resource);
+            } catch (IOException ioe) {
+                throw new AssertionError(ioe);
+            }
+        };
+    }
+
+    private static Consumer<Env> newResourceNonPreInitializedContextVerifier(String expectedRootPrefix) {
+        return (env) -> {
+            try {
+                ContextPreInitializationResource.unpackCount = 0;
+                TruffleFile root = env.getInternalResource(ContextPreInitializationResource.class);
+                assertEquals(0, ContextPreInitializationResource.unpackCount);
+                assertNotNull(root);
+                assertTrue(root.isAbsolute());
+                TruffleFile resource = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                assertNotNull(resource);
+                assertTrue(resource.isAbsolute());
+                assertTrue(resource.getAbsoluteFile().toString().startsWith(expectedRootPrefix));
+                assertEquals(ContextPreInitializationResource.FILE_CONTENT, new String(resource.readAllBytes(), StandardCharsets.UTF_8));
+            } catch (IOException ioe) {
+                throw new AssertionError(ioe);
+            }
+        };
+    }
+
+    private static Consumer<Env> newResourceExecutionTimeVerifier(List<TruffleFile> files, String expectedRootPrefix) {
+        return (env) -> {
+            try {
+                TruffleFile file1 = files.get(0);
+                assertTrue(file1.isAbsolute());
+                assertEquals(ContextPreInitializationResource.FILE_CONTENT, new String(file1.readAllBytes(), StandardCharsets.UTF_8));
+                ContextPreInitializationResource.unpackCount = 0;
+                TruffleFile root = env.getInternalResource(ContextPreInitializationResource.class);
+                assertNotNull(root);
+                assertTrue(root.isAbsolute());
+                assertEquals(0, ContextPreInitializationResource.unpackCount);
+                TruffleFile file2 = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                assertNotNull(file2);
+                assertTrue(file2.isAbsolute());
+                assertEquals(ContextPreInitializationResource.FILE_CONTENT, new String(file2.readAllBytes(), StandardCharsets.UTF_8));
+                assertEquals(file1, file2);
+                assertEquals(file1.getAbsoluteFile(), file2.getAbsoluteFile());
+                assertTrue(file1.getAbsoluteFile().toString().startsWith(expectedRootPrefix));
+            } catch (IOException ioe) {
+                throw new RuntimeException(ioe);
+            }
+        };
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testSourcesForInternalResources() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<com.oracle.truffle.api.source.Source> sources = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, (env) -> {
+                try {
+                    TruffleFile root = env.getInternalResource(ContextPreInitializationResource.class);
+                    TruffleFile sourceFile = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                    var source = com.oracle.truffle.api.source.Source.newBuilder(FIRST, sourceFile).build();
+                    sources.add(source);
+                } catch (IOException ioe) {
+                    throw new AssertionError(ioe);
+                }
+            });
+            doContextPreinitialize(FIRST);
+            assertFalse(sources.isEmpty());
+        }
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(runtimeCacheRoot, FIRST);
+        try (TemporaryResourceCacheRoot imageExecutionCacheRoot = new TemporaryResourceCacheRoot(runtimeCacheRoot, true)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT, (env) -> {
+                try {
+                    var source1 = sources.get(0);
+                    ContextPreInitializationResource.unpackCount = 0;
+                    TruffleFile root = env.getInternalResource(ContextPreInitializationResource.class);
+                    TruffleFile sourceFile = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                    var source2 = com.oracle.truffle.api.source.Source.newBuilder(FIRST, sourceFile).build();
+                    assertEquals(source1, source2);
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
+                }
+            });
+            try (Context ctx = Context.create()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testInstrumentInternalResources() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        AtomicReference<TruffleFile> rootRef = new AtomicReference<>();
+        ContextPreInitializationFirstInstrument.actions = Collections.singletonMap("onContextCreated", (e) -> {
+            try {
+                TruffleFile root = e.env.getInternalResource(ContextPreInitializationResource.class);
+                assertNotNull(root);
+                assertTrue(root.isAbsolute());
+                TruffleFile resource = root.resolve(ContextPreInitializationResource.FILE_NAME);
+                assertNotNull(resource);
+                assertTrue(resource.isAbsolute());
+                assertEquals(ContextPreInitializationResource.FILE_CONTENT, new String(resource.readAllBytes(), StandardCharsets.UTF_8));
+                rootRef.set(root);
+            } catch (IOException ioe) {
+                throw new AssertionError(ioe);
+            }
+        });
+        doContextPreinitialize(FIRST);
+        assertNull(rootRef.get());
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(runtimeCacheRoot, ContextPreInitializationFirstInstrument.ID);
+        try (TemporaryResourceCacheRoot imageExecutionCacheRoot = new TemporaryResourceCacheRoot(runtimeCacheRoot, true)) {
+            try (Context ctx = Context.newBuilder().option(ContextPreInitializationFirstInstrument.ID, "true").allowIO(IOAccess.ALL).build()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+                TruffleFile root = rootRef.get();
+                assertNotNull(root);
+                assertTrue(root.getAbsoluteFile().toString().startsWith(runtimeCacheRoot.toString()));
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testOverriddenCacheRoot() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<TruffleFile> files = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceBuildTimeVerifier(files));
+            doContextPreinitialize(FIRST);
+            assertFalse(files.isEmpty());
+        }
+        Path overriddenCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(overriddenCacheRoot, FIRST);
+        System.setProperty("polyglot.engine.resourcePath", overriddenCacheRoot.toRealPath().toString());
+        TemporaryResourceCacheRoot.reset(true);
+        try {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT,
+                            newResourceExecutionTimeVerifier(files, overriddenCacheRoot.toString()));
+            try (Context ctx = Context.create()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        } finally {
+            TemporaryResourceCacheRoot.reset(true);
+            System.getProperties().remove("polyglot.engine.resourcePath");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testOverriddenComponentRoot() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<TruffleFile> files = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceBuildTimeVerifier(files));
+            doContextPreinitialize(FIRST);
+            assertFalse(files.isEmpty());
+        }
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Path overriddenCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(overriddenCacheRoot, FIRST);
+        System.setProperty(String.format("polyglot.engine.resourcePath.%s", FIRST), overriddenCacheRoot.resolve(FIRST).toRealPath().toString());
+        try (TemporaryResourceCacheRoot imageExecutionCacheRoot = new TemporaryResourceCacheRoot(runtimeCacheRoot, true)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT,
+                            newResourceExecutionTimeVerifier(files, overriddenCacheRoot.toString()));
+            try (Context ctx = Context.create()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        } finally {
+            System.getProperties().remove(String.format("polyglot.engine.resourcePath.%s", FIRST));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    public void testOverriddenResourceRoot() throws Exception {
+        TruffleTestAssumptions.assumeNotAOT();
+        setPatchable(FIRST);
+        List<TruffleFile> files = new ArrayList<>();
+        try (TemporaryResourceCacheRoot imageBuildTimeCacheRoot = new TemporaryResourceCacheRoot(false)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, newResourceBuildTimeVerifier(files));
+            doContextPreinitialize(FIRST);
+            assertFalse(files.isEmpty());
+        }
+        Path runtimeCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Path overriddenCacheRoot = Files.createTempDirectory(null).toRealPath();
+        Engine.copyResources(overriddenCacheRoot, FIRST);
+        System.setProperty(String.format("polyglot.engine.resourcePath.%s.%s", FIRST, ContextPreInitializationResource.ID),
+                        overriddenCacheRoot.resolve(FIRST).resolve(ContextPreInitializationResource.ID).toRealPath().toString());
+        try (TemporaryResourceCacheRoot imageExecutionCacheRoot = new TemporaryResourceCacheRoot(runtimeCacheRoot, true)) {
+            BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_PATCH_CONTEXT,
+                            newResourceExecutionTimeVerifier(files, overriddenCacheRoot.toString()));
+            try (Context ctx = Context.create()) {
+                Value res = ctx.eval(Source.create(FIRST, "test"));
+                assertEquals("test", res.asString());
+            }
+        } finally {
+            System.getProperties().remove(String.format("polyglot.engine.resourcePath.%s.%s", FIRST, ContextPreInitializationResource.ID));
+        }
+    }
+
+    @Test
+    public void testPatchNotCalledOnNonAllowedLanguage() throws ReflectiveOperationException {
+        setPatchable(FIRST, SECOND);
+        doContextPreinitialize(FIRST, SECOND);
+        List<CountingContext> contexts = new ArrayList<>(emittedContexts);
+        assertEquals(2, contexts.size());
+        CountingContext firstLangCtx = findContext(FIRST, contexts);
+        assertNotNull(firstLangCtx);
+        CountingContext secondLangCtx = findContext(SECOND, contexts);
+        assertNotNull(secondLangCtx);
+        assertEquals(1, firstLangCtx.createContextCount);
+        assertEquals(1, firstLangCtx.initializeContextCount);
+        assertEquals(0, firstLangCtx.patchContextCount);
+        assertEquals(0, firstLangCtx.disposeContextCount);
+        assertEquals(1, firstLangCtx.initializeThreadCount);
+        assertEquals(1, firstLangCtx.disposeThreadCount);
+        assertEquals(1, secondLangCtx.createContextCount);
+        assertEquals(1, secondLangCtx.initializeContextCount);
+        assertEquals(0, secondLangCtx.patchContextCount);
+        assertEquals(0, secondLangCtx.disposeContextCount);
+        assertEquals(1, secondLangCtx.initializeThreadCount);
+        assertEquals(1, secondLangCtx.disposeThreadCount);
+        try (Context ctx = Context.create(FIRST)) {
+            Value res = ctx.eval(Source.create(FIRST, "test"));
+            assertEquals("test", res.asString());
+            contexts = new ArrayList<>(emittedContexts);
+            assertEquals(3, contexts.size());
+            Collection<? extends CountingContext> firstLangCtxs = findContexts(FIRST, contexts);
+            firstLangCtxs.remove(firstLangCtx);
+            assertEquals(1, firstLangCtxs.size());
+            CountingContext firstLangCtx2 = firstLangCtxs.iterator().next();
+            assertEquals(1, firstLangCtx.createContextCount);
+            assertEquals(1, firstLangCtx.initializeContextCount);
+            assertEquals(1, firstLangCtx.patchContextCount);
+            assertEquals(1, firstLangCtx.disposeContextCount);
+            assertEquals(2, firstLangCtx.initializeThreadCount); // Close initializes thread
+            assertEquals(2, firstLangCtx.disposeThreadCount);    // Close initializes thread
+            assertEquals(1, secondLangCtx.createContextCount);
+            assertEquals(1, secondLangCtx.initializeContextCount);
+            assertEquals(0, secondLangCtx.patchContextCount);
+            assertEquals(1, secondLangCtx.disposeContextCount);
+            assertEquals(2, secondLangCtx.initializeThreadCount);    // Close initializes thread
+            assertEquals(2, secondLangCtx.disposeThreadCount);       // Close initializes thread
+            assertEquals(1, firstLangCtx2.createContextCount);
+            assertEquals(1, firstLangCtx2.initializeContextCount);
+            assertEquals(0, firstLangCtx2.patchContextCount);
+            assertEquals(0, firstLangCtx2.disposeContextCount);
+            assertEquals(1, firstLangCtx2.initializeThreadCount);
+            assertEquals(0, firstLangCtx2.disposeThreadCount);
+        }
+    }
+
+    @Test
+    public void testGR57292() throws Exception {
+        String message = "Test exception";
+        BaseLanguage.registerAction(ContextPreInitializationTestFirstLanguage.class, ActionKind.ON_INITIALIZE_CONTEXT, (env) -> {
+            if (env.getContext().getParent() == null) {
+                try (TruffleContext innerContext = env.newInnerContextBuilder(FIRST).build()) {
+                    try {
+                        innerContext.evalPublic(null, com.oracle.truffle.api.source.Source.newBuilder(FIRST, "", "test").build());
+                        fail("Should not reach here.");
+                    } catch (Exception e) {
+                        InteropLibrary exceptions = InteropLibrary.getUncached();
+                        assertTrue(exceptions.isException(e));
+                        try {
+                            assertEquals(message, exceptions.asString(exceptions.getExceptionMessage(e)));
+                        } catch (UnsupportedMessageException um) {
+                            throw CompilerDirectives.shouldNotReachHere(um);
+                        }
+                    }
+                }
+            } else {
+                TruffleExceptionImpl truffleException = new TruffleExceptionImpl(message);
+                TruffleStackTrace.fillIn(truffleException);
+                throw truffleException;
+            }
+        });
+        setPatchable(FIRST);
+        doContextPreinitialize(FIRST);
+        Context.create(FIRST).close();
+    }
+
+    @SuppressWarnings("serial")
+    private static final class TruffleExceptionImpl extends AbstractTruffleException {
+
+        TruffleExceptionImpl(String message) {
+            super(message);
+        }
+    }
+
+    private static boolean executedWithXCompOptions() {
+        Properties props = System.getProperties();
+        return props.containsKey("polyglot.engine.CompileImmediately") || props.containsKey("polyglot.engine.BackgroundCompilation");
+    }
+
     private static IsSameFileResult testIsSameFileImpl(IOAccess ioAccess) throws ReflectiveOperationException {
         String path = Paths.get(".").toAbsolutePath().toString();
         setPatchable(FIRST);
@@ -2471,18 +3030,20 @@ public class ContextPreInitializationTest {
     private static void resetLanguageHomes() throws ReflectiveOperationException {
         Class<?> languageCache = Class.forName("com.oracle.truffle.polyglot.LanguageCache");
         Method reset = languageCache.getDeclaredMethod("resetNativeImageCacheLanguageHomes");
-        reset.setAccessible(true);
+        ReflectionUtils.setAccessible(reset, true);
         reset.invoke(null);
     }
 
     private static void doContextPreinitialize(String... languages) throws ReflectiveOperationException {
+        ContextPreInitializationResource.preInitialization = true;
         setPreInitializeOption(languages);
         try {
             final Class<?> holderClz = Class.forName("org.graalvm.polyglot.Engine$ImplHolder", true, ContextPreInitializationTest.class.getClassLoader());
             final Method preInitMethod = holderClz.getDeclaredMethod("preInitializeEngine");
-            preInitMethod.setAccessible(true);
+            ReflectionUtils.setAccessible(preInitMethod, true);
             preInitMethod.invoke(null);
         } finally {
+            ContextPreInitializationResource.preInitialization = false;
             // PreinitializeContexts should only be set during pre-initialization, not at runtime
             clearPreInitializeOption();
         }
@@ -2507,7 +3068,7 @@ public class ContextPreInitializationTest {
     private static Set<Path> getActiveFileHandlers() throws ReflectiveOperationException {
         Class<?> polyglotLoggersClass = Class.forName("com.oracle.truffle.polyglot.PolyglotLoggers");
         Method m = polyglotLoggersClass.getDeclaredMethod("getActiveFileHandlers");
-        m.setAccessible(true);
+        ReflectionUtils.setAccessible(m, true);
         return (Set<Path>) m.invoke(null);
     }
 
@@ -2747,7 +3308,9 @@ public class ContextPreInitializationTest {
         Kind getKind();
     }
 
-    @TruffleLanguage.Registration(id = FIRST, name = FIRST, version = "1.0", dependentLanguages = INTERNAL, contextPolicy = TruffleLanguage.ContextPolicy.SHARED, services = Service.class)
+    @TruffleLanguage.Registration(id = FIRST, name = FIRST, version = "1.0", dependentLanguages = INTERNAL, //
+                    contextPolicy = TruffleLanguage.ContextPolicy.SHARED, services = Service.class, //
+                    internalResources = ContextPreInitializationResource.class)
     public static final class ContextPreInitializationTestFirstLanguage extends BaseLanguage {
         @Option(category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Option 1") //
         public static final OptionKey<Boolean> Option1 = new OptionKey<>(false);
@@ -2762,8 +3325,8 @@ public class ContextPreInitializationTest {
         private final ContextLocal<AtomicInteger> state;
 
         public ContextPreInitializationTestFirstLanguage() {
-            threadState = createContextThreadLocal((context, thread) -> new AtomicInteger());
-            state = createContextLocal((context) -> new AtomicInteger());
+            threadState = locals.createContextThreadLocal((context, thread) -> new AtomicInteger());
+            state = locals.createContextLocal((context) -> new AtomicInteger());
         }
 
         @Override
@@ -2834,6 +3397,32 @@ public class ContextPreInitializationTest {
         }
     }
 
+    @TruffleLanguage.Registration(id = CONSTRAINED, name = CONSTRAINED, version = "1.0", sandbox = SandboxPolicy.CONSTRAINED)
+    public static final class ContextPreInitializationTestConstrainedLanguage extends BaseLanguage {
+
+        @Option(category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Trusted option") //
+        public static final OptionKey<Boolean> Trusted = new OptionKey<>(false);
+        @Option(category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Constrained option", sandbox = SandboxPolicy.CONSTRAINED) //
+        public static final OptionKey<Boolean> Constrained = new OptionKey<>(false);
+
+        @Override
+        protected boolean patchContext(CountingContext context, Env newEnv) {
+            return super.patchContext(context, newEnv);
+        }
+
+        @Override
+        protected ContextReference<CountingContext> getContextReference0() {
+            return CONTEXT_REF;
+        }
+
+        private static final ContextReference<CountingContext> CONTEXT_REF = ContextReference.create(ContextPreInitializationTestConstrainedLanguage.class);
+
+        @Override
+        protected OptionDescriptors getOptionDescriptors() {
+            return new ContextPreInitializationTestConstrainedLanguageOptionDescriptors();
+        }
+    }
+
     @TruffleLanguage.Registration(id = SECOND, name = SECOND, version = "1.0", dependentLanguages = FIRST)
     public static final class ContextPreInitializationTestSecondLanguage extends BaseLanguage {
         private static boolean callDependentLanguageInCreate;
@@ -2898,14 +3487,17 @@ public class ContextPreInitializationTest {
 
         private final Set<String> importantLoggers;
         final List<LogRecord> logs = new ArrayList<>();
+        private volatile boolean closed;
 
         TestHandler(String... importantLoggers) {
-            this.importantLoggers = new HashSet<>();
-            Collections.addAll(this.importantLoggers, importantLoggers);
+            this.importantLoggers = Set.of(importantLoggers);
         }
 
         @Override
         public void publish(LogRecord record) {
+            if (closed) {
+                throw new IllegalStateException("Closed");
+            }
             if (importantLoggers.isEmpty() || importantLoggers.contains(record.getLoggerName())) {
                 logs.add(record);
             }
@@ -2913,10 +3505,14 @@ public class ContextPreInitializationTest {
 
         @Override
         public void flush() {
+            if (closed) {
+                throw new IllegalStateException("Closed");
+            }
         }
 
         @Override
         public void close() throws SecurityException {
+            closed = true;
         }
     }
 
@@ -2977,8 +3573,8 @@ public class ContextPreInitializationTest {
         private EventBinding<BaseInstrument> contextsListenerBinding;
         private EventBinding<?> verifyContextLocalBinding;
 
-        final ContextLocal<TruffleContext> contextLocal = createContextLocal((c) -> c);
-        final ContextThreadLocal<TruffleContext> contextThreadLocal = createContextThreadLocal((c, t) -> c);
+        final ContextLocal<TruffleContext> contextLocal = locals.createContextLocal((c) -> c);
+        final ContextThreadLocal<TruffleContext> contextThreadLocal = locals.createContextThreadLocal((c, t) -> c);
         private final Set<Pair<TruffleContext, Thread>> initializedThreads = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
         @Override
@@ -3112,14 +3708,15 @@ public class ContextPreInitializationTest {
         }
     }
 
-    @TruffleInstrument.Registration(id = ContextPreInitializationFirstInstrument.ID, name = ContextPreInitializationFirstInstrument.ID)
+    @TruffleInstrument.Registration(id = ContextPreInitializationFirstInstrument.ID, name = ContextPreInitializationFirstInstrument.ID, //
+                    internalResources = ContextPreInitializationResource.class)
     public static final class ContextPreInitializationFirstInstrument extends BaseInstrument {
 
         static final String ID = "ContextPreInitializationFirstInstrument";
 
         static volatile Map<String, Consumer<Event>> actions;
 
-        @Option(name = "", category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Activates instrument") //
+        @Option(name = "", category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Activates instrument", sandbox = SandboxPolicy.CONSTRAINED) //
         static final OptionKey<Boolean> Enabled = new OptionKey<>(false);
 
         @Override
@@ -3155,5 +3752,81 @@ public class ContextPreInitializationTest {
             });
         }
 
+    }
+
+    @TruffleInstrument.Registration(id = ContextPreInitializationConstrainedInstrument.ID, name = ContextPreInitializationConstrainedInstrument.ID, sandbox = SandboxPolicy.CONSTRAINED)
+    public static final class ContextPreInitializationConstrainedInstrument extends BaseInstrument {
+
+        static final String ID = "ContextPreInitializationConstrainedInstrument";
+
+        @Option(name = "", category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Activates instrument", sandbox = SandboxPolicy.CONSTRAINED) //
+        static final OptionKey<Boolean> Enabled = new OptionKey<>(false);
+
+        @Option(category = OptionCategory.USER, stability = OptionStability.STABLE, help = "Trusted only option") //
+        static final OptionKey<Boolean> Trusted = new OptionKey<>(false);
+
+        @Override
+        protected OptionDescriptors getOptionDescriptors() {
+            return new ContextPreInitializationConstrainedInstrumentOptionDescriptors();
+        }
+
+        @Override
+        protected Map<String, Consumer<Event>> getActions() {
+            return Collections.emptyMap();
+        }
+    }
+
+    private static final class CheckCloseByteArrayOutputStream extends ByteArrayOutputStream {
+
+        private boolean closed;
+
+        @Override
+        public synchronized void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+
+        @Override
+        public synchronized void write(int b) {
+            checkClosed();
+            super.write(b);
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            checkClosed();
+            super.write(b, off, len);
+        }
+
+        private void checkClosed() {
+            if (closed) {
+                throw new IllegalStateException("Closed");
+            }
+        }
+    }
+
+    @InternalResource.Id(ContextPreInitializationResource.ID)
+    static final class ContextPreInitializationResource implements InternalResource {
+
+        static final String ID = "context-pre-init-test-resource";
+
+        static final String FILE_NAME = "library_source";
+        static final String FILE_CONTENT = "library_content";
+
+        static int unpackCount;
+
+        static boolean preInitialization;
+
+        @Override
+        public void unpackFiles(Env env, Path targetDirectory) throws IOException {
+            unpackCount++;
+            Files.writeString(targetDirectory.resolve(FILE_NAME), FILE_CONTENT);
+            assertEquals(preInitialization, env.inContextPreinitialization());
+        }
+
+        @Override
+        public String versionHash(Env env) {
+            return "1";
+        }
     }
 }

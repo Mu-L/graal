@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -148,24 +148,16 @@ public @interface Specialization {
     String insertBefore() default "";
 
     /**
-     * <p>
      * Declares an event guards that trigger re-specialization in case an exception is thrown in the
      * specialization body. This attribute can be used to declare a list of such exceptions. Guards
      * of this kind are useful to avoid calculating a value twice when it is used in the guard and
      * its specialization.
-     * </p>
-     *
      * <p>
      * If an event guard exception is triggered then all instantiations of this specialization are
      * removed. If one of theses exceptions is thrown once then no further instantiations of this
      * specialization are going to be created for this node.
      *
-     * In case of explicitly declared {@link UnexpectedResultException}s, the result from the
-     * exception will be used. For all other exception types, the next available specialization will
-     * be executed, so that the original specialization must ensure that no non-repeatable
-     * side-effect is caused until the rewrite is triggered.
-     * </p>
-     *
+     * <p>
      * <b>Example usage:</b>
      *
      * <pre>
@@ -186,7 +178,51 @@ public @interface Specialization {
      *   execute(Integer.MAX_VALUE - 1, 1) => doAddWithOverflow(Integer.MAX_VALUE - 1, 1)
      * </pre>
      *
-     * </p>
+     * In case of explicitly declared {@link UnexpectedResultException}s, the result from the
+     * exception will be used. For all other exception types, the next available specialization will
+     * be executed, so that the original specialization must ensure that no non-repeatable
+     * side-effect is caused until the rewrite is triggered.
+     * <p>
+     * If a specialization declares an {@link UnexpectedResultException} which is
+     * {@link Specialization#replaces() replaced} by another specialization with the same signature
+     * and state, but without declared {@link UnexpectedResultException} then the specialization is
+     * used as so-called boxing overload of the replacing specialization. Boxing overloads share the
+     * same state and must be implemented in a way such that they perform exactly the same
+     * operation, with the exception of the unexpected result. Boxing overloads are used as direct
+     * replacements when code for boxing elimination is generated. They are only used if an execute
+     * method with the return type of the boxing overload and an {@link UnexpectedResultException}
+     * is declared in the node, or alternatively in the Bytecode DSL if the return type is
+     * configured to be boxing eliminated. Boxing overloads share the state with its replacing
+     * specialization, which makes them particularly useful to implement read nodes with boxing
+     * elimination.
+     * <p>
+     * <b>Usage for boxing elimination:</b>
+     *
+     * <pre>
+     * &#64;Specialization(guards = "arg == cachedArg", limit = "2",
+     *                     rewriteOn = UnexpectedResultException.class)
+     * int doInt(Object arg, &#64;Cached("arg") Object cachedArg)
+     *                                                  throws UnexpectedResultException {
+     *     if (cachedArg instanceof Integer i) {
+     *         return 42;
+     *     }
+     *     throw new UnexpectedResultException(cachedArg);
+     * }
+     *
+     * &#64;Specialization(guards = "arg == cachedArg", limit = "2", replaces = "doInt")
+     * Object doGeneric(Object arg, &#64;Cached("arg") Object cachedArg) {
+     *     return cachedArg;
+     * }
+     *
+     * ...
+     * Example executions:
+     *   execute(42) => doGeneric(42, 42)
+     *   executeInt(43) => doInt(43, 43)
+     *   executeInt(42) => doInt(42, 42)
+     *   // shared inline cache limit of 2 reached
+     *   execute(44) => {@link UnsupportedSpecializationException}
+     * </pre>
+     *
      *
      * @see Math#addExact(int, int)
      * @since 0.8 or earlier
@@ -239,16 +275,20 @@ public @interface Specialization {
      * result for each combination of the enclosing node instance and the bound input values.
      * </p>
      * <p>
-     * If a guard expression does not bind any dynamic input parameters then the DSL assumes that
-     * the result will not change for this node after specialization instantiation. The DSL asserts
-     * this assumption if assertions are enabled (-ea).
+     * If a guard expression does not bind any dynamic input parameters then the DSL, by default,
+     * assumes that the result will not change for this node after specialization instantiation. In
+     * other words the DSL assumes idempotence for this guard on the fast-path, by default. The
+     * {@link Idempotent} and {@link NonIdempotent} annotations may be used to configure this
+     * explicitly. The DSL will also emit warnings in case the use of such annotations is
+     * recommended. If assertions are enabled (-ea), then the DSL will assert that the idempotence
+     * property does hold at runtime.
      * </p>
      * <p>
      * Guard expressions are defined using a subset of Java. This subset includes field/parameter
-     * accesses, function calls, type exact infix comparisons (==, !=, <, <=, >, >=), logical
-     * negation (!), logical disjunction (||), null, true, false, and integer literals. The return
-     * type of guard expressions must be <code>boolean</code>. Bound elements without receivers are
-     * resolved using the following order:
+     * accesses, function calls, type exact infix comparisons (==, !=, &lt;, &lt;=, &gt;, &gt;=),
+     * logical negation (!), logical disjunction (||), null, true, false, and integer literals. The
+     * return type of guard expressions must be <code>boolean</code>. Bound elements without
+     * receivers are resolved using the following order:
      * <ol>
      * <li>Dynamic and cached parameters of the enclosing specialization.</li>
      * <li>Fields defined using {@link NodeField} for the enclosing node.</li>
@@ -263,11 +303,11 @@ public @interface Specialization {
      *
      * <pre>
      * static boolean acceptOperand(int operand) {
-     *     assert operand <= 42;
-     *     return (operand & 1) == 1;
+     *     assert operand &lt;= 42;
+     *     return (operand &amp; 1) == 1;
      * }
      *
-     * &#64;Specialization(guards = {"operand <= 42", "acceptOperand(operand)"})
+     * &#64;Specialization(guards = {"operand &lt;= 42", "acceptOperand(operand)"})
      * void doSpecialization(int operand) {...}
      * </pre>
      *
@@ -289,9 +329,9 @@ public @interface Specialization {
      * </p>
      * <p>
      * Assumption expressions are defined using a subset of Java. This subset includes
-     * field/parameter accesses, function calls, type exact infix comparisons (==, !=, <, <=, >,
-     * >=), logical negation (!), logical disjunction (||), null, true, false, and integer literals.
-     * The return type of the expression must be {@link Assumption} or an array of
+     * field/parameter accesses, function calls, type exact infix comparisons (==, !=, &lt;, &lt;=,
+     * &gt;, &gt;=), logical negation (!), logical disjunction (||), null, true, false, and integer
+     * literals. The return type of the expression must be {@link Assumption} or an array of
      * {@link Assumption} instances. Assumption expressions are not allowed to bind to dynamic
      * parameter values of the specialization. Bound elements without receivers are resolved using
      * the following order:
@@ -335,11 +375,11 @@ public @interface Specialization {
      * </p>
      * <p>
      * The limit expression is defined using a subset of Java. This subset includes field/parameter
-     * accesses, function calls, type exact infix comparisons (==, !=, <, <=, >, >=), logical
-     * negation (!), logical disjunction (||), null, true, false, and integer literals. The return
-     * type of the limit expression must be <code>int</code>. Limit expressions are not allowed to
-     * bind to dynamic parameter values of the specialization. Bound elements without receivers are
-     * resolved using the following order:
+     * accesses, function calls, type exact infix comparisons (==, !=, &lt;, &lt;=, &gt;, &gt;=),
+     * logical negation (!), logical disjunction (||), null, true, false, and integer literals. The
+     * return type of the limit expression must be <code>int</code>. Limit expressions are not
+     * allowed to bind to dynamic parameter values of the specialization. Bound elements without
+     * receivers are resolved using the following order:
      * <ol>
      * <li>Cached parameters of the enclosing specialization.</li>
      * <li>Fields defined using {@link NodeField} for the enclosing node.</li>
@@ -371,5 +411,68 @@ public @interface Specialization {
      * @since 0.8 or earlier
      */
     String limit() default "";
+
+    /**
+     * Instructs the specialization to unroll a specialization with multiple instances. Unrolling
+     * causes fields of the inline cache to be directly stored in the node instead of a chained
+     * inline cache. At most 8 instances of a specialization can be unrolled to avoid code explosion
+     * in the interpreter.
+     * <p>
+     * A common use-case for this feature is to unroll the first instance of an inline cache. It is
+     * often the case that specializations with multiple instances are instantiated only once. By
+     * unrolling the first instance we can optimize for this common situation which may lead to
+     * footprint and interpreter performance improvements.
+     * <p>
+     * This feature is prone to cause inefficiencies if used too aggressively. Extra care should be
+     * taken, e.g. the generated code should be inspected and profiled to verify that the new code
+     * is better than the previous version.
+     * <p>
+     * Consider the following example:
+     *
+     * <pre>
+     * class MyNode extends Node {
+     *
+     *     static int limit = 2;
+     *
+     *     abstract int execute(int value);
+     *
+     *     &#64;Specialization(guards = "value == cachedValue", limit = "limit", unroll = 1)
+     *     int doDefault(int value,
+     *                     &#64;Cached("value") int cachedValue) {
+     *         return value;
+     *     }
+     *
+     * }
+     * </pre>
+     *
+     * In this example we unroll the first instance of an inline cache on <code>int</code> values.
+     * This is equivalent to manually specifying the following specializations:
+     *
+     * <pre>
+     * class MyUnrollNode extends Node {
+     *
+     *     static int limit = 2;
+     *
+     *     abstract int execute(int value);
+     *
+     *     &#64;Specialization(guards = "value == cachedValue", limit = "1")
+     *     int doUnrolled0(int value,
+     *                     &#64;Cached("value") int cachedValue) {
+     *         return value;
+     *     }
+     *
+     *     &#64;Specialization(guards = "value == cachedValue", limit = "limit - 1")
+     *     int doDefault(int value,
+     *                     &#64;Cached("value") int cachedValue) {
+     *         return value;
+     *     }
+     * }
+     *
+     * </pre>
+     *
+     *
+     * @since 23.0
+     */
+    int unroll() default 0;
 
 }

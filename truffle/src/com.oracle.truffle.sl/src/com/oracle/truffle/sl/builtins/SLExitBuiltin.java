@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -52,7 +52,7 @@ import com.oracle.truffle.sl.runtime.SLNull;
 public abstract class SLExitBuiltin extends SLBuiltinNode {
 
     @Specialization
-    protected Object execute(long exitCode) {
+    protected Object doDefault(long exitCode) {
         SLContext.get(this).getEnv().getContext().closeExited(this, (int) exitCode);
         return SLNull.SINGLETON;
     }

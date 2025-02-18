@@ -33,12 +33,17 @@ public class EnumConstantInfo extends SizableInfo {
     private final boolean includeInLookup;
     private final Enum<?> enumValue;
 
+    @SuppressWarnings("this-escape")
     public EnumConstantInfo(String name, ResolvedJavaField annotatedField, boolean includeInLookup, Enum<?> enumValue) {
         super(name, ElementKind.INTEGER);
         this.annotatedField = annotatedField;
         this.includeInLookup = includeInLookup;
         this.enumValue = enumValue;
         this.valueInfo = adoptChild(new PropertyInfo<>("value"));
+    }
+
+    public long getValue() {
+        return (long) valueInfo.getProperty();
     }
 
     public PropertyInfo<Object> getValueInfo() {

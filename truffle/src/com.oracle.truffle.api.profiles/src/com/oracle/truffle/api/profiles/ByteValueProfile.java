@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,8 @@ package com.oracle.truffle.api.profiles;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.dsl.InlineSupport.InlineTarget;
+import com.oracle.truffle.api.dsl.NeverDefault;
 
 /**
  * <p>
@@ -54,9 +56,9 @@ import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
  *
  * <p>
  * <b> Usage example: </b>
- * {@link com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile}
- *
- * {@inheritDoc}
+ * 
+ * {@snippet file="com/oracle/truffle/api/profiles/ByteValueProfile.java"
+ * region="com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile"}
  *
  * @see #createIdentityProfile()
  * @see ValueProfile
@@ -144,7 +146,7 @@ public final class ByteValueProfile extends Profile {
     @Override
     public String toString() {
         if (this == DISABLED) {
-            return toStringDisabled(ByteValueProfile.class);
+            return toStringDisabled();
         } else {
             return toString(ByteValueProfile.class, state == UNINITIALIZED, state == GENERIC, //
                             String.format("value == (byte)%s", cachedValue));
@@ -157,6 +159,7 @@ public final class ByteValueProfile extends Profile {
      * @see ByteValueProfile
      * @since 0.10
      */
+    @NeverDefault
     public static ByteValueProfile createIdentityProfile() {
         return create();
     }
@@ -167,8 +170,9 @@ public final class ByteValueProfile extends Profile {
      * @see ByteValueProfile
      * @since 22.1
      */
+    @NeverDefault
     public static ByteValueProfile create() {
-        if (Profile.isProfilingEnabled()) {
+        if (isProfilingEnabled()) {
             return new ByteValueProfile();
         } else {
             return DISABLED;
@@ -183,16 +187,28 @@ public final class ByteValueProfile extends Profile {
     public static ByteValueProfile getUncached() {
         return DISABLED;
     }
+
+    /**
+     * Returns an inlined version of the profile. This version is automatically used by Truffle DSL
+     * node inlining.
+     *
+     * @since 23.0
+     */
+    public static InlinedByteValueProfile inline(InlineTarget target) {
+        return InlinedByteValueProfile.inline(target);
+    }
+
 }
 
+// @formatter:off // @replace regex='.*' replacement=''
 class ByteProfileSnippets {
     class Node {
     }
 
-    // BEGIN: com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile
+    // @start region="com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile"
     class ByteProfileNode extends Node {
 
-        final ByteValueProfile profile = ByteValueProfile.createIdentityProfile();
+        final ByteValueProfile profile = ByteValueProfile.create();
 
         byte execute(byte input) {
             byte profiledValue = profile.profile(input);
@@ -200,5 +216,5 @@ class ByteProfileSnippets {
             return profiledValue;
         }
     }
-    // END: com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile
+    // @end region="com.oracle.truffle.api.profiles.ByteProfileSnippets.ByteProfileNode#profile"
 }

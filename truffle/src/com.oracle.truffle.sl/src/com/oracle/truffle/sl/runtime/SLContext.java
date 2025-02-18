@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -48,7 +48,6 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.oracle.truffle.api.strings.TruffleString;
 import org.graalvm.polyglot.Context;
 
 import com.oracle.truffle.api.CallTarget;
@@ -58,6 +57,7 @@ import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.TruffleLanguage.Env;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.NodeFactory;
 import com.oracle.truffle.api.instrumentation.AllocationReporter;
 import com.oracle.truffle.api.interop.ArityException;
@@ -67,6 +67,7 @@ import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
+import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.sl.SLLanguage;
 import com.oracle.truffle.sl.builtins.SLAddToHostClassPathBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLBuiltinNode;
@@ -77,6 +78,7 @@ import com.oracle.truffle.sl.builtins.SLGetSizeBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLHasSizeBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLHelloEqualsWorldBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLImportBuiltinFactory;
+import com.oracle.truffle.sl.builtins.SLInNativeImageBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLIsExecutableBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLIsInstanceBuiltinFactory;
 import com.oracle.truffle.sl.builtins.SLIsNullBuiltinFactory;
@@ -94,12 +96,14 @@ import com.oracle.truffle.sl.builtins.SLWrapPrimitiveBuiltinFactory;
 
 /**
  * The run-time state of SL during execution. The context is created by the {@link SLLanguage}. It
- * is used, for example, by {@link SLBuiltinNode#getContext() builtin functions}.
+ * is used, for example, by the {@link com.oracle.truffle.sl.builtins.SLEvalBuiltin eval builtin
+ * function}.
  * <p>
  * It would be an error to have two different context instances during the execution of one script.
  * However, if two separate scripts run in one Java VM at the same time, they have a different
  * context. Therefore, the context is not a singleton.
  */
+@Bind.DefaultExpression("get($node)")
 public final class SLContext {
 
     private final SLLanguage language;
@@ -189,6 +193,7 @@ public final class SLContext {
         installBuiltin(SLExitBuiltinFactory.getInstance());
         installBuiltin(SLRegisterShutdownHookBuiltinFactory.getInstance());
         installBuiltin(SLAddToHostClassPathBuiltinFactory.getInstance());
+        installBuiltin(SLInNativeImageBuiltinFactory.getInstance());
     }
 
     public void installBuiltin(NodeFactory<? extends SLBuiltinNode> factory) {
@@ -208,7 +213,7 @@ public final class SLContext {
      * Methods for language interoperability.
      */
     public static Object fromForeignValue(Object a) {
-        if (a instanceof Long || a instanceof SLBigNumber || a instanceof String || a instanceof TruffleString || a instanceof Boolean) {
+        if (a instanceof Long || a instanceof SLBigInteger || a instanceof String || a instanceof TruffleString || a instanceof Boolean) {
             return a;
         } else if (a instanceof Character) {
             return fromForeignCharacter((Character) a);

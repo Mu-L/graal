@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import org.graalvm.nativeimage.ImageInfo;
@@ -40,6 +41,7 @@ import org.graalvm.options.OptionStability;
 import org.graalvm.options.OptionType;
 
 import com.oracle.truffle.api.Option;
+import com.oracle.truffle.espresso.classfile.JavaVersion;
 import com.oracle.truffle.espresso.jdwp.api.JDWPOptions;
 
 @Option.Group(EspressoLanguage.ID)
@@ -146,6 +148,12 @@ public final class EspressoOptions {
                     usageSyntax = "<module>" + PATH_SEPARATOR_INSERT + "<module>" + PATH_SEPARATOR_INSERT + "...") //
     public static final OptionKey<List<String>> AddOpens = new OptionKey<>(Collections.emptyList(), STRINGS_OPTION_TYPE);
 
+    @Option(help = "A '" + PATH_SEPARATOR_INSERT + "' separated list of modules that are permitted to perform restricted native operations.\\nEquivalent to '--enable-native-access=<module>'", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.STABLE, //
+                    usageSyntax = "<module>" + PATH_SEPARATOR_INSERT + "<module>" + PATH_SEPARATOR_INSERT + "...") //
+    public static final OptionKey<List<String>> EnableNativeAccess = new OptionKey<>(Collections.emptyList(), STRINGS_OPTION_TYPE);
+
     @Option(help = "Installation directory for Java Runtime Environment (JRE).", //
                     category = OptionCategory.EXPERT, //
                     stability = OptionStability.STABLE, //
@@ -212,6 +220,12 @@ public final class EspressoOptions {
                     usageSyntax = "java.PolyglotTypeConverters.java.lang.Optional=my.type.conversion.Implementation") //
     public static final OptionKey<OptionMap<String>> PolyglotTypeConverters = OptionKey.mapOf(String.class);
 
+    @Option(help = "Option to enable target type conversions for foreign objects using type hints from generics signatures.", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.STABLE, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> EnableGenericTypeHints = new OptionKey<>(true);
+
     @Option(help = "Enable assertions.", //
                     category = OptionCategory.USER, //
                     stability = OptionStability.STABLE, //
@@ -223,6 +237,12 @@ public final class EspressoOptions {
                     stability = OptionStability.STABLE, //
                     usageSyntax = "false|true") //
     public static final OptionKey<Boolean> EnableSystemAssertions = new OptionKey<>(false);
+
+    @Option(help = "Enable extended NullPointerException message.", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "true|false") //
+    public static final OptionKey<Boolean> ShowCodeDetailsInExceptionMessages = new OptionKey<>(true);
 
     public static List<Path> parsePaths(String paths) {
         List<Path> list = new ArrayList<>();
@@ -249,7 +269,7 @@ public final class EspressoOptions {
         @Override
         public SpecComplianceMode apply(String s) {
             try {
-                return SpecComplianceMode.valueOf(s.toUpperCase());
+                return SpecComplianceMode.valueOf(s.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("--java.SpecCompliance: Mode can be 'strict' or 'hotspot'.");
             }
@@ -272,7 +292,7 @@ public final class EspressoOptions {
         @Override
         public VerifyMode apply(String s) {
             try {
-                return VerifyMode.valueOf(s.toUpperCase());
+                return VerifyMode.valueOf(s.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("-Xverify: Mode can be 'none', 'remote' or 'all'.");
             }
@@ -285,6 +305,12 @@ public final class EspressoOptions {
                     usageSyntax = "remote|none|all" //
     ) //
     public static final OptionKey<VerifyMode> Verify = new OptionKey<>(VerifyMode.REMOTE, VERIFY_MODE_OPTION_TYPE);
+
+    @Option(help = "Replace regular expression engine with a TRegex implementation.", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "true|false") //
+    public static final OptionKey<Boolean> UseTRegex = new OptionKey<>(false);
 
     @Option(help = "Speculatively inline field accessors.", //
                     category = OptionCategory.EXPERT, //
@@ -328,7 +354,7 @@ public final class EspressoOptions {
                 return LivenessAnalysisMode.NONE;
             }
             try {
-                return LivenessAnalysisMode.valueOf(s.toUpperCase());
+                return LivenessAnalysisMode.valueOf(s.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("--java.LivenessAnalysis can only be 'none'|'false', 'auto' or 'all'|'true'.");
             }
@@ -471,6 +497,12 @@ public final class EspressoOptions {
                     usageSyntax = "false|true") //
     public static final OptionKey<Boolean> Polyglot = new OptionKey<>(false);
 
+    @Option(help = "Enable built in polyglot collection support in Espresso.", //
+                    category = OptionCategory.EXPERT, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> BuiltInPolyglotCollections = new OptionKey<>(false);
+
     @Option(help = "Enable hotspot extension API.", //
                     category = OptionCategory.EXPERT, //
                     stability = OptionStability.EXPERIMENTAL, //
@@ -564,10 +596,10 @@ public final class EspressoOptions {
     @Option(help = "Load a Java programming language agent for the given jar file. \\n" +
                     "Keys represent the jar path, values are the corresponding agent options.\\n" +
                     "Agents are not fully implemented yet.", //
-                    category = OptionCategory.INTERNAL, //
+                    category = OptionCategory.USER, //
                     stability = OptionStability.EXPERIMENTAL, //
-                    usageSyntax = "<agent>") //
-    public static final OptionKey<String> JavaAgent = new OptionKey<>("");
+                    usageSyntax = "<agent>=<agentOptions>") //
+    public static final OptionKey<OptionMap<String>> JavaAgent = OptionKey.mapOf(String.class);
 
     @Option(help = "Used internally to keep track of the command line arguments given to the vm in order to support VM.getRuntimeArguments().\\n" +
                     "Setting this option is the responsibility of the context creator if such support is required.\\n" +
@@ -595,7 +627,7 @@ public final class EspressoOptions {
                     category = OptionCategory.EXPERT, //
                     stability = OptionStability.EXPERIMENTAL, //
                     usageSyntax = "false|true") //
-    public static final OptionKey<Boolean> EnableAgents = new OptionKey<>(false);
+    public static final OptionKey<Boolean> EnableNativeAgents = new OptionKey<>(false);
 
     @Option(help = "Maximum bytecode size (in bytes) for a method to be considered trivial.", //
                     category = OptionCategory.EXPERT, //
@@ -619,7 +651,7 @@ public final class EspressoOptions {
                         @Override
                         public JImageMode apply(String s) {
                             try {
-                                return JImageMode.valueOf(s.toUpperCase());
+                                return JImageMode.valueOf(s.toUpperCase(Locale.ROOT));
                             } catch (IllegalArgumentException e) {
                                 throw new IllegalArgumentException("JImage: Mode can be 'native', 'java'.");
                             }
@@ -630,13 +662,63 @@ public final class EspressoOptions {
                     category = OptionCategory.EXPERT, stability = OptionStability.EXPERIMENTAL) //
     public static final OptionKey<JImageMode> JImage = new OptionKey<>(JImageMode.JAVA, JIMAGE_MODE_OPTION_TYPE);
 
-    // These are host properties e.g. use --vm.Despresso.DebugCounters=true .
-    public static final boolean DebugCounters = booleanProperty("espresso.DebugCounters", false);
-    public static final boolean DumpDebugCounters = booleanProperty("espresso.DumpDebugCounters", true);
+    @Option(help = "Enables preview features.", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.STABLE, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> EnablePreview = new OptionKey<>(false);
+
+    @Option(help = "Enables the WhiteBox API.", //
+                    category = OptionCategory.INTERNAL, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> WhiteBoxAPI = new OptionKey<>(false);
+
+    @Option(help = "Enables the JVMCI API inside the context.", //
+                    category = OptionCategory.INTERNAL, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> EnableJVMCI = new OptionKey<>(false);
+
+    public enum GuestFieldOffsetStrategyEnum {
+        safety,
+        compact,
+        graal
+    }
+
+    @Option(help = "Guest field offset strategy. The safety strategy will help catch some wrong usages of the unsafe API.", //
+                    category = OptionCategory.INTERNAL, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "safety|compact|graal") //
+    public static final OptionKey<GuestFieldOffsetStrategyEnum> GuestFieldOffsetStrategy = new OptionKey<>(GuestFieldOffsetStrategyEnum.safety);
+
+    @Option(help = "Selects a specific runtime resource id (espresso-runtime-resource-<id>).", //
+                    category = OptionCategory.EXPERT, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "jdk21|openjdk21|...") //
+    public static final OptionKey<String> RuntimeResourceId = new OptionKey<>("");
+
+    @Option(help = "Enables the Continuum API.", //
+                    category = OptionCategory.USER, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "false|true") //
+    public static final OptionKey<Boolean> Continuum = new OptionKey<>(false);
+
+    @Option(help = "Forces frame analysis to run for all loaded classes. Used for testing.", //
+                    category = OptionCategory.INTERNAL, //
+                    stability = OptionStability.EXPERIMENTAL, //
+                    usageSyntax = "false|true") public static final OptionKey<Boolean> EagerFrameAnalysis = new OptionKey<>(false);
+
+    /**
+     * Property used to force liveness analysis to also be applied by the interpreter. For testing
+     * purpose only. Use a host property rather than an option. An option would slow interpreter
+     * considerably.
+     */
+    public static final boolean LivenessAnalysisInInterpreter = booleanProperty("espresso.liveness.interpreter", false);
 
     // Properties for FinalizationSupport e.g. --vm.Despresso.finalization.UnsafeOverride=false .
     public static final boolean UnsafeOverride = booleanProperty("espresso.finalization.UnsafeOverride", true);
-    public static final boolean InjectClasses = booleanProperty("espresso.finalization.InjectClasses", true);
+    public static final boolean InjectClasses = booleanProperty("espresso.finalization.InjectClasses", !JavaVersion.HOST_VERSION.java19OrLater());
 
     private static boolean booleanProperty(String name, boolean defaultValue) {
         String value = System.getProperty(name);

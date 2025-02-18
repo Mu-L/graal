@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,12 +33,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.graalvm.compiler.options.Option;
+import jdk.graal.compiler.options.Option;
 import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.nativeimage.ProcessProperties;
 
 import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.LocatableMultiOptionValue;
+import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.util.VMError;
 
@@ -57,15 +57,17 @@ import com.oracle.svm.core.util.VMError;
 public class FallbackExecutor {
     public static class Options {
         @Option(help = "Internal option used to specify system properties for FallbackExecutor.")//
-        public static final HostedOptionKey<LocatableMultiOptionValue.Strings> FallbackExecutorSystemProperty = new HostedOptionKey<>(new LocatableMultiOptionValue.Strings());
+        public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> FallbackExecutorSystemProperty = new HostedOptionKey<>(
+                        AccumulatingLocatableMultiOptionValue.Strings.build());
         @Option(help = "Internal option used to specify MainClass for FallbackExecutor.")//
         public static final HostedOptionKey<String> FallbackExecutorMainClass = new HostedOptionKey<>(null);
         @Option(help = "Internal option used to specify Classpath for FallbackExecutor.")//
         public static final HostedOptionKey<String> FallbackExecutorClasspath = new HostedOptionKey<>(null);
         @Option(help = "Internal option used to specify java arguments for FallbackExecutor.")//
-        public static final HostedOptionKey<LocatableMultiOptionValue.Strings> FallbackExecutorJavaArg = new HostedOptionKey<>(new LocatableMultiOptionValue.Strings());
+        public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> FallbackExecutorJavaArg = new HostedOptionKey<>(AccumulatingLocatableMultiOptionValue.Strings.build());
         @Option(help = "Internal option used to specify runtime java arguments for FallbackExecutor.")//
-        public static final RuntimeOptionKey<LocatableMultiOptionValue.Strings> FallbackExecutorRuntimeJavaArg = new RuntimeOptionKey<>(new LocatableMultiOptionValue.Strings());
+        public static final RuntimeOptionKey<AccumulatingLocatableMultiOptionValue.Strings> FallbackExecutorRuntimeJavaArg = new RuntimeOptionKey<>(
+                        AccumulatingLocatableMultiOptionValue.Strings.build());
     }
 
     public static void main(String[] args) {
@@ -84,7 +86,7 @@ public class FallbackExecutor {
         command.add("-D" + ImageInfo.PROPERTY_IMAGE_KIND_KEY + "=fallback-" + ImageInfo.PROPERTY_IMAGE_KIND_VALUE_EXECUTABLE);
         Path fallbackImageDir = Paths.get(ProcessProperties.getExecutableName()).getParent();
         if (fallbackImageDir == null) {
-            VMError.shouldNotReachHere();
+            VMError.shouldNotReachHereUnexpectedInput("fallback image directory");
         }
         String pathPrefix = fallbackImageDir.toAbsolutePath().normalize().toString();
         String relativeClasspath = Options.FallbackExecutorClasspath.getValue();

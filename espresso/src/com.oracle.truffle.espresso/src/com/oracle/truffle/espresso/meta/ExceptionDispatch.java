@@ -20,15 +20,16 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.meta;
 
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.espresso.descriptors.Symbol;
+import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Names;
+import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Signatures;
 import com.oracle.truffle.espresso.impl.ContextAccessImpl;
+import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.vm.InterpreterToVM;
 
 /**
@@ -60,7 +61,12 @@ public final class ExceptionDispatch extends ContextAccessImpl {
     private StaticObject fastPath(ObjectKlass klass, StaticObject message, StaticObject cause) {
         StaticObject ex = allocateException(klass);
         // TODO: Remove this when truffle exceptions are reworked.
-        InterpreterToVM.fillInStackTrace(ex, false, meta);
+        InterpreterToVM.fillInStackTrace(ex, meta);
+
+        // Support extended NPE messages
+        if (meta.java_lang_NullPointerException == klass && meta.java_lang_NullPointerException_extendedMessageState != null) {
+            meta.java_lang_NullPointerException_extendedMessageState.setInt(ex, 1);
+        }
 
         if (message != null) {
             meta.java_lang_Throwable_detailMessage.setObject(ex, message);
@@ -108,21 +114,29 @@ public final class ExceptionDispatch extends ContextAccessImpl {
 
     @CompilerDirectives.TruffleBoundary
     private static void doFullInit(StaticObject ex, ObjectKlass klass, StaticObject message, StaticObject cause) {
-        klass.lookupDeclaredMethod(Symbol.Name._init_, Symbol.Signature._void_String_Throwable).invokeDirect(ex, message, cause);
+        Method method = klass.lookupDeclaredMethod(Names._init_, Signatures._void_String_Throwable);
+        assert method != null : "No (String, Throwable) constructor in " + klass;
+        method.invokeDirectSpecial(ex, message, cause);
     }
 
     @CompilerDirectives.TruffleBoundary
     private static void doCauseInit(StaticObject ex, ObjectKlass klass, StaticObject cause) {
-        klass.lookupDeclaredMethod(Symbol.Name._init_, Symbol.Signature._void_Throwable).invokeDirect(ex, cause);
+        Method method = klass.lookupDeclaredMethod(Names._init_, Signatures._void_Throwable);
+        assert method != null : "No (Throwable) constructor in " + klass;
+        method.invokeDirectSpecial(ex, cause);
     }
 
     @CompilerDirectives.TruffleBoundary
     private static void doMessageInit(StaticObject ex, ObjectKlass klass, StaticObject message) {
-        klass.lookupDeclaredMethod(Symbol.Name._init_, Symbol.Signature._void_String).invokeDirect(ex, message);
+        Method method = klass.lookupDeclaredMethod(Names._init_, Signatures._void_String);
+        assert method != null : "No (String) constructor in " + klass;
+        method.invokeDirectSpecial(ex, message);
     }
 
     @CompilerDirectives.TruffleBoundary
     private static void doInit(StaticObject ex, ObjectKlass klass) {
-        klass.lookupDeclaredMethod(Symbol.Name._init_, Symbol.Signature._void).invokeDirect(ex);
+        Method method = klass.lookupDeclaredMethod(Names._init_, Signatures._void);
+        assert method != null : "No () constructor in " + klass;
+        method.invokeDirectSpecial(ex);
     }
 }

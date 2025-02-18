@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,10 +27,12 @@ package com.oracle.svm.hosted;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Path;
-import java.util.Collection;
-import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import com.oracle.graal.pointsto.reports.ReportUtils;
@@ -39,46 +41,58 @@ import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.core.util.json.JsonPrinter;
-import com.oracle.svm.core.util.json.JsonWriter;
+import com.oracle.svm.util.LogUtils;
+
+import jdk.graal.compiler.util.json.JsonWriter;
 
 public class BuildArtifactsExporter {
     private static final String ENV_VAR_REENABLE_DEPRECATED = "NATIVE_IMAGE_DEPRECATED_BUILD_ARTIFACTS_TXT";
 
-    public static void run(String imageName, BuildArtifacts buildArtifacts, Map<ArtifactType, List<Path>> buildArtifactsMap) {
-        run(buildArtifacts, buildArtifactsMap);
+    public static void run(String imageName, BuildArtifacts buildArtifacts) {
+        run(buildArtifacts);
         if ("true".equalsIgnoreCase(System.getenv().get(ENV_VAR_REENABLE_DEPRECATED))) {
-            reportDeprecatedBuildArtifacts(imageName, buildArtifacts, buildArtifactsMap);
+            LogUtils.warningDeprecatedEnvironmentVariable(ENV_VAR_REENABLE_DEPRECATED);
+            reportDeprecatedBuildArtifacts(imageName, buildArtifacts);
         }
     }
 
-    private static void run(BuildArtifacts buildArtifacts, Map<ArtifactType, List<Path>> buildArtifactsMap) {
-        if (buildArtifactsMap.isEmpty() || !SubstrateOptions.GenerateBuildArtifactsFile.getValue()) {
+    private static void run(BuildArtifacts buildArtifacts) {
+        if (buildArtifacts.isEmpty() || !SubstrateOptions.GenerateBuildArtifactsFile.getValue()) {
             return; // nothing to do
         }
         Path buildPath = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
         Path targetPath = buildPath.resolve(SubstrateOptions.BUILD_ARTIFACTS_FILE_NAME);
+        /*
+         * Create intermediate map from buildArtifactsMap for JSON conversion. note that this also
+         * merges ArtifactTypes with the same JSON key.
+         */
+        Map<String, List<String>> jsonMap = new TreeMap<>();
+        buildArtifacts.forEach((artifactType, paths) -> {
+            String key = artifactType.getJsonKey();
+            List<String> value = paths.stream().map(p -> buildPath.relativize(p.toAbsolutePath()).toString()).toList();
+            jsonMap.computeIfAbsent(key, k -> new ArrayList<>()).addAll(value);
+        });
+
         try (JsonWriter writer = new JsonWriter(targetPath)) {
-            writer.append('{');
-            var iterator = buildArtifactsMap.entrySet().iterator();
+            writer.appendObjectStart();
+            var iterator = jsonMap.entrySet().iterator();
             while (iterator.hasNext()) {
                 var entry = iterator.next();
-                writer.quote(entry.getKey().getJsonKey()).append(":");
-                JsonPrinter.printCollection(writer, (Collection<Path>) entry.getValue(), Comparator.naturalOrder(), (p, w) -> w.quote(buildPath.relativize(p.toAbsolutePath()).toString()));
+                writer.quote(entry.getKey()).appendFieldSeparator().print(entry.getValue());
                 if (iterator.hasNext()) {
-                    writer.append(',');
+                    writer.appendSeparator();
                 }
             }
-            writer.append('}');
+            writer.appendObjectEnd();
             buildArtifacts.add(ArtifactType.BUILD_INFO, targetPath);
         } catch (IOException e) {
             throw VMError.shouldNotReachHere("Unable to create " + SubstrateOptions.BUILD_ARTIFACTS_FILE_NAME, e);
         }
     }
 
-    private static void reportDeprecatedBuildArtifacts(String imageName, BuildArtifacts buildArtifacts, Map<ArtifactType, List<Path>> buildArtifactsMap) {
+    private static void reportDeprecatedBuildArtifacts(String imageName, BuildArtifacts buildArtifacts) {
         Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
-        Consumer<PrintWriter> writerConsumer = writer -> buildArtifactsMap.forEach((artifactType, paths) -> {
+        Consumer<PrintWriter> writerConsumer = writer -> buildArtifacts.forEach((artifactType, paths) -> {
             writer.println("[" + artifactType + "]");
             if (artifactType == BuildArtifacts.ArtifactType.JDK_LIBRARY_SHIM) {
                 writer.println("# Note that shim JDK libraries depend on this");
@@ -89,5 +103,30 @@ public class BuildArtifactsExporter {
             writer.println();
         });
         buildArtifacts.add(ArtifactType.BUILD_INFO, ReportUtils.report("build artifacts", buildDir.resolve(imageName + ".build_artifacts.txt"), writerConsumer, false));
+    }
+
+    static class BuildArtifactsImpl implements BuildArtifacts {
+        private final Map<ArtifactType, List<Path>> buildArtifacts = new EnumMap<>(ArtifactType.class);
+
+        @Override
+        public void add(ArtifactType type, Path artifact) {
+            buildArtifacts.computeIfAbsent(type, t -> new ArrayList<>()).add(artifact);
+        }
+
+        @Override
+        public List<Path> get(ArtifactType type) {
+            VMError.guarantee(buildArtifacts.containsKey(type), "Artifact type is missing: %s", type);
+            return buildArtifacts.get(type);
+        }
+
+        @Override
+        public void forEach(BiConsumer<ArtifactType, List<Path>> action) {
+            buildArtifacts.forEach(action);
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return buildArtifacts.isEmpty();
+        }
     }
 }

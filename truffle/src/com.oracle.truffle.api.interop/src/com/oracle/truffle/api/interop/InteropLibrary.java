@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,8 +51,11 @@ import static com.oracle.truffle.api.interop.AssertUtils.validProtocolArgument;
 import static com.oracle.truffle.api.interop.AssertUtils.validProtocolReturn;
 import static com.oracle.truffle.api.interop.AssertUtils.validScope;
 import static com.oracle.truffle.api.interop.AssertUtils.violationInvariant;
+import static com.oracle.truffle.api.interop.AssertUtils.violationOutArrayArgument;
 import static com.oracle.truffle.api.interop.AssertUtils.violationPost;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteOrder;
 import java.time.Duration;
 import java.time.Instant;
@@ -408,17 +411,20 @@ public abstract class InteropLibrary extends Library {
      * @see #fitsInShort(Object)
      * @see #fitsInInt(Object)
      * @see #fitsInLong(Object)
+     * @see #fitsInBigInteger(Object)
      * @see #fitsInFloat(Object)
      * @see #fitsInDouble(Object)
      * @see #asByte(Object)
      * @see #asShort(Object)
      * @see #asInt(Object)
      * @see #asLong(Object)
+     * @see #asBigInteger(Object)
      * @see #asFloat(Object)
      * @see #asDouble(Object)
      * @since 19.0
      */
-    @Abstract(ifExported = {"fitsInByte", "fitsInShort", "fitsInInt", "fitsInLong", "fitsInFloat", "fitsInDouble", "asByte", "asShort", "asInt", "asLong", "asFloat", "asDouble"})
+    @Abstract(ifExported = {"fitsInByte", "fitsInShort", "fitsInInt", "fitsInLong", "fitsInBigInteger", "fitsInFloat", "fitsInDouble", "asByte", "asShort", "asInt", "asLong", "asBigInteger",
+                    "asFloat", "asDouble"})
     public boolean isNumber(Object receiver) {
         return false;
     }
@@ -481,6 +487,31 @@ public abstract class InteropLibrary extends Library {
 
     /**
      * Returns <code>true</code> if the receiver represents a <code>number</code> and its value fits
+     * in a Java BigInteger without loss of precision, else <code>false</code>. Invoking this
+     * message does not cause any observable side-effects.
+     *
+     * @see #isNumber(Object)
+     * @see #asBigInteger(Object)
+     * @since 23.0
+     */
+    @Abstract(ifExportedAsWarning = "isNumber")
+    public boolean fitsInBigInteger(Object receiver) {
+        try {
+            if (fitsInLong(receiver)) {
+                return true;
+            } else if (fitsInDouble(receiver)) {
+                double doubleValue = asDouble(receiver);
+                return doubleValue % 1 == 0 && !NumberUtils.isNegativeZero(doubleValue);
+            } else {
+                return false;
+            }
+        } catch (UnsupportedMessageException e) {
+            throw CompilerDirectives.shouldNotReachHere(e);
+        }
+    }
+
+    /**
+     * Returns <code>true</code> if the receiver represents a <code>number</code> and its value fits
      * in a Java float primitive without loss of precision, else <code>false</code>. Invoking this
      * message does not cause any observable side-effects.
      *
@@ -512,7 +543,7 @@ public abstract class InteropLibrary extends Library {
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInByte(Object)
      * @since 19.0
@@ -527,7 +558,7 @@ public abstract class InteropLibrary extends Library {
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInShort(Object)
      * @since 19.0
@@ -542,7 +573,7 @@ public abstract class InteropLibrary extends Library {
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInInt(Object)
      * @since 19.0
@@ -557,7 +588,7 @@ public abstract class InteropLibrary extends Library {
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInLong(Object)
      * @since 19.0
@@ -568,11 +599,49 @@ public abstract class InteropLibrary extends Library {
     }
 
     /**
+     * Returns the receiver value as Java BigInteger if the number fits without loss of precision.
+     * Invoking this message does not cause any observable side-effects.
+     *
+     * @throws UnsupportedMessageException if and only if the receiver is not a
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
+     * @see #isNumber(Object)
+     * @see #fitsInBigInteger(Object)
+     * @since 23.0
+     */
+    @Abstract(ifExportedAsWarning = "isNumber")
+    public BigInteger asBigInteger(Object receiver) throws UnsupportedMessageException {
+        if (fitsInLong(receiver)) {
+            long longValue = asLong(receiver);
+            return toBigInteger(longValue);
+        } else if (fitsInDouble(receiver)) {
+            double doubleValue = asDouble(receiver);
+            if (doubleValue % 1 == 0 && !NumberUtils.isNegativeZero(doubleValue)) {
+                return toBigInteger(doubleValue);
+            }
+        }
+        throw UnsupportedMessageException.create();
+    }
+
+    @TruffleBoundary
+    private static BigInteger toBigInteger(long longValue) {
+        return BigInteger.valueOf(longValue);
+    }
+
+    @TruffleBoundary
+    private static BigInteger toBigInteger(double doubleValue) {
+        try {
+            return new BigDecimal(doubleValue).toBigIntegerExact();
+        } catch (ArithmeticException e) {
+            throw CompilerDirectives.shouldNotReachHere(e);
+        }
+    }
+
+    /**
      * Returns the receiver value as Java float primitive if the number fits without loss of
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInFloat(Object)
      * @since 19.0
@@ -587,7 +656,7 @@ public abstract class InteropLibrary extends Library {
      * precision. Invoking this message does not cause any observable side-effects.
      *
      * @throws UnsupportedMessageException if and only if the receiver is not a
-     *             {@link #isNumber(Object)} or it does not fit without less of precision.
+     *             {@link #isNumber(Object)} or it does not fit without loss of precision.
      * @see #isNumber(Object)
      * @see #fitsInDouble(Object)
      * @since 19.0
@@ -1390,14 +1459,43 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the byte at the given index
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= </code>{@link #getBufferSize(Object)}
-     * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
-     *             returns {@code false} returns {@code false}
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= </code>{@link #getBufferSize(Object)}
+     * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
+     *             {@code false}
      * @since 21.1
      */
     @Abstract(ifExported = {"hasBufferElements"})
     public byte readBufferByte(Object receiver, long byteOffset) throws UnsupportedMessageException, InvalidBufferOffsetException {
         throw UnsupportedMessageException.create();
+    }
+
+    /**
+     * Reads bytes from the receiver object into the specified byte array.
+     * <p>
+     * The access is <em>not</em> guaranteed to be atomic. Therefore, this message is <em>not</em>
+     * thread-safe.
+     * <p>
+     * Invoking this message does not cause any observable side-effects.
+     *
+     * @param byteOffset offset in the buffer to start reading from.
+     * @param destination byte array to write the read bytes into.
+     * @param destinationOffset offset in the destination array to start writing from.
+     * @param length number of bytes to read.
+     * @throws InvalidBufferOffsetException if and only if
+     *             <code>byteOffset &lt; 0 || length &lt; 0 || byteOffset + length &gt; </code>{@link #getBufferSize(Object)}
+     * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
+     *             {@code false}
+     * @since 24.0
+     */
+    @Abstract(ifExportedAsWarning = {"hasBufferElements"})
+    public void readBuffer(Object receiver, long byteOffset, byte[] destination, int destinationOffset, int length)
+                    throws UnsupportedMessageException, InvalidBufferOffsetException {
+        if (length < 0) {
+            throw InvalidBufferOffsetException.create(byteOffset, length);
+        }
+        for (int i = 0; i < length; i++) {
+            destination[destinationOffset + i] = readBufferByte(receiver, byteOffset + i);
+        }
     }
 
     /**
@@ -1408,7 +1506,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= </code>{@link #getBufferSize(Object)}
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= </code>{@link #getBufferSize(Object)}
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1431,7 +1529,7 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the short at the given byte offset from the start of the buffer
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 1</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 1</code>
      * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
      *             {@code false}
      * @since 21.1
@@ -1451,7 +1549,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 1</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 1</code>
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1474,7 +1572,7 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the int at the given byte offset from the start of the buffer
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 3</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 3</code>
      * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
      *             {@code false}
      * @since 21.1
@@ -1494,7 +1592,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 3</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 3</code>
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1517,7 +1615,7 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the int at the given byte offset from the start of the buffer
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 7</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 7</code>
      * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
      *             {@code false}
      * @since 21.1
@@ -1537,7 +1635,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 7</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 7</code>
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1560,7 +1658,7 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the float at the given byte offset from the start of the buffer
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 3</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 3</code>
      * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
      *             {@code false}
      * @since 21.1
@@ -1580,7 +1678,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 3</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 3</code>
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1603,7 +1701,7 @@ public abstract class InteropLibrary extends Library {
      *
      * @return the double at the given byte offset from the start of the buffer
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 7</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 7</code>
      * @throws UnsupportedMessageException if and only if {@link #hasBufferElements(Object)} returns
      *             {@code false}
      * @since 21.1
@@ -1623,7 +1721,7 @@ public abstract class InteropLibrary extends Library {
      * thread-safe.
      *
      * @throws InvalidBufferOffsetException if and only if
-     *             <code>byteOffset < 0 || byteOffset >= {@link #getBufferSize(Object)} - 7</code>
+     *             <code>byteOffset &lt; 0 || byteOffset &gt;= {@link #getBufferSize(Object)} - 7</code>
      * @throws UnsupportedMessageException if and only if either {@link #hasBufferElements(Object)}
      *             or {@link #isBufferWritable} returns {@code false}
      * @since 21.1
@@ -1728,7 +1826,7 @@ public abstract class InteropLibrary extends Library {
      * This method is short-hand for:
      *
      * <pre>
-     * {@linkplain #isDate(Object) isDate}(v) && {@link #isTime(Object) isTime}(v) && {@link #isTimeZone(Object) isTimeZone}(v)
+     * {@linkplain #isDate(Object) isDate}(v) &amp;&amp; {@link #isTime(Object) isTime}(v) &amp;&amp; {@link #isTimeZone(Object) isTimeZone}(v)
      * </pre>
      *
      * @see #isDate(Object)
@@ -1873,7 +1971,8 @@ public abstract class InteropLibrary extends Library {
      * The following simplified {@code TryCatchNode} shows how the exceptions should be handled by
      * languages.
      *
-     * {@link InteropLibrarySnippets.TryCatchNode}
+     * {@snippet file="com/oracle/truffle/api/interop/InteropLibrary.java"
+     * region="InteropLibrarySnippets.TryCatchNode"}
      *
      * @see #throwException(Object)
      * @see com.oracle.truffle.api.exception.AbstractTruffleException
@@ -2094,7 +2193,7 @@ public abstract class InteropLibrary extends Library {
     public Object getExceptionStackTrace(Object receiver) throws UnsupportedMessageException {
         // A workaround for missing inheritance feature for default exports.
         if (InteropAccessor.EXCEPTION.isException(receiver)) {
-            return InteropAccessor.EXCEPTION.getExceptionStackTrace(receiver);
+            return InteropAccessor.EXCEPTION.getExceptionStackTrace(receiver, null);
         } else {
             throw UnsupportedMessageException.create();
         }
@@ -2916,7 +3015,7 @@ public abstract class InteropLibrary extends Library {
     public static boolean isValidProtocolValue(Object value) {
         return isValidValue(value) || value instanceof ByteOrder || value instanceof Instant || value instanceof ZoneId || value instanceof LocalDate ||
                         value instanceof LocalTime || value instanceof Duration || value instanceof ExceptionType || value instanceof SourceSection || value instanceof Class<?> ||
-                        value instanceof TriState || value instanceof InteropLibrary || value instanceof Object[];
+                        value instanceof TriState || value instanceof InteropLibrary || value instanceof Object[] || value instanceof BigInteger || value instanceof byte[];
     }
 
     static class Asserts extends InteropLibrary {
@@ -3236,6 +3335,28 @@ public abstract class InteropLibrary extends Library {
         }
 
         @Override
+        public boolean fitsInBigInteger(Object receiver) {
+            if (CompilerDirectives.inCompiledCode()) {
+                return delegate.fitsInBigInteger(receiver);
+            }
+            assert preCondition(receiver);
+
+            boolean fits = delegate.fitsInBigInteger(receiver);
+            assert !fits || delegate.isNumber(receiver) : violationInvariant(receiver);
+            if (fits) {
+                try {
+                    delegate.asBigInteger(receiver);
+                } catch (InteropException e) {
+                    assert false : violationInvariant(receiver);
+                } catch (Exception e) {
+                }
+            }
+            assert !fits || notOtherType(receiver, Type.NUMBER);
+            assert validProtocolReturn(receiver, fits);
+            return fits;
+        }
+
+        @Override
         public boolean fitsInFloat(Object receiver) {
             if (CompilerDirectives.inCompiledCode()) {
                 return delegate.fitsInFloat(receiver);
@@ -3349,6 +3470,21 @@ public abstract class InteropLibrary extends Library {
         }
 
         @Override
+        public BigInteger asBigInteger(Object receiver) throws UnsupportedMessageException {
+            assert preCondition(receiver);
+            try {
+                BigInteger result = delegate.asBigInteger(receiver);
+                assert delegate.isNumber(receiver) : violationInvariant(receiver);
+                assert delegate.fitsInBigInteger(receiver) : violationInvariant(receiver);
+                assert validProtocolReturn(receiver, result);
+                return result;
+            } catch (InteropException e) {
+                assert e instanceof UnsupportedMessageException : violationInvariant(receiver);
+                throw e;
+            }
+        }
+
+        @Override
         public float asFloat(Object receiver) throws UnsupportedMessageException {
             assert preCondition(receiver);
             try {
@@ -3397,7 +3533,7 @@ public abstract class InteropLibrary extends Library {
             try {
                 Object result = delegate.readMember(receiver, identifier);
                 assert delegate.hasMembers(receiver) : violationInvariant(receiver, identifier);
-                assert wasReadable || isMultiThreaded(receiver) : violationInvariant(receiver, identifier);
+                assert wasReadable || isMultiThreaded(receiver) || delegate.hasMemberReadSideEffects(receiver, identifier) : violationInvariant(receiver, identifier);
                 assert validInteropReturn(receiver, result);
                 return result;
             } catch (InteropException e) {
@@ -3419,7 +3555,7 @@ public abstract class InteropLibrary extends Library {
             try {
                 delegate.writeMember(receiver, identifier, value);
                 assert delegate.hasMembers(receiver) : violationInvariant(receiver, identifier);
-                assert wasWritable || isMultiThreaded(receiver) : violationInvariant(receiver, identifier);
+                assert wasWritable || isMultiThreaded(receiver) || delegate.hasMemberWriteSideEffects(receiver, identifier) : violationInvariant(receiver, identifier);
             } catch (InteropException e) {
                 assert e instanceof UnsupportedMessageException || e instanceof UnknownIdentifierException || e instanceof UnsupportedTypeException : violationPost(receiver, e);
                 throw e;
@@ -3438,7 +3574,7 @@ public abstract class InteropLibrary extends Library {
             try {
                 delegate.removeMember(receiver, identifier);
                 assert delegate.hasMembers(receiver) : violationInvariant(receiver, identifier);
-                assert wasRemovable || isMultiThreaded(receiver) : violationInvariant(receiver, identifier);
+                assert wasRemovable || isMultiThreaded(receiver) || delegate.hasMemberWriteSideEffects(receiver, identifier) : violationInvariant(receiver, identifier);
             } catch (InteropException e) {
                 assert e instanceof UnsupportedMessageException || e instanceof UnknownIdentifierException : violationPost(receiver, e);
                 throw e;
@@ -3459,7 +3595,7 @@ public abstract class InteropLibrary extends Library {
             try {
                 Object result = delegate.invokeMember(receiver, identifier, arguments);
                 assert delegate.hasMembers(receiver) : violationInvariant(receiver, identifier);
-                assert wasInvocable || isMultiThreaded(receiver) : violationInvariant(receiver, identifier);
+                assert wasInvocable || isMultiThreaded(receiver) || delegate.hasMemberReadSideEffects(receiver, identifier) : violationInvariant(receiver, identifier);
                 assert validInteropReturn(receiver, result);
                 return result;
             } catch (InteropException e) {
@@ -3772,7 +3908,6 @@ public abstract class InteropLibrary extends Library {
                 assert wasWritable || isMultiThreaded(receiver) : violationInvariant(receiver, key);
             } catch (InteropException e) {
                 assert e instanceof UnsupportedMessageException || e instanceof UnknownKeyException || e instanceof UnsupportedTypeException : violationPost(receiver, e);
-                assert !(e instanceof UnsupportedMessageException) || !wasWritable : violationInvariant(receiver, key);
                 throw e;
             }
         }
@@ -3802,7 +3937,6 @@ public abstract class InteropLibrary extends Library {
                 assert wasRemovable || isMultiThreaded(receiver) : violationInvariant(receiver, key);
             } catch (InteropException e) {
                 assert e instanceof UnsupportedMessageException || e instanceof UnknownKeyException : violationPost(receiver, e);
-                assert !(e instanceof UnsupportedMessageException) || !wasRemovable : violationInvariant(receiver, key);
                 throw e;
             }
         }
@@ -4041,6 +4175,32 @@ public abstract class InteropLibrary extends Library {
                 assert delegate.hasBufferElements(receiver) : violationInvariant(receiver, byteOffset);
                 assert validProtocolReturn(receiver, result);
                 return result;
+            } catch (UnsupportedMessageException e) {
+                assert !delegate.hasBufferElements(receiver) : violationPost(receiver, e);
+                throw e;
+            } catch (InteropException e) {
+                assert e instanceof InvalidBufferOffsetException : violationPost(receiver, e);
+                throw e;
+            }
+        }
+
+        @Override
+        public void readBuffer(Object receiver, long byteOffset, byte[] destination, int destinationOffset, int length)
+                        throws UnsupportedMessageException, InvalidBufferOffsetException {
+            assert preCondition(receiver);
+            assert validProtocolArgument(receiver, byteOffset);
+            assert validProtocolArgument(receiver, length);
+            assert validProtocolArgument(receiver, destination);
+            assert validProtocolArgument(receiver, destinationOffset);
+            // Don't fail if length < 0, that should be checked by the message impl.
+            assert length < 0 || (destinationOffset >= 0 && destinationOffset + length <= destination.length) : violationOutArrayArgument(receiver, length, destination.length,
+                            destinationOffset);
+            try {
+                delegate.readBuffer(receiver, byteOffset, destination, destinationOffset, length);
+                assert delegate.hasBufferElements(receiver) : violationInvariant(receiver, byteOffset, length);
+                // Fail if length < 0, the message impl should have thrown
+                // InvalidBufferOffsetException.
+                assert length >= 0 : violationInvariant(receiver, byteOffset, length);
             } catch (UnsupportedMessageException e) {
                 assert !delegate.hasBufferElements(receiver) : violationPost(receiver, e);
                 throw e;
@@ -4997,7 +5157,9 @@ public abstract class InteropLibrary extends Library {
 
         private boolean assertMetaObject(Object receiver) {
             try {
-                delegate.isMetaInstance(receiver, receiver);
+                // Don't use isMetaInstance(receiver, receiver) as the implementation might use
+                // isMetaObject(2nd arg) and that would then become an infinite recursion
+                delegate.isMetaInstance(receiver, 42);
             } catch (UnsupportedMessageException e) {
                 assert false : violationInvariant(receiver);
             }
@@ -5270,7 +5432,7 @@ class InteropLibrarySnippets {
     private abstract static class AbstractTruffleException extends RuntimeException {
     }
 
-    // BEGIN: InteropLibrarySnippets.TryCatchNode
+    // @start region = "InteropLibrarySnippets.TryCatchNode"
     static final class TryCatchNode extends StatementNode {
 
         @Node.Child private BlockNode block;
@@ -5321,5 +5483,5 @@ class InteropLibrarySnippets {
             }
         }
     }
-    // END: InteropLibrarySnippets.TryCatchNode
+    // @end region = "InteropLibrarySnippets.TryCatchNode"
 }

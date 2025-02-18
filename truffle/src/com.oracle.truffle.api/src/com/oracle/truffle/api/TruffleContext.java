@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,7 @@ package com.oracle.truffle.api;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.Reference;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,6 +58,8 @@ import org.graalvm.polyglot.PolyglotException;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.TruffleLanguage.Env;
+import com.oracle.truffle.api.TruffleSafepoint.Interrupter;
+import com.oracle.truffle.api.TruffleSafepoint.InterruptibleFunction;
 import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
@@ -80,7 +83,10 @@ import com.oracle.truffle.api.source.Source;
  * {@link #close() closed} when it is no longer needed. If the context is not closed explicitly,
  * then it is automatically closed together with the parent context.
  * <p>
- * Example usage: {@link TruffleContextSnippets.MyNode#executeInContext}
+ * Example usage:
+ *
+ * {@snippet file="com/oracle/truffle/api/TruffleContext.java"
+ * region="TruffleContextSnippets.MyNode#executeInContext"}
  *
  * @since 0.27
  */
@@ -102,10 +108,28 @@ public final class TruffleContext implements AutoCloseable {
     }
     final Object polyglotContext;
     final boolean creator;
+    final TruffleContext currentAPI;
+    final TruffleContext parent;
+    /**
+     * Strong reference to the creator {@link TruffleContext} to prevent it from being garbage
+     * collected and closed while API {@link TruffleContext} is still reachable.
+     */
+    final TruffleContext creatorContext;
 
-    TruffleContext(Object polyglotContext, boolean creator) {
+    TruffleContext(Object polyglotContext, TruffleContext parentContext) {
         this.polyglotContext = polyglotContext;
-        this.creator = creator;
+        this.creator = true;
+        this.parent = parentContext;
+        this.creatorContext = this;
+        this.currentAPI = new TruffleContext(this);
+    }
+
+    private TruffleContext(TruffleContext creatorContext) {
+        this.polyglotContext = creatorContext.polyglotContext;
+        this.creator = false;
+        this.parent = creatorContext.parent != null ? creatorContext.parent.currentAPI : null;
+        this.creatorContext = creatorContext;
+        this.currentAPI = null;
     }
 
     /*
@@ -114,6 +138,9 @@ public final class TruffleContext implements AutoCloseable {
     private TruffleContext() {
         this.polyglotContext = null;
         this.creator = false;
+        this.parent = null;
+        this.creatorContext = null;
+        this.currentAPI = null;
     }
 
     /**
@@ -124,11 +151,15 @@ public final class TruffleContext implements AutoCloseable {
     @Override
     @TruffleBoundary
     public boolean equals(Object obj) {
-        if (!(obj instanceof TruffleContext)) {
-            return false;
+        try {
+            if (!(obj instanceof TruffleContext)) {
+                return false;
+            }
+            TruffleContext c = (TruffleContext) obj;
+            return polyglotContext.equals(c.polyglotContext);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
-        TruffleContext c = (TruffleContext) obj;
-        return polyglotContext.equals(c.polyglotContext);
     }
 
     /**
@@ -138,7 +169,11 @@ public final class TruffleContext implements AutoCloseable {
      */
     @Override
     public int hashCode() {
-        return polyglotContext.hashCode();
+        try {
+            return polyglotContext.hashCode();
+        } finally {
+            Reference.reachabilityFence(creatorContext);
+        }
     }
 
     /**
@@ -150,9 +185,15 @@ public final class TruffleContext implements AutoCloseable {
     @TruffleBoundary
     public TruffleContext getParent() {
         try {
-            return LanguageAccessor.engineAccess().getParentContext(polyglotContext);
+            TruffleContext parentContext = parent;
+            if (creator && parentContext != null) {
+                parentContext = parentContext.currentAPI;
+            }
+            return parentContext;
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -194,6 +235,8 @@ public final class TruffleContext implements AutoCloseable {
             return prev;
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -224,6 +267,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().initializeInnerContext(node, polyglotContext, languageId, true);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -249,6 +294,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().initializeInnerContext(node, polyglotContext, languageId, false);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -289,6 +336,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().evalInternalContext(node, polyglotContext, source, true);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -309,6 +358,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().evalInternalContext(node, polyglotContext, source, false);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -326,6 +377,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().isContextEntered(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -344,6 +397,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().isContextActive(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -360,6 +415,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().isContextClosed(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -376,6 +433,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().isContextCancelling(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -392,6 +451,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().isContextExiting(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -414,6 +475,8 @@ public final class TruffleContext implements AutoCloseable {
             return LanguageAccessor.engineAccess().pause(polyglotContext);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -436,6 +499,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().resume(polyglotContext, pauseFuture);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -462,6 +527,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().leaveInternalContext(node, polyglotContext, prev);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -487,7 +554,10 @@ public final class TruffleContext implements AutoCloseable {
      * @param node an adopted node or {@code null}
      * @param runWhileOutsideContext the supplier to run while having left this context
      * @since 21.1
+     * @deprecated Use {@link #leaveAndEnter(Node, Interrupter, InterruptibleFunction, Object)}
+     *             instead.
      */
+    @Deprecated
     public <T> T leaveAndEnter(Node node, Supplier<T> runWhileOutsideContext) {
         CompilerAsserts.partialEvaluationConstant(node);
         try {
@@ -499,6 +569,46 @@ public final class TruffleContext implements AutoCloseable {
             }
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
+        }
+    }
+
+    /**
+     * Leaves this context, runs the passed interruptible function and reenters the context. This is
+     * useful when the current thread must wait for another thread (and does not need to access the
+     * context to do so) and triggering multithreading is not desired, for instance when
+     * implementing coroutines with threads. The function cannot access the context and must not run
+     * any guest language code or invoke interoperability messages.
+     * <p>
+     * The function will typically notify another thread that it can now enter the context without
+     * triggering multithreading and then wait for some thread to leave the context before exiting
+     * the function and reentering the context (again to avoid triggering multithreading).
+     * <p>
+     * An adopted node may be passed to allow performing optimizations on the fast-path.
+     * <p>
+     *
+     * @param node an adopted node or {@code null}
+     * @param interrupter an interrupter used to interrupt the interruptible function when, e.g.,
+     *            the context is cancelled. The interrupter is also used to
+     *            {@link Interrupter#resetInterrupted() reset} the interrupted state when the
+     *            context is reentered.
+     * @param interruptible the interruptible function to run while having left this context. This
+     *            function is run at most once.
+     * @return return value of the interruptible, or <code>null</code> if the interruptibe throws an
+     *         {@link InterruptedException} without the context being cancelled or exited.
+     *
+     * @since 23.1
+     */
+    @SuppressWarnings("unused")
+    @TruffleBoundary
+    public <T, R> R leaveAndEnter(Node node, Interrupter interrupter, InterruptibleFunction<T, R> interruptible, T object) {
+        try {
+            return LanguageAccessor.engineAccess().leaveAndEnter(polyglotContext, interrupter, interruptible, object);
+        } catch (Throwable t) {
+            throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -548,6 +658,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().closeContext(polyglotContext, false, null, false, null);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -597,6 +709,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().closeContext(polyglotContext, true, closeLocation, false, message);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -653,6 +767,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().exitContext(polyglotContext, exitLocation, exitCode);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -677,6 +793,8 @@ public final class TruffleContext implements AutoCloseable {
             LanguageAccessor.engineAccess().closeContext(polyglotContext, true, location, true, message);
         } catch (Throwable t) {
             throw Env.engineToLanguageException(t);
+        } finally {
+            Reference.reachabilityFence(creatorContext);
         }
     }
 
@@ -713,6 +831,7 @@ public final class TruffleContext implements AutoCloseable {
         private Boolean allowPolyglotAccess;
         private Boolean allowEnvironmentAccess;
         private ZoneId timeZone;
+        private Consumer<String> threadAccessDeniedHandler;
 
         Builder(Env env) {
             this.sourceEnvironment = env;
@@ -993,6 +1112,23 @@ public final class TruffleContext implements AutoCloseable {
         }
 
         /**
+         * Installs handler to control what happens on multiple thread access. When multiple threads
+         * are accessing a context which isn't ready for multithreaded access an exception is
+         * yielded by default. By installing this {@code handler} one can control what shall happen.
+         * Either to throw exception (with the provided reason) or to resolve the multithreaded
+         * situation somehow and return to retry the thread access again.
+         *
+         * @param handler callback (that gets a reason as an input) that either throws an exception
+         *            or returns to signal a <b>request for retry</b>
+         * @return this builder
+         * @since 24.2
+         */
+        public Builder threadAccessDeniedHandler(Consumer<String> handler) {
+            this.threadAccessDeniedHandler = handler;
+            return this;
+        }
+
+        /**
          * Allows or denies access to the parent context's environment in this context. Set to
          * <code>true</code> to inherit variables from the outer context or <code>false</code> to
          * deny inheritance for this context. Environment variables can be set for the inner context
@@ -1164,7 +1300,8 @@ public final class TruffleContext implements AutoCloseable {
                 return LanguageAccessor.engineAccess().createInternalContext(
                                 sourceEnvironment.getPolyglotLanguageContext(), this.out, this.err, this.in, this.timeZone,
                                 this.permittedLanguages, this.config, this.options, this.arguments, this.sharingEnabled, this.initializeCreatorContext, this.onCancelled, this.onExited,
-                                this.onClosed, this.inheritAccess, this.allowCreateThread, this.allowNativeAccess, this.allowIO, this.allowHostLookup, this.allowHostClassLoading,
+                                this.onClosed, this.inheritAccess, this.allowCreateThread, this.threadAccessDeniedHandler, this.allowNativeAccess, this.allowIO, this.allowHostLookup,
+                                this.allowHostClassLoading,
                                 this.allowCreateProcess, this.allowPolyglotAccess, this.allowEnvironmentAccess, this.environment, this.allowInnerContextOptions);
             } catch (Throwable t) {
                 throw Env.engineToLanguageException(t);
@@ -1175,13 +1312,13 @@ public final class TruffleContext implements AutoCloseable {
 }
 
 class TruffleContextSnippets {
-    // @formatter:off
+    // @formatter:off // @replace regex='.*' replacement=''
     abstract class MyContext {
     }
     abstract class MyLanguage extends TruffleLanguage<MyContext> {
     }
     static
-    // BEGIN: TruffleContextSnippets.MyNode#executeInContext
+    // @start region="TruffleContextSnippets.MyNode#executeInContext"
     final class MyNode extends Node {
         void executeInContext(Env env) {
             MyContext outerLangContext = getContext(this);
@@ -1210,7 +1347,7 @@ class TruffleContextSnippets {
     private static MyContext getContext(Node node) {
         return REFERENCE.get(node);
     }
-    // END: TruffleContextSnippets.MyNode#executeInContext
-    // @formatter:on
+    // @end region="TruffleContextSnippets.MyNode#executeInContext"
+    // @formatter:on // @replace regex='.*' replacement=''
 
 }

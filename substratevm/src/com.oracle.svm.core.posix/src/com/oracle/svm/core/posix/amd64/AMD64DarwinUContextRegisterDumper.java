@@ -48,7 +48,7 @@ import jdk.vm.ci.amd64.AMD64;
 class AMD64DarwinUContextRegisterDumper implements UContextRegisterDumper {
     AMD64DarwinUContextRegisterDumper() {
         VMError.guarantee(AMD64.r14.equals(AMD64ReservedRegisters.HEAP_BASE_REGISTER_CANDIDATE));
-        VMError.guarantee(AMD64.r15.equals(AMD64ReservedRegisters.THREAD_REGISTER_CANDIDATE));
+        VMError.guarantee(AMD64.r15.equals(AMD64ReservedRegisters.THREAD_REGISTER));
     }
 
     @Override
@@ -75,14 +75,14 @@ class AMD64DarwinUContextRegisterDumper implements UContextRegisterDumper {
     }
 
     @Override
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public PointerBase getHeapBase(ucontext_t uContext) {
         Signal.AMD64DarwinMContext64 sigcontext = uContext.uc_mcontext_darwin_amd64();
         return ((Pointer) sigcontext).readWord(sigcontext.r14_offset());
     }
 
     @Override
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public PointerBase getThreadPointer(ucontext_t uContext) {
         Signal.AMD64DarwinMContext64 sigcontext = uContext.uc_mcontext_darwin_amd64();
         return ((Pointer) sigcontext).readWord(sigcontext.r15_offset());

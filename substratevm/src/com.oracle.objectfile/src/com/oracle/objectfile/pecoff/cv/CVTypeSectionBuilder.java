@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2020, 2021, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -23,7 +23,6 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.objectfile.pecoff.cv;
 
 import com.oracle.objectfile.debugentry.ArrayTypeEntry;
@@ -36,7 +35,7 @@ import com.oracle.objectfile.debugentry.MethodEntry;
 import com.oracle.objectfile.debugentry.StructureTypeEntry;
 import com.oracle.objectfile.debugentry.TypeEntry;
 
-import org.graalvm.compiler.debug.GraalError;
+import jdk.graal.compiler.debug.GraalError;
 
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -124,7 +123,9 @@ class CVTypeSectionBuilder {
                 case ARRAY:
                 case ENUM:
                 case INSTANCE:
-                case INTERFACE: {
+                case INTERFACE:
+                    // TODO continue treat foreign types as interfaces/classes but fix this later
+                case FOREIGN: {
                     typeRecord = buildStructureTypeEntry((StructureTypeEntry) typeEntry);
                     break;
                 }

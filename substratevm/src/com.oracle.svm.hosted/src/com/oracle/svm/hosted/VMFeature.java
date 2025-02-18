@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,13 @@
 package com.oracle.svm.hosted;
 
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.word.PointerBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.svm.core.SubstrateOptions;
@@ -54,7 +55,21 @@ public class VMFeature implements InternalFeature {
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
-        ImageSingletons.add(VM.class, new VM());
+        ImageSingletons.add(VM.class, new VM(determineVMInfo()));
+    }
+
+    protected String determineVMInfo() {
+        return getSelectedGCName();
+    }
+
+    protected static final String getSelectedGCName() {
+        if (SubstrateOptions.useSerialGC()) {
+            return "serial gc";
+        } else if (SubstrateOptions.useEpsilonGC()) {
+            return "epsilon gc";
+        } else {
+            return "unknown gc";
+        }
     }
 
     @Override
@@ -78,7 +93,7 @@ public class VMFeature implements InternalFeature {
     public void afterAnalysis(AfterAnalysisAccess access) {
         CGlobalDataFeature.singleton().registerWithGlobalSymbol(
                         CGlobalDataFactory.createCString(VM.class.getName() + valueSeparator +
-                                        ImageSingletons.lookup(VM.class).version, VERSION_INFO_SYMBOL_NAME));
+                                        ImageSingletons.lookup(VM.class).vendorVersion, VERSION_INFO_SYMBOL_NAME));
 
         addCGlobalDataString("Target.Platform", ImageSingletons.lookup(Platform.class).getClass().getName());
         addCGlobalDataString("Target.LibC", ImageSingletons.lookup(LibCBase.class).getClass().getName());
@@ -99,14 +114,14 @@ public class VMFeature implements InternalFeature {
         }
 
         if (!Platform.includedIn(Platform.WINDOWS.class)) {
-            CGlobalData<PointerBase> isStaticBinaryMarker = CGlobalDataFactory.createWord(WordFactory.unsigned(SubstrateOptions.StaticExecutable.getValue() ? 1 : 0), STATIC_BINARY_MARKER_SYMBOL_NAME);
+            CGlobalData<PointerBase> isStaticBinaryMarker = CGlobalDataFactory.createWord(Word.unsigned(SubstrateOptions.StaticExecutable.getValue() ? 1 : 0), STATIC_BINARY_MARKER_SYMBOL_NAME);
             CGlobalDataFeature.singleton().registerWithGlobalHiddenSymbol(isStaticBinaryMarker);
         }
     }
 
     private static void addCGlobalDataString(String infoType, String content) {
         String data = VM.class.getName() + "." + infoType + valueSeparator + content;
-        String symbolName = "__svm_vm_" + infoType.toLowerCase().replace(".", "_");
+        String symbolName = "__svm_vm_" + infoType.toLowerCase(Locale.ROOT).replace(".", "_");
         CGlobalDataFeature.singleton().registerWithGlobalSymbol(CGlobalDataFactory.createCString(data, symbolName));
     }
 }

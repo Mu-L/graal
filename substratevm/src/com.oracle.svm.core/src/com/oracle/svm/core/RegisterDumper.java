@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,9 +24,9 @@
  */
 package com.oracle.svm.core;
 
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.word.PointerBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.util.VMError;
@@ -35,7 +35,7 @@ public interface RegisterDumper {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     static RegisterDumper singleton() {
         if (!ImageSingletons.contains(RegisterDumper.class)) {
-            throw VMError.shouldNotReachHere();
+            throw VMError.shouldNotReachHere("RegisterDumper is not available in ImageSingletons"); // ExcludeFromJacocoGeneratedReport
         }
         return ImageSingletons.lookup(RegisterDumper.class);
     }
@@ -44,7 +44,7 @@ public interface RegisterDumper {
         log.string(label).zhex(value);
         if (printLocationInfo) {
             log.spaces(1);
-            SubstrateDiagnostics.printLocationInfo(log, WordFactory.unsigned(value), allowJavaHeapAccess, allowUnsafeOperations);
+            SubstrateDiagnostics.printLocationInfo(log, Word.unsigned(value), allowJavaHeapAccess, allowUnsafeOperations);
         }
         log.newline();
     }

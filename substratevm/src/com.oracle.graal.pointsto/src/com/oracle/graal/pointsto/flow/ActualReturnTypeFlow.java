@@ -33,11 +33,11 @@ public class ActualReturnTypeFlow extends TypeFlow<BytecodePosition> {
     private InvokeTypeFlow invokeFlow;
 
     public ActualReturnTypeFlow(AnalysisType declaredType) {
-        super(null, declaredType);
+        this(null, declaredType);
     }
 
     public ActualReturnTypeFlow(BytecodePosition source, AnalysisType declaredType) {
-        super(source, declaredType);
+        super(source, filterUncheckedInterface(declaredType));
     }
 
     public ActualReturnTypeFlow(ActualReturnTypeFlow original, MethodFlowsGraph methodFlows) {
@@ -53,7 +53,7 @@ public class ActualReturnTypeFlow extends TypeFlow<BytecodePosition> {
 
     @Override
     public String toString() {
-        return "ActualReturn<" + getState() + '>';
+        return "ActualReturn<" + getStateDescription() + '>';
     }
 
     public void setInvokeFlow(InvokeTypeFlow invokeFlow) {
@@ -68,7 +68,7 @@ public class ActualReturnTypeFlow extends TypeFlow<BytecodePosition> {
     public String format(boolean withState, boolean withSource) {
         return "Actual return of call to " + invokeFlow.targetMethod.format("%H.%n(%p)") +
                         (withSource ? " at " + formatSource() : "") +
-                        (withState ? " with state <" + getState() + ">" : "");
+                        (withState ? " with state <" + getStateDescription() + ">" : "");
     }
 
 }

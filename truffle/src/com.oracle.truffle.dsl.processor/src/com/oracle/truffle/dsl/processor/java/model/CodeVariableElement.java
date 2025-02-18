@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -80,13 +80,6 @@ public final class CodeVariableElement extends CodeElement<Element> implements V
         this.name = CodeNames.of(name);
     }
 
-    public CodeVariableElement(Set<Modifier> modifiers, TypeMirror type, String name, String init) {
-        this(modifiers, type, name);
-        if (init != null) {
-            this.init = new CodeTree(null, CodeTreeKind.STRING, null, init);
-        }
-    }
-
     public CodeTreeBuilder createInitBuilder() {
         CodeTreeBuilder builder = new CodeTreeBuilder(null);
         builder.setEnclosingElement(this);
@@ -108,7 +101,7 @@ public final class CodeVariableElement extends CodeElement<Element> implements V
 
     @Override
     public int hashCode() {
-        return Objects.hash(name, ElementUtils.getTypeId(type), constantValue, init, super.hashCode());
+        return Objects.hash(name, ElementUtils.getTypeSimpleId(type), constantValue, init, super.hashCode());
     }
 
     public void setInit(CodeTree init) {

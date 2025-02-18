@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,14 +32,13 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import org.graalvm.nativeimage.c.function.CEntryPointLiteral;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.impl.ProcessPropertiesSupport;
 import org.graalvm.word.PointerBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.BaseProcessPropertiesSupport;
+import com.oracle.svm.core.c.locale.LocaleSupport;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.util.VMError;
@@ -47,16 +46,16 @@ import com.oracle.svm.core.windows.headers.LibLoaderAPI;
 import com.oracle.svm.core.windows.headers.Process;
 import com.oracle.svm.core.windows.headers.WinBase;
 import com.oracle.svm.core.windows.headers.WinBase.HANDLE;
+import com.oracle.svm.core.windows.headers.WindowsLibC.WCharPointer;
+
+import jdk.graal.compiler.word.Word;
 
 @AutomaticallyRegisteredImageSingleton(ProcessPropertiesSupport.class)
 public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSupport {
 
     @Override
     public String getExecutableName() {
-        CCharPointer path = UnsafeStackValue.get(WinBase.MAX_PATH, CCharPointer.class);
-        WinBase.HMODULE hModule = LibLoaderAPI.GetModuleHandleA(WordFactory.nullPointer());
-        int result = LibLoaderAPI.GetModuleFileNameA(hModule, path, WinBase.MAX_PATH);
-        return result == 0 ? null : CTypeConversion.toJavaString(path);
+        return getModulePath(LibLoaderAPI.GetModuleHandleA(Word.nullPointer()));
     }
 
     @Override
@@ -82,7 +81,7 @@ public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSuppor
             }
             process = pb.start();
         } catch (IOException e) {
-            throw VMError.shouldNotReachHere();
+            throw VMError.shouldNotReachHere(e);
         }
         while (process.isAlive()) {
             try {
@@ -107,7 +106,7 @@ public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSuppor
     @Override
     public String getObjectFile(String symbol) {
         try (CTypeConversion.CCharPointerHolder symbolHolder = CTypeConversion.toCString(symbol)) {
-            WinBase.HMODULE builtinHandle = LibLoaderAPI.GetModuleHandleA(WordFactory.nullPointer());
+            WinBase.HMODULE builtinHandle = LibLoaderAPI.GetModuleHandleA(Word.nullPointer());
             PointerBase symbolAddress = LibLoaderAPI.GetProcAddress(builtinHandle, symbolHolder.get());
             if (symbolAddress.isNonNull()) {
                 return getObjectFile(symbolAddress);
@@ -117,26 +116,29 @@ public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSuppor
     }
 
     @Override
-    public String getObjectFile(CEntryPointLiteral<?> symbol) {
-        PointerBase symbolAddress = symbol.getFunctionPointer();
-        return getObjectFile(symbolAddress);
-    }
-
-    private static String getObjectFile(PointerBase symbolAddress) {
+    public String getObjectFile(PointerBase symbolAddress) {
         WinBase.HMODULEPointer module = UnsafeStackValue.get(WinBase.HMODULEPointer.class);
         if (LibLoaderAPI.GetModuleHandleExA(LibLoaderAPI.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS() | LibLoaderAPI.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT(),
                         (CCharPointer) symbolAddress, module) == 0) {
             return null;
         }
-
-        CCharPointer path = UnsafeStackValue.get(WinBase.MAX_PATH, CCharPointer.class);
-        int result = LibLoaderAPI.GetModuleFileNameA(module.read(), path, WinBase.MAX_PATH);
-        return result == 0 ? null : CTypeConversion.toJavaString(path);
+        return getModulePath(module.read());
     }
 
+    private static String getModulePath(WinBase.HMODULE module) {
+        WCharPointer path = UnsafeStackValue.get(WinBase.MAX_PATH, WCharPointer.class);
+        int length = LibLoaderAPI.GetModuleFileNameW(module, path, WinBase.MAX_PATH);
+        if (length == 0 || length == WinBase.MAX_PATH) {
+            return null;
+        }
+        return WindowsSystemPropertiesSupport.toJavaString(path, length);
+    }
+
+    /** This method is unsafe and should not be used, see {@link LocaleSupport}. */
     @Override
+    @SuppressWarnings("deprecation")
     public String setLocale(String category, String locale) {
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
@@ -157,11 +159,11 @@ public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSuppor
 
     @Override
     public boolean isAlive(long processID) {
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override
     public int waitForProcessExit(long processID) {
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 }

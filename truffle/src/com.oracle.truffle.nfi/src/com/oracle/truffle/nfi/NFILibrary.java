@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,9 +40,13 @@
  */
 package com.oracle.truffle.nfi;
 
-import com.oracle.truffle.api.TruffleLanguage;
+import java.util.HashMap;
+import java.util.Map;
+
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.interop.ArityException;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -54,9 +58,8 @@ import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
-import com.oracle.truffle.api.profiles.BranchProfile;
-import java.util.HashMap;
-import java.util.Map;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
 
 @ExportLibrary(InteropLibrary.class)
 final class NFILibrary implements TruffleObject {
@@ -122,11 +125,12 @@ final class NFILibrary implements TruffleObject {
 
     @ExportMessage
     Object invokeMember(String symbol, Object[] args,
+                    @Bind Node node,
                     @CachedLibrary(limit = "3") InteropLibrary executables,
-                    @Cached BranchProfile exception) throws UnknownIdentifierException, ArityException, UnsupportedTypeException, UnsupportedMessageException {
+                    @Cached InlinedBranchProfile exception) throws UnknownIdentifierException, ArityException, UnsupportedTypeException, UnsupportedMessageException {
         Object preBound = findSymbol(symbol);
         if (preBound == null) {
-            exception.enter();
+            exception.enter(node);
             throw UnknownIdentifierException.create(symbol);
         }
         return executables.execute(preBound, args);
@@ -192,9 +196,10 @@ final class NFILibrary implements TruffleObject {
 
         @ExportMessage
         Object readArrayElement(long idx,
-                        @Cached BranchProfile exception) throws InvalidArrayIndexException {
+                        @Bind Node node,
+                        @Cached InlinedBranchProfile exception) throws InvalidArrayIndexException {
             if (!isArrayElementReadable(idx)) {
-                exception.enter();
+                exception.enter(node);
                 throw InvalidArrayIndexException.create(idx);
             }
             return keys[(int) idx];

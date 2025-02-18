@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -45,18 +45,21 @@ import org.junit.Test;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Fallback;
+import com.oracle.truffle.api.dsl.GenerateInline;
+import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.test.CheckedExceptionTestFactory.Default1NodeGen;
 import com.oracle.truffle.api.dsl.test.CheckedExceptionTestFactory.Default2NodeGen;
 import com.oracle.truffle.api.nodes.Node;
 
-@SuppressWarnings("unused")
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing", "unused"})
 public class CheckedExceptionTest {
 
     @SuppressWarnings("serial")
     static class CheckedException extends Exception {
     }
 
+    @GenerateInline(false)
     abstract static class Default1Node extends Node {
 
         abstract void execute(Object arg) throws CheckedException;
@@ -81,6 +84,7 @@ public class CheckedExceptionTest {
         }
     }
 
+    @GenerateInline(false)
     abstract static class Default2Node extends Node {
 
         abstract void execute(Object arg) throws CheckedException;
@@ -95,6 +99,7 @@ public class CheckedExceptionTest {
             throw new CheckedException();
         }
 
+        @Idempotent
         static boolean guard() throws CheckedException {
             throw new CheckedException();
         }

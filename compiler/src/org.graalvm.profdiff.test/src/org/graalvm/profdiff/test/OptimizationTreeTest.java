@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,15 +28,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.graalvm.collections.EconomicMap;
+import org.graalvm.profdiff.core.OptionValues;
 import org.graalvm.profdiff.core.TreeNode;
+import org.graalvm.profdiff.core.Writer;
 import org.graalvm.profdiff.core.inlining.InliningTreeNode;
 import org.graalvm.profdiff.core.optimization.Optimization;
 import org.graalvm.profdiff.core.optimization.OptimizationPhase;
 import org.graalvm.profdiff.core.optimization.OptimizationTree;
 import org.graalvm.profdiff.core.optimization.OptimizationTreeNode;
+import org.graalvm.profdiff.core.optimization.Position;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 public class OptimizationTreeTest {
     private static final class MockCompilationUnit {
@@ -68,9 +72,9 @@ public class OptimizationTreeTest {
             assert unorderedDetailedPhase.isUnorderedCategory() && unorderedDetailedPhase.isVeryDetailedCategory();
             rootPhase.addChild(unorderedDetailedPhase);
             Optimization optimization1 = new Optimization("Optimization1", "Event1", null, null);
-            Optimization optimization2 = new Optimization("Optimization1", "Event1", EconomicMap.of("method", 1), null);
-            Optimization optimization3 = new Optimization("Optimization1", "Event1", EconomicMap.of("method", 1), EconomicMap.of("key", 0));
-            Optimization optimization4 = new Optimization("Optimization1", "Event1", EconomicMap.of("method", 2), null);
+            Optimization optimization2 = new Optimization("Optimization1", "Event1", Position.of("method", 1), null);
+            Optimization optimization3 = new Optimization("Optimization1", "Event1", Position.of("method", 1), EconomicMap.of("key", 0));
+            Optimization optimization4 = new Optimization("Optimization1", "Event1", Position.of("method", 2), null);
             Optimization optimization5 = new Optimization("Optimization1", "Event2", null, null);
             Optimization optimization6 = new Optimization("Optimization2", "Event1", null, null);
             OptimizationPhase subphase1 = new OptimizationPhase("Subphase1$");
@@ -84,17 +88,17 @@ public class OptimizationTreeTest {
             unorderedDetailedPhase.addChild(optimization5);
             unorderedDetailedPhase.addChild(optimization1);
 
-            InliningTreeNode inliningTreeRoot = new InliningTreeNode("root", 0, true, null, false, null);
-            InliningTreeNode method1 = new InliningTreeNode("method1", 1, true, null, false, null);
-            InliningTreeNode method2 = new InliningTreeNode("method1", 2, true, null, false, null);
-            InliningTreeNode method3 = new InliningTreeNode("method2", 2, true, null, false, null);
-            InliningTreeNode method3First = new InliningTreeNode("method", 1, true, null, false, null);
-            InliningTreeNode method3Second = new InliningTreeNode("method", 2, true, null, false, null);
+            InliningTreeNode inliningTreeRoot = new InliningTreeNode("root", 0, true, null, false, null, false);
+            InliningTreeNode method1 = new InliningTreeNode("method1", 1, true, null, false, null, false);
+            InliningTreeNode method2 = new InliningTreeNode("method1", 2, true, null, false, null, false);
+            InliningTreeNode method3 = new InliningTreeNode("method2", 2, true, null, false, null, false);
+            InliningTreeNode method3First = new InliningTreeNode("method", 1, true, null, false, null, false);
+            InliningTreeNode method3Second = new InliningTreeNode("method", 2, true, null, false, null, false);
             method3.addChild(method3Second);
             method3.addChild(method3First);
-            InliningTreeNode method4 = new InliningTreeNode("method1", 3, true, null, false, null);
-            InliningTreeNode method5 = new InliningTreeNode("method2", 3, false, null, false, null);
-            InliningTreeNode method6 = new InliningTreeNode("method2", 3, true, null, false, null);
+            InliningTreeNode method4 = new InliningTreeNode("method1", 3, true, null, false, null, false);
+            InliningTreeNode method5 = new InliningTreeNode("method2", 3, false, null, false, null, true);
+            InliningTreeNode method6 = new InliningTreeNode("method2", 3, true, null, false, null, false);
             inliningTreeRoot.addChild(method4);
             inliningTreeRoot.addChild(method6);
             inliningTreeRoot.addChild(method1);
@@ -157,5 +161,51 @@ public class OptimizationTreeTest {
 
         List<Optimization> expected = List.of(optimization1, optimization2, optimization3, optimization4, optimization5);
         assertEquals(expected, rootPhase.getOptimizationsRecursive());
+    }
+
+    @Test
+    public void optimizationEqualsAndHashCode() {
+        Optimization opt1 = new Optimization("Opt", "Event", null, EconomicMap.create());
+        assertEquals(opt1, opt1);
+        assertNotEquals(opt1, null);
+        Optimization opt2 = new Optimization("Opt", "Event", Position.EMPTY, null);
+        assertEquals(opt1, opt2);
+        assertEquals(opt1.hashCode(), opt1.hashCode());
+        Optimization opt3 = new Optimization("Opt", "Event", null, EconomicMap.of("prop", 1));
+        assertNotEquals(opt1, opt3);
+    }
+
+    @Test
+    public void writeOptimizationTree() {
+        OptimizationPhase root = new OptimizationPhase("RootPhase");
+        OptimizationPhase child = new OptimizationPhase("ChildPhase");
+        root.addChild(child);
+        child.addChild(new Optimization("Opt", "Foo", Position.create(List.of("foo()", "bar()"), List.of(1, 2)), null));
+        root.addChild(new Optimization("Opt", "Bar", Position.create(List.of("baz()", "bar()"), List.of(3, 4)), EconomicMap.of("prop1", 1, "prop2", "value")));
+        root.addChild(new Optimization("Opt", "Baz", null, EconomicMap.of("prop1", null, "prop2", false)));
+
+        OptimizationTree tree = new OptimizationTree(root);
+
+        var writer = Writer.stringBuilder(new OptionValues());
+        tree.write(writer);
+        assertEquals("""
+                        Optimization tree
+                            RootPhase
+                                ChildPhase
+                                    Opt Foo at bci 2
+                                Opt Bar at bci 4 with {prop1: 1, prop2: value}
+                                Opt Baz with {prop1: null, prop2: false}
+                        """, writer.getOutput());
+
+        writer = Writer.stringBuilder(OptionValues.builder().withBCILongForm(true).build());
+        tree.write(writer);
+        assertEquals("""
+                        Optimization tree
+                            RootPhase
+                                ChildPhase
+                                    Opt Foo at bci {foo(): 1, bar(): 2}
+                                Opt Bar at bci {baz(): 3, bar(): 4} with {prop1: 1, prop2: value}
+                                Opt Baz with {prop1: null, prop2: false}
+                        """, writer.getOutput());
     }
 }

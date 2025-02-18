@@ -25,13 +25,14 @@
 
 package com.oracle.svm.core.graal.code;
 
-import org.graalvm.compiler.nodes.gc.BarrierSet;
-import org.graalvm.compiler.nodes.spi.PlatformConfigurationProvider;
+import jdk.graal.compiler.nodes.gc.BarrierSet;
+import jdk.graal.compiler.nodes.spi.PlatformConfigurationProvider;
 
 public class SubstratePlatformConfigurationProvider implements PlatformConfigurationProvider {
     private final BarrierSet barrierSet;
 
     public SubstratePlatformConfigurationProvider(BarrierSet barrierSet) {
+        assert barrierSet != null;
         this.barrierSet = barrierSet;
     }
 

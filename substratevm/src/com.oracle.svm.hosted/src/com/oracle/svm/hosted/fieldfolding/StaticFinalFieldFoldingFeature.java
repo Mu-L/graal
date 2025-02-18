@@ -25,66 +25,56 @@
 package com.oracle.svm.hosted.fieldfolding;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.graalvm.compiler.core.common.type.StampFactory;
-import org.graalvm.compiler.graph.Node;
-import org.graalvm.compiler.graph.NodeClass;
-import org.graalvm.compiler.nodeinfo.NodeCycles;
-import org.graalvm.compiler.nodeinfo.NodeInfo;
-import org.graalvm.compiler.nodeinfo.NodeSize;
-import org.graalvm.compiler.nodes.AbstractStateSplit;
-import org.graalvm.compiler.nodes.ConstantNode;
-import org.graalvm.compiler.nodes.EndNode;
-import org.graalvm.compiler.nodes.FixedWithNextNode;
-import org.graalvm.compiler.nodes.IfNode;
-import org.graalvm.compiler.nodes.LogicNode;
-import org.graalvm.compiler.nodes.MergeNode;
-import org.graalvm.compiler.nodes.NodeView;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.ValuePhiNode;
-import org.graalvm.compiler.nodes.calc.IntegerEqualsNode;
-import org.graalvm.compiler.nodes.extended.BranchProbabilityNode;
-import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
-import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderContext;
-import org.graalvm.compiler.nodes.graphbuilderconf.NodePlugin;
-import org.graalvm.compiler.nodes.java.LoadIndexedNode;
-import org.graalvm.compiler.nodes.java.StoreFieldNode;
-import org.graalvm.compiler.nodes.java.StoreIndexedNode;
-import org.graalvm.compiler.nodes.spi.Simplifiable;
-import org.graalvm.compiler.nodes.spi.SimplifierTool;
-import org.graalvm.compiler.nodes.type.StampTool;
-import org.graalvm.compiler.options.Option;
-import org.graalvm.compiler.phases.util.Providers;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.BigBang;
+import com.oracle.graal.pointsto.flow.AnalysisParsedGraph.Stage;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.svm.core.ParsingReason;
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.meta.ReadableJavaField;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
+import com.oracle.svm.core.layeredimagesingleton.FeatureSingleton;
+import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
+import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
+import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingleton;
+import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonBuilderFlags;
 import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
+import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
+import com.oracle.svm.hosted.ameta.FieldValueInterceptionSupport;
+import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
+import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
+import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader;
+import com.oracle.svm.hosted.imagelayer.SVMImageLayerLoader.JavaConstantSupplier;
+import com.oracle.svm.hosted.imagelayer.SVMImageLayerSingletonLoader;
+import com.oracle.svm.hosted.imagelayer.SVMImageLayerWriter;
 import com.oracle.svm.hosted.meta.HostedField;
-import com.oracle.svm.hosted.phases.IntrinsifyMethodHandlesInvocationPlugin;
 
+import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
+import jdk.graal.compiler.nodes.java.StoreFieldNode;
+import jdk.graal.compiler.options.Option;
+import jdk.graal.compiler.phases.util.Providers;
 import jdk.vm.ci.meta.JavaConstant;
-import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
  * Performs constant folding for some static final fields in classes that are initialized at run
@@ -92,8 +82,8 @@ import jdk.vm.ci.meta.ResolvedJavaField;
  * folded by the regular constant folding mechanism. But if a class is initialized at run time, the
  * class initializer of that class is analyzed like any other method, i.e., the static analysis sees
  * a static final field as written and does not perform constant folding. Without constant folding
- * during parsing already, other graph builder plugins like
- * {@link IntrinsifyMethodHandlesInvocationPlugin} do not work on such fields.
+ * during parsing already, other simplifications and intrinsifications do not work on such fields,
+ * such as those involving method handles.
  *
  * This feature performs constant folding for a limited but important class of static final fields:
  * the class initializer contains a single field store and the stored value is a constant. That
@@ -107,8 +97,9 @@ import jdk.vm.ci.meta.ResolvedJavaField;
  * initializing field store is done. The field load is therefore not intrinsified to a single
  * constant, but an if-else structure with the likely case returning the constant value, and the
  * slow-path case of returning the uninitialized value. All these boolean values are stored in the
- * {@link #fieldInitializationStatus} array, and {@link #fieldCheckIndexMap} stores the index for
- * the optimized fields.
+ * {@link StaticFinalFieldFoldingSingleton#fieldInitializationStatus} array, and
+ * {@link StaticFinalFieldFoldingSingleton#fieldCheckIndexMap} stores the index for the optimized
+ * fields.
  *
  * The optimized field load is also preceded by a {@link EnsureClassInitializedNode} to trigger the
  * necessary class initialization. It would be possible to combine the class initialization check
@@ -126,9 +117,14 @@ import jdk.vm.ci.meta.ResolvedJavaField;
  * that case, the class initialization check is in a caller method, i.e., there is no
  * {@link EnsureClassInitializedNode} necessary in the method that performs the field access.</li>
  * </ul>
+ *
+ * This feature makes use of staged parsing to be able to optimize field loads in class
+ * initializers. Since those can have cyclic dependencies, it is necessary to do the field store
+ * analysis in a separate pass. Otherwise, the graph parsing may end up in a deadlock because
+ * parsing requests may be processed by different threads and could then depend on each other.
  */
 @AutomaticallyRegisteredFeature
-final class StaticFinalFieldFoldingFeature implements InternalFeature {
+public final class StaticFinalFieldFoldingFeature implements InternalFeature, FeatureSingleton {
 
     public static class Options {
         @Option(help = "Optimize static final fields that get a constant assigned in the class initializer.")//
@@ -136,12 +132,15 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
     }
 
     BigBang bb;
-    final Map<AnalysisField, JavaConstant> foldedFieldValues = new ConcurrentHashMap<>();
-    Map<AnalysisField, Integer> fieldCheckIndexMap;
-    boolean[] fieldInitializationStatus;
+
+    private final Set<AnalysisMethod> analyzedMethods = ConcurrentHashMap.newKeySet();
 
     public static StaticFinalFieldFoldingFeature singleton() {
         return ImageSingletons.lookup(StaticFinalFieldFoldingFeature.class);
+    }
+
+    static boolean isAvailable() {
+        return ImageSingletons.contains(StaticFinalFieldFoldingFeature.class);
     }
 
     @Override
@@ -150,10 +149,18 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
     }
 
     @Override
+    public void afterRegistration(AfterRegistrationAccess access) {
+        if (ImageLayerBuildingSupport.firstImageBuild()) {
+            ImageSingletons.add(StaticFinalFieldFoldingSingleton.class, new StaticFinalFieldFoldingSingleton());
+        }
+    }
+
+    @Override
     public void duringSetup(DuringSetupAccess a) {
         DuringSetupAccessImpl access = (DuringSetupAccessImpl) a;
 
-        access.getHostVM().addMethodAfterParsingListener(this::onAnalysisMethodParsed);
+        access.getHostVM().addMethodAfterBytecodeParsedListener(this::methodAfterBytecodeParsedListener);
+        access.getHostVM().addMethodAfterParsingListener(this::methodAfterParsingListener);
     }
 
     @Override
@@ -164,7 +171,7 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
              * initialized at image build time. So we do not need to make this plugin and the nodes
              * it references safe for execution at image run time.
              */
-            plugins.appendNodePlugin(new StaticFinalFieldFoldingNodePlugin(this));
+            plugins.appendNodePlugin(new StaticFinalFieldFoldingNodePlugin());
         }
     }
 
@@ -173,6 +180,20 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
         BeforeAnalysisAccessImpl access = (BeforeAnalysisAccessImpl) a;
 
         bb = access.getBigBang();
+
+        StaticFinalFieldFoldingSingleton singleton = StaticFinalFieldFoldingSingleton.singleton();
+        SVMImageLayerLoader imageLayerLoader = HostedImageLayerBuildingSupport.singleton().getLoader();
+        for (var entry : singleton.baseLayerFieldFoldingInfos.entrySet()) {
+            addFoldedValue(imageLayerLoader, entry.getKey(), entry.getValue().bytecodeParsedFoldedFieldValue(), singleton.bytecodeParsedFoldedFieldValues);
+            addFoldedValue(imageLayerLoader, entry.getKey(), entry.getValue().afterParsingHooksDoneFoldedFieldValue(), singleton.afterParsingHooksDoneFoldedFieldValues);
+        }
+    }
+
+    private static void addFoldedValue(SVMImageLayerLoader imageLayerLoader, int fid, JavaConstantSupplier javaConstantSupplier, Map<AnalysisField, JavaConstant> singleton) {
+        JavaConstant javaConstant = javaConstantSupplier.get(imageLayerLoader);
+        if (javaConstant != null) {
+            singleton.put(imageLayerLoader.getAnalysisFieldForBaseLayerId(fid), javaConstant);
+        }
     }
 
     /**
@@ -182,19 +203,30 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
     @Override
     public void afterAnalysis(AfterAnalysisAccess access) {
         bb = null;
+        StaticFinalFieldFoldingSingleton singleton = StaticFinalFieldFoldingSingleton.singleton();
+        List<AnalysisField> foldedFields = new ArrayList<>(singleton.getFoldedFieldValues(Stage.finalStage()).keySet());
+        VMError.guarantee(singleton.getFoldedFieldValues(Stage.finalStage()).keySet().containsAll(singleton.getFoldedFieldValues(Stage.firstStage()).keySet()),
+                        "All fields folded in earlier stages must be present in the final stage.");
+        /*
+         * Make the fieldCheckIndex deterministic by using the AnalysisField id to ensure the fields
+         * from the extension layers get a bigger fieldCheckIndex.
+         */
+        foldedFields.sort(Comparator.comparing(AnalysisField::getId));
 
-        List<AnalysisField> foldedFields = new ArrayList<>(foldedFieldValues.keySet());
-        /* Make the fieldCheckIndex deterministic by using an (arbitrary) sort order. */
-        foldedFields.sort(Comparator.comparing(field -> field.format("%H.%n")));
-
-        fieldCheckIndexMap = new HashMap<>();
-        int fieldCheckIndex = 0;
+        int fieldCheckIndex = singleton.baseLayerFieldFoldingInfos.size();
         for (AnalysisField field : foldedFields) {
-            fieldCheckIndexMap.put(field, fieldCheckIndex);
-            fieldCheckIndex++;
+            if (!singleton.baseLayerFieldFoldingInfos.containsKey(field.getId())) {
+                singleton.fieldCheckIndexMap.put(field, fieldCheckIndex);
+                fieldCheckIndex++;
+            }
         }
 
-        fieldInitializationStatus = new boolean[fieldCheckIndex];
+        SVMImageLayerLoader imageLayerLoader = HostedImageLayerBuildingSupport.singleton().getLoader();
+        for (var entry : singleton.baseLayerFieldFoldingInfos.entrySet()) {
+            singleton.fieldCheckIndexMap.put(imageLayerLoader.getAnalysisFieldForBaseLayerId(entry.getKey()), entry.getValue().fieldCheckIndex());
+        }
+
+        singleton.fieldInitializationStatus = new boolean[fieldCheckIndex];
     }
 
     /**
@@ -205,40 +237,102 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
      */
     @Override
     public void afterHeapLayout(AfterHeapLayoutAccess access) {
-        for (Map.Entry<AnalysisField, Integer> entry : fieldCheckIndexMap.entrySet()) {
-            if (entry.getKey().getDeclaringClass().isInitialized()) {
-                fieldInitializationStatus[entry.getValue()] = true;
+        StaticFinalFieldFoldingSingleton singleton = StaticFinalFieldFoldingSingleton.singleton();
+        for (Map.Entry<AnalysisField, Integer> entry : singleton.fieldCheckIndexMap.entrySet()) {
+            AnalysisField key = entry.getKey();
+            if (key.getDeclaringClass().isInitialized()) {
+                singleton.fieldInitializationStatus[entry.getValue()] = true;
+            }
+            if (singleton.baseLayerFieldFoldingInfos.containsKey(key.getId())) {
+                boolean priorLayerStatus = singleton.baseLayerFieldFoldingInfos.get(key.getId()).initializationStatus();
+                boolean currentLayerStatus = singleton.fieldInitializationStatus[entry.getValue()];
+                assert priorLayerStatus == currentLayerStatus : "Field %s initialization status was %s in the base layer, but is %s in the application"
+                                .formatted(key, priorLayerStatus, currentLayerStatus);
             }
         }
+    }
+
+    private void methodAfterBytecodeParsedListener(AnalysisMethod method, StructuredGraph graph) {
+        /*
+         * This method is registered as callback for the first parsing stage. Therefore, it may only
+         * be invoked if the first parsing stage is required.
+         */
+        assert Stage.isRequiredStage(Stage.BYTECODE_PARSED, method);
+        analyzeParsedMethod(Stage.BYTECODE_PARSED, method, graph);
+    }
+
+    private void methodAfterParsingListener(AnalysisMethod method, StructuredGraph graph) {
+        analyzeParsedMethod(Stage.OPTIMIZATIONS_APPLIED, method, graph);
     }
 
     /**
      * Invoked for each method that is parsed during static analysis, before the type flow graph of
      * that method is created. If the method is a class initializer, the static final fields that
-     * can be optimized are detected and added to {@link #foldedFieldValues}. If the method is not a
-     * class initializer, it is verified that there is no illegal store to an optimized field.
+     * can be optimized are detected and added to
+     * {@link StaticFinalFieldFoldingSingleton#bytecodeParsedFoldedFieldValues} or
+     * {@link StaticFinalFieldFoldingSingleton#afterParsingHooksDoneFoldedFieldValues} (depending on
+     * the stage). If the method is not a class initializer, it is verified that there is no illegal
+     * store to an optimized field.
      */
-    void onAnalysisMethodParsed(AnalysisMethod method, StructuredGraph graph) {
+    private void analyzeParsedMethod(Stage stage, AnalysisMethod method, StructuredGraph graph) {
+        StaticFinalFieldFoldingSingleton singleton = StaticFinalFieldFoldingSingleton.singleton();
         boolean isClassInitializer = method.isClassInitializer();
         Map<AnalysisField, JavaConstant> optimizableFields = isClassInitializer ? new HashMap<>() : null;
         Set<AnalysisField> ineligibleFields = isClassInitializer ? new HashSet<>() : null;
 
         for (Node n : graph.getNodes()) {
-            if (n instanceof StoreFieldNode) {
-                StoreFieldNode node = (StoreFieldNode) n;
+            if (n instanceof StoreFieldNode node) {
                 AnalysisField field = (AnalysisField) node.field();
-                if (field.isStatic() && field.isFinal()) {
+                if (field.isStatic() && field.isFinal() && !field.isInBaseLayer()) {
                     if (isClassInitializer && field.getDeclaringClass().equals(method.getDeclaringClass())) {
                         analyzeStoreInClassInitializer(node, field, optimizableFields, ineligibleFields);
                     } else {
-                        analyzeStoreOutsideClassInitializer(method, field);
+                        analyzeStoreOutsideClassInitializer(singleton, stage, method, field);
                     }
                 }
             }
         }
 
         if (optimizableFields != null && !optimizableFields.isEmpty()) {
-            foldedFieldValues.putAll(optimizableFields);
+            verifyOptimizableFields(singleton, stage, method, optimizableFields);
+            singleton.getFoldedFieldValues(stage).putAll(optimizableFields);
+        }
+
+        // remember that the method was analyzed for static final fields
+        analyzedMethods.add(method);
+    }
+
+    /**
+     * Verifies that the constant value for an optimizable field is always the same in case a method
+     * is parsed several times.
+     *
+     * A method may be parsed several times (e.g. due to {@link Stage staged parsing} or if
+     * {@link AnalysisMethod#reparseGraph(BigBang) reparsing is forced}) and in such cases, we need
+     * to ensure that static final field folding always leads to the same constant value. If a
+     * violation is detected, the image build fails and static final field folding needs to be
+     * disabled.
+     */
+    private void verifyOptimizableFields(StaticFinalFieldFoldingSingleton singleton, Stage stage, AnalysisMethod method, Map<AnalysisField, JavaConstant> optimizableFields) {
+        if (!analyzedMethods.contains(method)) {
+            return;
+        }
+
+        for (Entry<AnalysisField, JavaConstant> entry : optimizableFields.entrySet()) {
+            for (Stage curStage = stage; curStage != null; curStage = curStage.previous()) {
+                JavaConstant javaConstant = singleton.getFoldedFieldValue(stage, entry.getKey());
+                /*
+                 * The field is found optimizable, i.e., a constant is assigned in a class
+                 * initializer, and then the class initializer is parsed again (in a later stage or
+                 * reparsing was forced) and a different value was encountered. The user needs to
+                 * disable the optimization.
+                 */
+                UserError.guarantee(javaConstant == null || javaConstant.equals(entry.getValue()), "" +
+                                "The static final field optimization found a static final field %s " +
+                                "which is initialized multiple times with different constant values. " +
+                                "You can use %s to disable the optimization.",
+                                entry.getKey().format("%H.%n"),
+                                SubstrateOptionsParser.commandArgument(Options.OptStaticFinalFieldFolding, "-"));
+            }
         }
     }
 
@@ -275,7 +369,7 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
      * to the latest Java VM spec, but languages like Scala do it anyway. As long as the field is
      * not found as optimizable, this is no problem.
      */
-    private void analyzeStoreOutsideClassInitializer(AnalysisMethod method, AnalysisField field) {
+    private void analyzeStoreOutsideClassInitializer(StaticFinalFieldFoldingSingleton singleton, Stage stage, AnalysisMethod method, AnalysisField field) {
         if (field.getDeclaringClass().getClassInitializer() != null) {
             /*
              * Analyze the class initializer of the class that defines the field. This ensures that
@@ -285,18 +379,76 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
             field.getDeclaringClass().getClassInitializer().ensureGraphParsed(bb);
         }
 
-        if (foldedFieldValues.containsKey(field)) {
+        if (singleton.getFoldedFieldValues(stage).containsKey(field)) {
             /*
              * The field is found optimizable, i.e., a constant is assigned in a class initializer,
              * and then the field is written again outside the class initializer. The user needs to
              * disable the optimization.
              */
-            throw new UnsupportedOperationException("" +
+            throw UserError.abort("" +
                             "The static final field optimization found a static final field that is initialized both inside and outside of its class initializer. " +
-                            "Field " + field.format("%H.%n") + " is stored in method " + method.format("%H.%n(%p)") + ". " +
-                            "This violates the Java bytecode specification. " +
-                            "You can use " + SubstrateOptionsParser.commandArgument(Options.OptStaticFinalFieldFolding, "-") + " to disable the optimization.");
+                            "Field %s is stored in method %s. This violates the Java bytecode specification. You can use %s to disable the optimization.",
+                            field.format("%H.%n"), method.format("%H.%n(%p)"), SubstrateOptionsParser.commandArgument(Options.OptStaticFinalFieldFolding, "-"));
         }
+    }
+
+    static boolean isOptimizationCandidate(AnalysisField aField, AnalysisMethod definingClassInitializer, FieldValueInterceptionSupport fieldValueInterceptionSupport) {
+        if (definingClassInitializer == null) {
+            /* If there is no class initializer, there cannot be a foldable constant found in it. */
+            return false;
+        }
+
+        if (!fieldValueInterceptionSupport.isValueAvailable(aField)) {
+            /*
+             * Cannot optimize static field whose value is recomputed and is not yet available,
+             * i.e., it may depend on analysis/compilation derived data.
+             */
+            return false;
+        }
+        return true;
+    }
+
+    static boolean isAllowedTargetMethod(ResolvedJavaMethod method) {
+        /*
+         * (1) Don't do this optimization for run-time compiled methods because this plugin and the
+         * nodes it references are not safe for execution at image run time.
+         *
+         * (2) Don't apply this optimization to deopt targets to save effort since deopt targets are
+         * not expected to be optimized
+         */
+        return !SubstrateCompilationDirectives.isRuntimeCompiledMethod(method) && !SubstrateCompilationDirectives.isDeoptTarget(method);
+    }
+}
+
+class StaticFinalFieldFoldingSingleton implements LayeredImageSingleton {
+
+    /**
+     * Folded field values after stage {@link Stage#BYTECODE_PARSED}.
+     */
+    final Map<AnalysisField, JavaConstant> bytecodeParsedFoldedFieldValues = new ConcurrentHashMap<>();
+
+    /**
+     * Folded field values after stage {@link Stage#OPTIMIZATIONS_APPLIED}.
+     */
+    final Map<AnalysisField, JavaConstant> afterParsingHooksDoneFoldedFieldValues = new ConcurrentHashMap<>();
+    final Map<Integer, PriorLayerFinalFieldFoldingInfo> baseLayerFieldFoldingInfos;
+    final Map<AnalysisField, Integer> fieldCheckIndexMap = new HashMap<>();
+    boolean[] fieldInitializationStatus;
+
+    record PriorLayerFinalFieldFoldingInfo(JavaConstantSupplier bytecodeParsedFoldedFieldValue, JavaConstantSupplier afterParsingHooksDoneFoldedFieldValue,
+                    int fieldCheckIndex, boolean initializationStatus) {
+    }
+
+    StaticFinalFieldFoldingSingleton(Map<Integer, PriorLayerFinalFieldFoldingInfo> baseLayerFieldFoldingInfos) {
+        this.baseLayerFieldFoldingInfos = baseLayerFieldFoldingInfos;
+    }
+
+    StaticFinalFieldFoldingSingleton() {
+        this(new HashMap<>());
+    }
+
+    public static StaticFinalFieldFoldingSingleton singleton() {
+        return ImageSingletons.lookup(StaticFinalFieldFoldingSingleton.class);
     }
 
     static AnalysisField toAnalysisField(ResolvedJavaField field) {
@@ -306,200 +458,87 @@ final class StaticFinalFieldFoldingFeature implements InternalFeature {
             return (AnalysisField) field;
         }
     }
-}
 
-/**
- * Performs the constant folding of fields that are optimizable.
- */
-final class StaticFinalFieldFoldingNodePlugin implements NodePlugin {
+    /**
+     * Looks up a folded field value for an AnalysisField. Since field stores may be folded and
+     * added in different parsing stages, the stage must be provided to ensure deterministic image
+     * builds. If the field could not be folded, null will be returned.
+     */
+    public JavaConstant getFoldedFieldValue(Stage stage, AnalysisField field) {
+        return getFoldedFieldValues(stage).get(field);
+    }
 
-    private final StaticFinalFieldFoldingFeature feature;
+    Map<AnalysisField, JavaConstant> getFoldedFieldValues(Stage stage) {
+        return switch (stage) {
+            case BYTECODE_PARSED -> bytecodeParsedFoldedFieldValues;
+            case OPTIMIZATIONS_APPLIED -> afterParsingHooksDoneFoldedFieldValues;
+        };
+    }
 
-    StaticFinalFieldFoldingNodePlugin(StaticFinalFieldFoldingFeature feature) {
-        this.feature = feature;
+    public Integer getFieldCheckIndex(ResolvedJavaField field) {
+        return getFieldCheckIndex(toAnalysisField(field));
+    }
+
+    public Integer getFieldCheckIndex(AnalysisField field) {
+        return fieldCheckIndexMap.get(field);
     }
 
     @Override
-    public boolean handleLoadStaticField(GraphBuilderContext b, ResolvedJavaField field) {
-        assert field.isStatic();
-        if (!field.isFinal()) {
-            return false;
-        }
-
-        if (b.getMethod().isClassInitializer()) {
-            /*
-             * Cannot optimize static field loads in class initializers because that can lead to
-             * deadlocks when classes have cyclic dependencies.
-             */
-            return false;
-        }
-
-        AnalysisField aField = StaticFinalFieldFoldingFeature.toAnalysisField(field);
-        AnalysisMethod classInitializer = aField.getDeclaringClass().getClassInitializer();
-        if (classInitializer == null) {
-            /* If there is no class initializer, there cannot be a foldable constant found in it. */
-            return false;
-        }
-
-        if (aField.wrapped instanceof ReadableJavaField && !((ReadableJavaField) aField.wrapped).isValueAvailable()) {
-            /*
-             * Cannot optimize static field whose value is recomputed and is not yet available,
-             * i.e., it may depend on analysis/compilation derived data.
-             */
-            return false;
-        }
-
-        /*
-         * The foldable field values are collected during parsing of the class initializer. If the
-         * class initializer is not parsed yet, parsing needs to be forced so that {@link
-         * StaticFinalFieldFoldingFeature#onAnalysisMethodParsed} determines which fields can be
-         * optimized.
-         */
-        classInitializer.ensureGraphParsed(feature.bb);
-
-        JavaConstant initializedValue = feature.foldedFieldValues.get(aField);
-        if (initializedValue == null) {
-            /* Field cannot be optimized. */
-            return false;
-        }
-
-        /*
-         * Create a if-else structure with a PhiNode that either has the optimized value of the
-         * field, or the uninitialized value. The initialization status array and the index into
-         * that array are not known yet during bytecode parsing, so the array access will be created
-         * lazily.
-         */
-        ValueNode fieldCheckStatusNode = b.add(new IsStaticFinalFieldInitializedNode(field));
-        LogicNode isUninitializedNode = b.add(IntegerEqualsNode.create(fieldCheckStatusNode, ConstantNode.forBoolean(false), NodeView.DEFAULT));
-
-        JavaConstant uninitializedValue = b.getConstantReflection().readFieldValue(field, null);
-        ConstantNode uninitializedValueNode = ConstantNode.forConstant(uninitializedValue, b.getMetaAccess());
-        ConstantNode initializedValueNode = ConstantNode.forConstant(initializedValue, b.getMetaAccess());
-
-        EndNode uninitializedEndNode = b.getGraph().add(new EndNode());
-        EndNode initializedEndNode = b.getGraph().add(new EndNode());
-        b.add(new IfNode(isUninitializedNode, uninitializedEndNode, initializedEndNode, BranchProbabilityNode.EXTREMELY_SLOW_PATH_PROFILE));
-
-        MergeNode merge = b.append(new MergeNode());
-        merge.addForwardEnd(uninitializedEndNode);
-        merge.addForwardEnd(initializedEndNode);
-
-        ConstantNode[] phiValueNodes = {uninitializedValueNode, initializedValueNode};
-        ValuePhiNode phi = new ValuePhiNode(StampTool.meet(Arrays.asList(phiValueNodes)), merge, phiValueNodes);
-        b.setStateAfter(merge);
-
-        b.addPush(field.getJavaKind(), phi);
-        return true;
+    public EnumSet<LayeredImageSingletonBuilderFlags> getImageBuilderFlags() {
+        return LayeredImageSingletonBuilderFlags.BUILDTIME_ACCESS_ONLY;
     }
 
     @Override
-    public boolean handleStoreStaticField(GraphBuilderContext b, ResolvedJavaField field, ValueNode value) {
-        assert field.isStatic();
-        if (!field.isFinal()) {
-            return false;
+    public PersistFlags preparePersist(ImageSingletonWriter writer) {
+        var snapshotWriter = ((SVMImageLayerWriter.ImageSingletonWriterImpl) writer).getSnapshotBuilder();
+        SVMImageLayerWriter imageLayerWriter = HostedImageLayerBuildingSupport.singleton().getWriter();
+
+        List<Integer> fields = new ArrayList<>();
+        List<Integer> fieldCheckIndexes = new ArrayList<>();
+        List<Boolean> fieldInitializationStatusList = new ArrayList<>();
+        List<JavaConstant> bytecodeParsedFoldedFieldValuesList = new ArrayList<>();
+        List<JavaConstant> afterParsingHooksDoneFoldedFieldValuesList = new ArrayList<>();
+        for (var entry : fieldCheckIndexMap.entrySet()) {
+            fields.add(entry.getKey().getId());
+            fieldCheckIndexes.add(entry.getValue());
+            fieldInitializationStatusList.add(fieldInitializationStatus[entry.getValue()]);
+            bytecodeParsedFoldedFieldValuesList.add(bytecodeParsedFoldedFieldValues.get(entry.getKey()));
+            afterParsingHooksDoneFoldedFieldValuesList.add(afterParsingHooksDoneFoldedFieldValues.get(entry.getKey()));
         }
 
-        /*
-         * We don't know at this time if the field is really going to be optimized. This is only
-         * known after static analysis. This node then replaces itself with an array store.
-         */
-        b.add(new MarkStaticFinalFieldInitializedNode(field));
-
-        /* Always emit the regular field store. It is necessary also for optimized fields. */
-        return false;
-    }
-}
-
-/**
- * Node that marks a static final field as initialized. This is basically just a store of the value
- * true in the {@link StaticFinalFieldFoldingFeature#fieldInitializationStatus} array. But we cannot
- * immediately emit a {@link StoreIndexedNode} in the bytecode parser because we do not know at the
- * time of parsing if the field can actually be optimized or not. So this node is emitted for every
- * static final field store, and then just removed if the field cannot be optimized.
- */
-@NodeInfo(size = NodeSize.SIZE_1, cycles = NodeCycles.CYCLES_1)
-final class MarkStaticFinalFieldInitializedNode extends AbstractStateSplit implements Simplifiable {
-    public static final NodeClass<MarkStaticFinalFieldInitializedNode> TYPE = NodeClass.create(MarkStaticFinalFieldInitializedNode.class);
-
-    private final ResolvedJavaField field;
-
-    protected MarkStaticFinalFieldInitializedNode(ResolvedJavaField field) {
-        super(TYPE, StampFactory.forVoid());
-        this.field = field;
-    }
-
-    @Override
-    public void simplify(SimplifierTool tool) {
-        StaticFinalFieldFoldingFeature feature = StaticFinalFieldFoldingFeature.singleton();
-
-        if (feature.fieldInitializationStatus == null) {
-            /* Static analysis is still running, we do not know yet which fields are optimized. */
-            return;
+        var staticFinalFieldFoldingSingleton = snapshotWriter.initStaticFinalFieldFoldingSingleton();
+        var fieldsBuilder = staticFinalFieldFoldingSingleton.initFields(fields.size());
+        var fieldCheckIndexesBuilder = staticFinalFieldFoldingSingleton.initFieldCheckIndexes(fieldCheckIndexes.size());
+        var fieldInitializationStatusListBuilder = staticFinalFieldFoldingSingleton.initFieldInitializationStatusList(fieldInitializationStatusList.size());
+        var bytecodeParsedFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton.initBytecodeParsedFoldedFieldValues(bytecodeParsedFoldedFieldValuesList.size());
+        var afterParsingHooksDoneFoldedFieldValuesListBuilder = staticFinalFieldFoldingSingleton.initAfterParsingHooksDoneFoldedFieldValues(afterParsingHooksDoneFoldedFieldValuesList.size());
+        for (int i = 0; i < fields.size(); ++i) {
+            fieldsBuilder.set(i, fields.get(i));
+            fieldCheckIndexesBuilder.set(i, fieldCheckIndexes.get(i));
+            fieldInitializationStatusListBuilder.set(i, fieldInitializationStatusList.get(i));
+            imageLayerWriter.writeConstant(bytecodeParsedFoldedFieldValuesList.get(i), bytecodeParsedFoldedFieldValuesListBuilder.get(i));
+            imageLayerWriter.writeConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i), afterParsingHooksDoneFoldedFieldValuesListBuilder.get(i));
         }
 
-        Integer fieldCheckIndex = feature.fieldCheckIndexMap.get(StaticFinalFieldFoldingFeature.toAnalysisField(field));
-        if (fieldCheckIndex != null) {
-            ConstantNode fieldInitializationStatusNode = ConstantNode.forConstant(SubstrateObjectConstant.forObject(feature.fieldInitializationStatus), tool.getMetaAccess(), graph());
-            ConstantNode fieldCheckIndexNode = ConstantNode.forInt(fieldCheckIndex, graph());
-            ConstantNode trueNode = ConstantNode.forBoolean(true, graph());
-            StoreIndexedNode replacementNode = graph().add(new StoreIndexedNode(fieldInitializationStatusNode, fieldCheckIndexNode, null, null, JavaKind.Boolean, trueNode));
-
-            graph().addBeforeFixed(this, replacementNode);
-            replacementNode.setStateAfter(stateAfter());
-        } else {
-            /* Field is not optimized, just remove ourselves. */
-        }
-        graph().removeFixed(this);
-    }
-}
-
-/**
- * Node that checks if a static final field is initialized. This is basically just a load of the
- * value in the {@link StaticFinalFieldFoldingFeature#fieldInitializationStatus} array. But we
- * cannot immediately emit a {@link LoadIndexedNode} in the bytecode parser because we do not know
- * at the time of parsing if the declaring class of the field is initialized at image build time.
- */
-@NodeInfo(size = NodeSize.SIZE_1, cycles = NodeCycles.CYCLES_1)
-final class IsStaticFinalFieldInitializedNode extends FixedWithNextNode implements Simplifiable {
-    public static final NodeClass<IsStaticFinalFieldInitializedNode> TYPE = NodeClass.create(IsStaticFinalFieldInitializedNode.class);
-
-    private final ResolvedJavaField field;
-
-    protected IsStaticFinalFieldInitializedNode(ResolvedJavaField field) {
-        super(TYPE, StampFactory.forKind(JavaKind.Boolean));
-        this.field = field;
+        return PersistFlags.CREATE;
     }
 
-    @Override
-    public void simplify(SimplifierTool tool) {
-        StaticFinalFieldFoldingFeature feature = StaticFinalFieldFoldingFeature.singleton();
+    @SuppressWarnings("unused")
+    public static Object createFromLoader(ImageSingletonLoader loader) {
+        var snapshotReader = ((SVMImageLayerSingletonLoader.ImageSingletonLoaderImpl) loader).getSnapshotReader();
 
-        if (feature.fieldInitializationStatus == null) {
-            /*
-             * Static analysis is still running, we do not know yet if class will get initialized at
-             * image build time after static analysis.
-             */
-            return;
+        var staticFinalFieldFoldingSingleton = snapshotReader.getStaticFinalFieldFoldingSingleton();
+        var fields = staticFinalFieldFoldingSingleton.getFields();
+        var fieldCheckIndexes = staticFinalFieldFoldingSingleton.getFieldCheckIndexes();
+        var fieldInitializationStatusList = staticFinalFieldFoldingSingleton.getFieldInitializationStatusList();
+        var bytecodeParsedFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getBytecodeParsedFoldedFieldValues();
+        var afterParsingHooksDoneFoldedFieldValuesList = staticFinalFieldFoldingSingleton.getAfterParsingHooksDoneFoldedFieldValues();
+
+        Map<Integer, PriorLayerFinalFieldFoldingInfo> baseLayerFieldFoldingInfos = new HashMap<>();
+        for (int i = 0; i < fields.size(); ++i) {
+            baseLayerFieldFoldingInfos.put(fields.get(i), new PriorLayerFinalFieldFoldingInfo(SVMImageLayerLoader.getConstant(bytecodeParsedFoldedFieldValuesList.get(i)),
+                            SVMImageLayerLoader.getConstant(afterParsingHooksDoneFoldedFieldValuesList.get(i)), fieldCheckIndexes.get(i), fieldInitializationStatusList.get(i)));
         }
-
-        ValueNode replacementNode;
-        if (field.getDeclaringClass().isInitialized()) {
-            /*
-             * The declaring class of the field has been initialized late after static analysis. So
-             * we can also constant fold the field now unconditionally.
-             */
-            replacementNode = ConstantNode.forBoolean(true, graph());
-
-        } else {
-            Integer fieldCheckIndex = feature.fieldCheckIndexMap.get(StaticFinalFieldFoldingFeature.toAnalysisField(field));
-            assert fieldCheckIndex != null : "Field must be optimizable: " + field;
-            ConstantNode fieldInitializationStatusNode = ConstantNode.forConstant(SubstrateObjectConstant.forObject(feature.fieldInitializationStatus), tool.getMetaAccess(), graph());
-            ConstantNode fieldCheckIndexNode = ConstantNode.forInt(fieldCheckIndex, graph());
-
-            replacementNode = graph().addOrUniqueWithInputs(LoadIndexedNode.create(graph().getAssumptions(), fieldInitializationStatusNode, fieldCheckIndexNode,
-                            null, JavaKind.Boolean, tool.getMetaAccess(), tool.getConstantReflection()));
-        }
-
-        graph().replaceFixed(this, replacementNode);
+        return new StaticFinalFieldFoldingSingleton(baseLayerFieldFoldingInfos);
     }
 }

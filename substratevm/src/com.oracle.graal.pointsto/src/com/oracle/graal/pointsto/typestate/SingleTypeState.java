@@ -24,7 +24,6 @@
  */
 package com.oracle.graal.pointsto.typestate;
 
-import java.util.BitSet;
 import java.util.Collections;
 import java.util.Iterator;
 
@@ -41,23 +40,17 @@ public class SingleTypeState extends TypeState {
     protected boolean merged;
 
     /** Creates a new type state from incoming objects. */
-    public SingleTypeState(PointsToAnalysis bb, boolean canBeNull, int properties, AnalysisType type) {
-        super(properties);
+    public SingleTypeState(boolean canBeNull, AnalysisType type) {
         this.type = type;
         this.canBeNull = canBeNull;
         this.merged = false;
-
-        PointsToStats.registerTypeState(bb, this);
     }
 
     /** Create a type state with the same content and a reversed canBeNull value. */
-    protected SingleTypeState(PointsToAnalysis bb, boolean canBeNull, SingleTypeState other) {
-        super(other.properties);
+    protected SingleTypeState(boolean canBeNull, SingleTypeState other) {
         this.type = other.type;
         this.canBeNull = canBeNull;
         this.merged = other.merged;
-
-        PointsToStats.registerTypeState(bb, this);
     }
 
     @Override
@@ -83,11 +76,6 @@ public class SingleTypeState extends TypeState {
     @Override
     public final boolean containsType(AnalysisType exactType) {
         return type.equals(exactType);
-    }
-
-    @Override
-    public final boolean hasExactTypes(BitSet inputTypesBitSet) {
-        return inputTypesBitSet.cardinality() == 1 && inputTypesBitSet.get(type.getId());
     }
 
     @Override
@@ -127,14 +115,14 @@ public class SingleTypeState extends TypeState {
         if (stateCanBeNull == this.canBeNull()) {
             return this;
         } else {
-            return new SingleTypeState(bb, stateCanBeNull, this);
+            return PointsToStats.registerTypeState(bb, new SingleTypeState(stateCanBeNull, this));
         }
     }
 
     /** Note that the objects of this type state have been merged. */
     @Override
     public void noteMerge(PointsToAnalysis bb) {
-        assert bb.analysisPolicy().isMergingEnabled();
+        assert bb.analysisPolicy().isMergingEnabled() : "policy mismatch";
 
         if (!merged) {
             type.getContextInsensitiveAnalysisObject().noteMerge(bb);

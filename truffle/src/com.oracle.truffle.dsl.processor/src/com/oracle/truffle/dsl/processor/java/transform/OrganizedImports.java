@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,12 +40,11 @@
  */
 package com.oracle.truffle.dsl.processor.java.transform;
 
+import static com.oracle.truffle.dsl.processor.java.ElementUtils.elementEquals;
 import static com.oracle.truffle.dsl.processor.java.ElementUtils.findNearestEnclosingType;
 import static com.oracle.truffle.dsl.processor.java.ElementUtils.getDeclaredTypes;
-import static com.oracle.truffle.dsl.processor.java.ElementUtils.getPackageName;
 import static com.oracle.truffle.dsl.processor.java.ElementUtils.getQualifiedName;
 import static com.oracle.truffle.dsl.processor.java.ElementUtils.getSuperTypes;
-import static com.oracle.truffle.dsl.processor.java.ElementUtils.elementEquals;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -60,6 +59,7 @@ import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.TypeParameterElement;
 import javax.lang.model.element.VariableElement;
@@ -78,7 +78,7 @@ import com.oracle.truffle.dsl.processor.java.model.CodeImport;
 import com.oracle.truffle.dsl.processor.java.model.CodeTree;
 import com.oracle.truffle.dsl.processor.java.model.CodeTreeKind;
 import com.oracle.truffle.dsl.processor.java.model.CodeTypeElement;
-import com.oracle.truffle.dsl.processor.java.model.GeneratedTypeMirror;
+import com.oracle.truffle.dsl.processor.java.model.CodeTypeMirror.DeclaredCodeTypeMirror;
 
 public final class OrganizedImports {
 
@@ -100,7 +100,9 @@ public final class OrganizedImports {
 
     private void organizeImpl() {
         ImportTypeReferenceVisitor reference = new ImportTypeReferenceVisitor();
-        topLevelClass.accept(reference, null);
+        if (topLevelClass != null) {
+            topLevelClass.accept(reference, null);
+        }
     }
 
     public String createTypeReference(Element enclosedElement, TypeMirror type, boolean raw) {
@@ -186,7 +188,7 @@ public final class OrganizedImports {
                 b.append("?");
             }
 
-            if (i < typeArguments.size() - 1) {
+            if (i < parameters.size() - 1) {
                 b.append(", ");
             }
         }
@@ -203,18 +205,19 @@ public final class OrganizedImports {
     }
 
     private boolean needsImport(Element enclosed, TypeMirror importType) {
-        String importPackagName = getPackageName(importType);
+        PackageElement importPackageElement = ElementUtils.getPackageElement(importType);
         TypeElement enclosedType = findNearestEnclosingType(enclosed).orElse(null);
-
-        if (importPackagName == null) {
+        if (importPackageElement == null) {
             return false;
-        } else if (importPackagName.equals("java.lang")) {
+        } else if (importPackageElement.getQualifiedName().contentEquals("java.lang")) {
             return false;
-        } else if (importPackagName.equals(getPackageName(topLevelClass)) &&
+        }
+        PackageElement topLevelPackage = ElementUtils.findPackageElement(topLevelClass);
+        if (ElementUtils.nameEquals(importPackageElement.getQualifiedName(), topLevelPackage.getQualifiedName()) &&
                         (anyEqualEnclosingTypes(enclosed, ElementUtils.castTypeElement(importType)) ||
                                         importFromEnclosingScope(enclosedType, ElementUtils.castTypeElement(importType)))) {
             return false; // same enclosing element -> no import
-        } else if (importType instanceof GeneratedTypeMirror && importPackagName.isEmpty()) {
+        } else if (importType instanceof DeclaredCodeTypeMirror && importPackageElement.getQualifiedName().contentEquals("")) {
             return false;
         } else if (ElementUtils.isDeprecated(importType)) {
             return false;
@@ -257,9 +260,7 @@ public final class OrganizedImports {
         if (!enclosingElement.getKind().isClass() || !importEnclosingElement.getKind().isClass()) {
             return false;
         }
-        String qualified1 = ElementUtils.getQualifiedName((TypeElement) enclosingElement);
-        String qualified2 = ElementUtils.getQualifiedName((TypeElement) importEnclosingElement);
-        if (qualified1.equals(qualified2)) {
+        if (ElementUtils.elementEquals(enclosingElement, importEnclosingElement)) {
             return true;
         }
         return anyEqualEnclosingTypes(enclosingElement, importElement) || anyEqualEnclosingTypes(importElement, enclosingElement);
@@ -329,9 +330,6 @@ public final class OrganizedImports {
 
         @Override
         public Void visitExecutable(CodeExecutableElement e, Void p) {
-            if (e.getDocTree() != null) {
-                visitTree(e.getDocTree(), null, e);
-            }
             visitAnnotations(e, e.getAnnotationMirrors());
             if (e.getReturnType() != null) {
                 visitTypeReference(e, e.getReturnType());
@@ -369,21 +367,29 @@ public final class OrganizedImports {
         }
 
         public void visitAnnotation(Element enclosingElement, AnnotationMirror e) {
-            visitTypeReference(enclosingElement, e.getAnnotationType());
-            if (!e.getElementValues().isEmpty()) {
-                Map<? extends ExecutableElement, ? extends AnnotationValue> values = e.getElementValues();
-                Set<? extends ExecutableElement> methodsSet = values.keySet();
-                List<ExecutableElement> methodsList = new ArrayList<>();
-                for (ExecutableElement method : methodsSet) {
-                    if (values.get(method) == null) {
-                        continue;
-                    }
-                    methodsList.add(method);
+            List<AnnotationMirror> repeatables = AbstractCodeWriter.unpackRepeatable(e);
+            if (repeatables != null) {
+                for (AnnotationMirror repeatable : repeatables) {
+                    visitAnnotation(enclosingElement, repeatable);
                 }
+            } else {
+                visitTypeReference(enclosingElement, e.getAnnotationType());
 
-                for (int i = 0; i < methodsList.size(); i++) {
-                    AnnotationValue value = values.get(methodsList.get(i));
-                    visitAnnotationValue(enclosingElement, value);
+                if (!e.getElementValues().isEmpty()) {
+                    Map<? extends ExecutableElement, ? extends AnnotationValue> values = e.getElementValues();
+                    Set<? extends ExecutableElement> methodsSet = values.keySet();
+                    List<ExecutableElement> methodsList = new ArrayList<>();
+                    for (ExecutableElement method : methodsSet) {
+                        if (values.get(method) == null) {
+                            continue;
+                        }
+                        methodsList.add(method);
+                    }
+
+                    for (int i = 0; i < methodsList.size(); i++) {
+                        AnnotationValue value = values.get(methodsList.get(i));
+                        visitAnnotationValue(enclosingElement, value);
+                    }
                 }
             }
         }
@@ -491,7 +497,7 @@ public final class OrganizedImports {
 
     }
 
-    private class ImportTypeReferenceVisitor extends TypeReferenceVisitor {
+    private final class ImportTypeReferenceVisitor extends TypeReferenceVisitor {
 
         @Override
         public void visitStaticFieldReference(Element enclosedType, TypeMirror type, String elementName) {

@@ -2,12 +2,29 @@
 
 This changelog summarizes major changes between TRegex versions relevant to language implementors integrating TRegex into their language. This document will focus on API changes relevant to integrators of TRegex.
 
+## Version 24.2.0
+
+* Implemented the [Regular Expression Pattern Modifiers](https://github.com/tc39/proposal-regexp-modifiers) proposal for ECMAScript regular expressions.
+
+## Version 24.0.0
+
+* Added support for atomic groups and possessive quantifiers in Python regular expressions.
+
+## Version 23.1.0
+
+* Added support for Unicode sets mode (`v` flag) in ECMAScript regular expressions.
+* Added support for duplicate named capturing groups in ECMAScript regular expressions.
+
 ## Version 23.0.0
 
 * Updated Unicode data (case-folding, character properties) to version 15 of the Unicode standard.
 * Dropped `Flavor=PythonStr` and `Flavor=PythonBytes` in favor of `Flavor=Python,Encoding=UTF-32` and `Flavor=Python,Encoding=LATIN-1`.
 * Dropped support for the `execBytes(byte[] input, int fromIndex)` entrypoint.
 * Dropped support for `TruffleObject`s with characters/code points as array elements.
+* Added support for conditional back-references (e.g. `(foo)(?(1)bar|no_foo)`) in Python and Ruby regular expressions.
+* Added support for case-insensitive back-references in Python and Ruby regular expressions.
+* Added support for locale-sensitive Python regular expressions.
+* TRegex is no longer included by default in the GraalVM download and needs to be installed as a component using gu install regex.
 
 ## Version 22.2.0
 

@@ -20,7 +20,6 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.substitutions;
 
 import com.oracle.truffle.api.CompilerDirectives;
@@ -33,6 +32,7 @@ import com.oracle.truffle.api.interop.InvalidArrayIndexException;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.espresso.EspressoLanguage;
+import com.oracle.truffle.espresso.classfile.perf.DebugCounter;
 import com.oracle.truffle.espresso.impl.ArrayKlass;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
@@ -41,10 +41,9 @@ import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.helper.TypeCheckNode;
 import com.oracle.truffle.espresso.nodes.helper.TypeCheckNodeGen;
 import com.oracle.truffle.espresso.nodes.interop.ToEspressoNode;
-import com.oracle.truffle.espresso.nodes.interop.ToEspressoNodeGen;
-import com.oracle.truffle.espresso.perf.DebugCounter;
+import com.oracle.truffle.espresso.nodes.interop.ToEspressoNodeFactory;
 import com.oracle.truffle.espresso.runtime.EspressoException;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.vm.VM;
 
 @EspressoSubstitutions
@@ -478,7 +477,7 @@ public final class Target_java_lang_System {
     @TruffleBoundary
     private static void handleForeignArray(Object src, int srcPos, Object dest, int destPos, int length, Klass destType, Meta meta, SubstitutionProfiler profiler) {
         InteropLibrary library = InteropLibrary.getUncached();
-        ToEspressoNode toEspressoNode = ToEspressoNodeGen.getUncached();
+        ToEspressoNode.DynamicToEspresso toEspressoNode = ToEspressoNodeFactory.DynamicToEspressoNodeGen.getUncached();
         if (library.isNull(src) || library.isNull(dest)) {
             throw throwNullPointerEx(meta, profiler);
         }

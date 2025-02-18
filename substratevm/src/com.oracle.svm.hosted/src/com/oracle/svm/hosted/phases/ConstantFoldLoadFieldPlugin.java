@@ -24,11 +24,11 @@
  */
 package com.oracle.svm.hosted.phases;
 
-import org.graalvm.compiler.nodes.ConstantNode;
-import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderContext;
-import org.graalvm.compiler.nodes.graphbuilderconf.NodePlugin;
-import org.graalvm.compiler.nodes.util.ConstantFoldUtil;
+import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.nodes.ValueNode;
+import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderContext;
+import jdk.graal.compiler.nodes.graphbuilderconf.NodePlugin;
+import jdk.graal.compiler.nodes.util.ConstantFoldUtil;
 
 import com.oracle.graal.pointsto.ObjectScanner;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
@@ -68,7 +68,7 @@ public final class ConstantFoldLoadFieldPlugin implements NodePlugin {
             result = ConstantFoldUtil.tryConstantFold(b.getConstantFieldProvider(), b.getConstantReflection(), b.getMetaAccess(), field, receiver, b.getOptions(),
                             b.getGraph().currentNodeSourcePosition());
         } catch (UnsupportedFeatureException e) {
-            if (reason == ParsingReason.PointsToAnalysis) {
+            if (reason.duringAnalysis()) {
                 AnalysisMetaAccess metaAccess = (AnalysisMetaAccess) b.getMetaAccess();
                 ObjectScanner.unsupportedFeatureDuringFieldFolding(metaAccess.getUniverse().getBigbang(), (AnalysisField) field, receiver, e, (AnalysisMethod) b.getMethod(), b.bci());
                 // kill control flow, the image build fails anyway

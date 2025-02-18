@@ -43,8 +43,10 @@ package com.oracle.truffle.regex.tregex.parser.flavors;
 import com.oracle.truffle.regex.RegexLanguage;
 import com.oracle.truffle.regex.RegexSource;
 import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
+import com.oracle.truffle.regex.tregex.parser.CaseFoldData;
 import com.oracle.truffle.regex.tregex.parser.RegexParser;
 import com.oracle.truffle.regex.tregex.parser.RegexValidator;
+import com.oracle.truffle.regex.tregex.parser.ast.RegexAST;
 
 /**
  * An implementation of a dialect (flavor) of regular expressions other than ECMAScript. It provides
@@ -58,6 +60,11 @@ public abstract class RegexFlavor {
     protected static final int FAILING_EMPTY_CHECKS_DONT_BACKTRACK = 1 << 3;
     protected static final int USES_LAST_GROUP_RESULT_FIELD = 1 << 4;
     protected static final int LOOKBEHINDS_RUN_LEFT_TO_RIGHT = 1 << 5;
+    protected static final int NEEDS_GROUP_START_POSITIONS = 1 << 6;
+    protected static final int HAS_CONDITIONAL_BACKREFERENCES = 1 << 7;
+    protected static final int SUPPORTS_RECURSIVE_BACKREFERENCES = 1 << 8;
+    protected static final int EMPTY_CHECKS_ON_MANDATORY_LOOP_ITERATIONS = 1 << 9;
+    protected static final int BACKREFERENCE_IGNORE_CASE_MULTI_CHAR_EXPANSION = 1 << 10;
 
     private final int traits;
 
@@ -67,7 +74,16 @@ public abstract class RegexFlavor {
 
     public abstract RegexParser createParser(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer);
 
-    public abstract RegexValidator createValidator(RegexSource source);
+    public abstract RegexValidator createValidator(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer);
+
+    @FunctionalInterface
+    public interface EqualsIgnoreCasePredicate {
+        boolean test(int a, int b, boolean alternativeMode);
+    }
+
+    public abstract EqualsIgnoreCasePredicate getEqualsIgnoreCasePredicate(RegexAST ast);
+
+    public abstract CaseFoldData.CaseFoldAlgorithm getCaseFoldAlgorithm(RegexAST ast);
 
     private boolean hasTrait(int traitMask) {
         return (traits & traitMask) != 0;
@@ -75,6 +91,10 @@ public abstract class RegexFlavor {
 
     public boolean backreferencesToUnmatchedGroupsFail() {
         return hasTrait(BACKREFERENCES_TO_UNMATCHED_GROUPS_FAIL);
+    }
+
+    public boolean supportsRecursiveBackreferences() {
+        return hasTrait(SUPPORTS_RECURSIVE_BACKREFERENCES);
     }
 
     public boolean emptyChecksMonitorCaptureGroups() {
@@ -99,5 +119,36 @@ public abstract class RegexFlavor {
 
     public boolean lookBehindsRunLeftToRight() {
         return hasTrait(LOOKBEHINDS_RUN_LEFT_TO_RIGHT);
+    }
+
+    public boolean needsGroupStartPositions() {
+        return hasTrait(NEEDS_GROUP_START_POSITIONS);
+    }
+
+    public boolean hasConditionalBackReferences() {
+        return hasTrait(HAS_CONDITIONAL_BACKREFERENCES);
+    }
+
+    public boolean matchesTransitionsStepByStep() {
+        return emptyChecksMonitorCaptureGroups() || hasConditionalBackReferences() || failingEmptyChecksDontBacktrack();
+    }
+
+    /**
+     * Regex flavors with this feature perform on empty-check on all iterations of a loop, including
+     * on mandatory iterations. As such, a loop can terminate before having been executed the
+     * required number of times.
+     */
+    public boolean emptyChecksOnMandatoryLoopIterations() {
+        return hasTrait(EMPTY_CHECKS_ON_MANDATORY_LOOP_ITERATIONS);
+    }
+
+    /**
+     * Regex flavors with this feature perform full multi-character expansion on back-references in
+     * ignore-case mode, allowing backreferences to match more or less characters than the
+     * referenced group. For example, regex {@code (\uFB00)\\1} matches {@code "FF\uFB00"} in
+     * ignore-case mode.
+     */
+    public boolean backreferenceIgnoreCaseMultiCharExpansion() {
+        return hasTrait(BACKREFERENCE_IGNORE_CASE_MULTI_CHAR_EXPANSION);
     }
 }

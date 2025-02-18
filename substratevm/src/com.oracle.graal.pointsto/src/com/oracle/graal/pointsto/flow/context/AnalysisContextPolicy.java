@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@ import com.oracle.graal.pointsto.PointsToAnalysis;
 import com.oracle.graal.pointsto.flow.MethodTypeFlow;
 import com.oracle.graal.pointsto.flow.context.AnalysisContext.AnalysisContextKey;
 import com.oracle.graal.pointsto.flow.context.object.AnalysisObject;
+
 import jdk.vm.ci.code.BytecodePosition;
 
 /** Provides logic for analysis context transitions. */
@@ -106,18 +107,8 @@ public abstract class AnalysisContextPolicy<C extends AnalysisContext> {
         return result;
     }
 
-    /** Prepends the context label to the input label list. */
-    public static BytecodePosition[] prepend(BytecodePosition add, BytecodePosition[] labelList) {
-        BytecodePosition[] result = new BytecodePosition[labelList.length + 1];
-        result[0] = add;
-        System.arraycopy(labelList, 0, result, 1, labelList.length);
-        return result;
-    }
-
     public static BytecodePosition[] peel(BytecodePosition[] labelList, int maxDepth) {
-
-        assert maxDepth >= 0;
-        assert labelList.length > maxDepth;
+        assert maxDepth >= 0 && labelList.length > maxDepth : maxDepth + ", " + labelList.length;
 
         BytecodePosition[] resultingLabelList = new BytecodePosition[maxDepth];
 

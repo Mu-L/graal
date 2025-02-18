@@ -20,7 +20,6 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.nodes.quick.invoke.inline;
 
 import java.util.Set;
@@ -28,7 +27,8 @@ import java.util.Set;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.source.SourceSection;
-import com.oracle.truffle.espresso.bytecode.Bytecodes;
+import com.oracle.truffle.espresso.impl.Field;
+import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
 import com.oracle.truffle.espresso.nodes.BytecodeNode;
@@ -37,6 +37,8 @@ import com.oracle.truffle.espresso.nodes.quick.BaseQuickNode;
 import com.oracle.truffle.espresso.nodes.quick.invoke.InvokeQuickNode;
 import com.oracle.truffle.espresso.nodes.quick.invoke.inline.bodies.InlinedFieldAccessNode;
 import com.oracle.truffle.espresso.nodes.quick.invoke.inline.bodies.InlinedSubstitutionBodyNode;
+import com.oracle.truffle.espresso.shared.resolver.CallKind;
+import com.oracle.truffle.espresso.shared.resolver.ResolvedCall;
 import com.oracle.truffle.espresso.substitutions.JavaSubstitution;
 import com.oracle.truffle.espresso.substitutions.Substitutions;
 
@@ -107,17 +109,18 @@ public class InlinedMethodNode extends InvokeQuickNode implements InlinedFrameAc
 
     @Child BodyNode body;
 
-    public static InlinedMethodNode createFor(Method resolutionSeed, int top, int opcode, int curBCI, int statementIndex) {
-        if (!isInlineCandidate(resolutionSeed, opcode)) {
+    public static InlinedMethodNode createFor(ResolvedCall<Klass, Method, Field> resolvedCall, int top, int opcode, int curBCI, int statementIndex) {
+        if (!isInlineCandidate(resolvedCall)) {
             return null;
         }
+        Method resolutionSeed = resolvedCall.getResolvedMethod();
         if (resolutionSeed.isInlinableGetter()) {
-            return InlinedFieldAccessNode.createGetter(resolutionSeed, top, opcode, curBCI, statementIndex);
+            return InlinedFieldAccessNode.createGetter(resolvedCall, top, opcode, curBCI, statementIndex);
         }
         if (resolutionSeed.isInlinableSetter()) {
-            return InlinedFieldAccessNode.createSetter(resolutionSeed, top, opcode, curBCI, statementIndex);
+            return InlinedFieldAccessNode.createSetter(resolvedCall, top, opcode, curBCI, statementIndex);
         }
-        if (isUnconditionalInlineCandidate(resolutionSeed, opcode)) {
+        if (isUnconditionalInlineCandidate(resolvedCall)) {
             // Try to inline trivial substitutions.
             JavaSubstitution.Factory factory = Substitutions.lookupSubstitution(resolutionSeed);
             if (factory != null && factory.inlineInBytecode()) {
@@ -127,19 +130,15 @@ public class InlinedMethodNode extends InvokeQuickNode implements InlinedFrameAc
         return null;
     }
 
-    public InlinedMethodNode(Method inlinedMethod, int top, int opcode, int callerBCI, int statementIndex, BodyNode body) {
-        this(inlinedMethod.getMethodVersion(), top, opcode, callerBCI, statementIndex, body);
-    }
-
     public InlinedMethodNode(Method.MethodVersion inlinedMethod, int top, int opcode, int callerBCI, int statementIndex, BodyNode body) {
         super(inlinedMethod, top, callerBCI);
         this.opcode = opcode;
         this.statementIndex = statementIndex;
-        this.body = insert(body);
+        this.body = body;
     }
 
     @Override
-    public int execute(VirtualFrame frame) {
+    public int execute(VirtualFrame frame, boolean isContinuationResume) {
         preludeChecks(frame);
         return executeBody(frame);
     }
@@ -189,38 +188,29 @@ public class InlinedMethodNode extends InvokeQuickNode implements InlinedFrameAc
     }
 
     public final BaseQuickNode revertToGeneric(BytecodeNode parent) {
-        return parent.generifyInlinedMethodNode(top, opcode, getCallerBCI(), statementIndex, method.getMethod());
+        return parent.generifyInlinedMethodNode(top, opcode, getCallerBCI(), statementIndex);
     }
 
-    public static boolean isInlineCandidate(Method resolutionSeed, int opcode) {
+    public static boolean isInlineCandidate(ResolvedCall<Klass, Method, Field> resolvedCall) {
+        Method resolutionSeed = resolvedCall.getResolvedMethod();
         if (resolutionSeed.isSynchronized()) {
             return false;
         }
-        if (opcode == Bytecodes.INVOKESTATIC || opcode == Bytecodes.INVOKESPECIAL) {
+        CallKind kind = resolvedCall.getCallKind();
+        if (kind.isDirectCall()) {
             return true;
         }
-        if (opcode == Bytecodes.INVOKEVIRTUAL) {
-            // InvokeVirtual can be bytecode-level inlined if method is final, or there are no
-            // overrides yet.
-            if ((resolutionSeed.isFinalFlagSet() || resolutionSeed.isPrivate() || resolutionSeed.getDeclaringKlass().isFinalFlagSet()) ||
-                            resolutionSeed.getContext().getClassHierarchyOracle().isLeafMethod(resolutionSeed).isValid()) {
+        if (kind == CallKind.VTABLE_LOOKUP) {
+            // InvokeVirtual can be bytecode-level inlined if there are no overrides yet.
+            // final methods are already translated to DIRECT calls
+            if (resolutionSeed.getContext().getClassHierarchyOracle().isLeafMethod(resolutionSeed).isValid()) {
                 return true;
             }
         }
         return false;
     }
 
-    public static boolean isUnconditionalInlineCandidate(Method resolutionSeed, int opcode) {
-        if (opcode == Bytecodes.INVOKESTATIC || opcode == Bytecodes.INVOKESPECIAL) {
-            return true;
-        }
-        if (opcode == Bytecodes.INVOKEVIRTUAL) {
-            // InvokeVirtual can be unconditionally bytecode-level inlined if method can never be
-            // overriden.
-            if (resolutionSeed.isFinalFlagSet() || resolutionSeed.isPrivate() || resolutionSeed.getDeclaringKlass().isFinalFlagSet()) {
-                return true;
-            }
-        }
-        return false;
+    public static boolean isUnconditionalInlineCandidate(ResolvedCall<Klass, Method, Field> resolvedCall) {
+        return resolvedCall.getCallKind().isDirectCall();
     }
 }

@@ -34,6 +34,7 @@ import com.oracle.svm.common.meta.MultiMethod.MultiMethodKey;
 import jdk.vm.ci.code.BytecodePosition;
 
 public abstract class AbstractSpecialInvokeTypeFlow extends DirectInvokeTypeFlow {
+    protected TypeState seenReceiverTypes = TypeState.forEmpty();
 
     protected AbstractSpecialInvokeTypeFlow(BytecodePosition invokeLocation, AnalysisType receiverType, PointsToAnalysisMethod targetMethod,
                     TypeFlow<?>[] actualParameters, ActualReturnTypeFlow actualReturn, MultiMethodKey callerMultiMethodKey) {
@@ -42,6 +43,13 @@ public abstract class AbstractSpecialInvokeTypeFlow extends DirectInvokeTypeFlow
 
     protected AbstractSpecialInvokeTypeFlow(PointsToAnalysis bb, MethodFlowsGraph methodFlows, AbstractSpecialInvokeTypeFlow original) {
         super(bb, methodFlows, original);
+    }
+
+    @Override
+    protected void onFlowEnabled(PointsToAnalysis bb) {
+        if (getReceiver().isFlowEnabled()) {
+            bb.postTask(() -> onObservedUpdate(bb));
+        }
     }
 
     @Override
@@ -65,7 +73,7 @@ public abstract class AbstractSpecialInvokeTypeFlow extends DirectInvokeTypeFlow
 
     @Override
     public String toString() {
-        return "SpecialInvoke<" + targetMethod.format("%h.%n") + ">" + ":" + getState();
+        return "SpecialInvoke<" + targetMethod.format("%h.%n") + ">" + ":" + getStateDescription();
     }
 
 }

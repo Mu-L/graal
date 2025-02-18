@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -367,10 +367,10 @@ public class ExportSubclassTest extends AbstractLibraryTest {
         }
     }
 
-    @ExpectError("No message 'invalidMessageName' found for library ExportSubclassLibrary1.")
     static class MissingExportWithBaseTypeInvalidMessageError extends ExportRedirectionBase {
 
         @ExportMessage
+        @ExpectError("No message 'invalidMessageName' found for library ExportSubclassLibrary1.")
         String invalidMessageName() {
             return "";
         }

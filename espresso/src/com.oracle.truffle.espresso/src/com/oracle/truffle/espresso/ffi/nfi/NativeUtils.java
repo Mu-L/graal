@@ -33,11 +33,11 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
+import com.oracle.truffle.espresso.classfile.JavaKind;
+import com.oracle.truffle.espresso.classfile.descriptors.ModifiedUTF8;
 import com.oracle.truffle.espresso.ffi.Pointer;
 import com.oracle.truffle.espresso.ffi.RawPointer;
-import com.oracle.truffle.espresso.jni.ModifiedUtf8;
 import com.oracle.truffle.espresso.meta.EspressoError;
-import com.oracle.truffle.espresso.meta.JavaKind;
 import com.oracle.truffle.espresso.vm.UnsafeAccess;
 
 import sun.misc.Unsafe;
@@ -46,22 +46,33 @@ public final class NativeUtils {
 
     private static final Unsafe UNSAFE = UnsafeAccess.get();
 
-    public static ByteBuffer directByteBuffer(@Pointer TruffleObject addressPtr, long size, JavaKind kind) {
-        return directByteBuffer(addressPtr, Math.multiplyExact(size, kind.getByteCount()));
-    }
-
     private static final Class<?> DIRECT_BYTE_BUFFER_CLASS;
     private static final long ADDRESS_FIELD_OFFSET;
     private static final long CAPACITY_FIELD_OFFSET;
 
+    @SuppressWarnings("deprecation")
+    private static long getBufferFieldOffset(String name) throws NoSuchFieldException {
+        // TODO replace with panama?
+        return UNSAFE.objectFieldOffset(java.nio.Buffer.class.getDeclaredField(name));
+    }
+
     static {
         try {
-            ADDRESS_FIELD_OFFSET = UNSAFE.objectFieldOffset(java.nio.Buffer.class.getDeclaredField("address"));
-            CAPACITY_FIELD_OFFSET = UNSAFE.objectFieldOffset(java.nio.Buffer.class.getDeclaredField("capacity"));
+            ADDRESS_FIELD_OFFSET = getBufferFieldOffset("address");
+            CAPACITY_FIELD_OFFSET = getBufferFieldOffset("capacity");
             DIRECT_BYTE_BUFFER_CLASS = Class.forName("java.nio.DirectByteBuffer");
         } catch (ClassNotFoundException | NoSuchFieldException e) {
             throw EspressoError.shouldNotReachHere(e);
         }
+    }
+
+    public static ByteBuffer directByteBuffer(@Pointer TruffleObject addressPtr, long size, JavaKind kind) {
+        return directByteBuffer(addressPtr, Math.multiplyExact(size, kind.getByteCount()));
+    }
+
+    @TruffleBoundary
+    public static ByteBuffer directByteBuffer(@Pointer TruffleObject addressPtr, long capacity) {
+        return directByteBuffer(interopAsPointer(addressPtr), capacity);
     }
 
     @TruffleBoundary
@@ -92,11 +103,6 @@ public final class NativeUtils {
 
     public static String interopPointerToString(@Pointer TruffleObject interopPtr) {
         return fromUTF8Ptr(interopAsPointer(interopPtr));
-    }
-
-    @TruffleBoundary
-    public static ByteBuffer directByteBuffer(@Pointer TruffleObject addressPtr, long capacity) {
-        return directByteBuffer(interopAsPointer(addressPtr), capacity);
     }
 
     public static void writeToIntPointer(TruffleObject pointer, int value) {
@@ -176,7 +182,7 @@ public final class NativeUtils {
         buf.clear();
         buf.get(bytes);
         try {
-            return ModifiedUtf8.toJavaString(bytes);
+            return ModifiedUTF8.toJavaString(bytes);
         } catch (IOException e) {
             // return StaticObject.NULL;
             throw EspressoError.shouldNotReachHere(e);

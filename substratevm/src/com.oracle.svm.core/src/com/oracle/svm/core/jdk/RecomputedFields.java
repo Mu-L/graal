@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,20 +29,11 @@ package com.oracle.svm.core.jdk;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.AtomicFieldUpdaterOffset;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.Reset;
 
-import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.CharsetDecoder;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
-import java.util.concurrent.atomic.AtomicLongFieldUpdater;
-import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Consumer;
 
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platforms;
@@ -52,17 +43,13 @@ import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
 import com.oracle.svm.core.StaticFieldsSupport;
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
-import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
-import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
-import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.core.util.BasedOnJDKFile;
 
 import jdk.internal.misc.Unsafe;
 
@@ -72,6 +59,7 @@ import jdk.internal.misc.Unsafe;
  */
 
 @TargetClass(java.nio.charset.CharsetEncoder.class)
+@BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+23/src/java.base/share/classes/java/nio/charset/Charset-X-Coder.java.template")
 final class Target_java_nio_charset_CharsetEncoder {
     @Alias @RecomputeFieldValue(kind = Reset) //
     private WeakReference<CharsetDecoder> cachedDecoder;
@@ -200,7 +188,7 @@ final class Target_java_util_concurrent_atomic_AtomicLongFieldUpdater_CASUpdater
 
 }
 
-@TargetClass(className = "java.util.concurrent.atomic.AtomicLongFieldUpdater$LockedUpdater")
+@TargetClass(className = "java.util.concurrent.atomic.AtomicLongFieldUpdater$LockedUpdater", onlyWith = JDK21OrEarlier.class)
 final class Target_java_util_concurrent_atomic_AtomicLongFieldUpdater_LockedUpdater {
     @Alias @RecomputeFieldValue(kind = AtomicFieldUpdaterOffset) //
     private long offset;
@@ -237,72 +225,12 @@ final class Target_java_util_concurrent_atomic_AtomicLongFieldUpdater_LockedUpda
     }
 }
 
-/**
- * The atomic field updaters access fields using {@link sun.misc.Unsafe}. The static analysis needs
- * to know about all these fields, so we need to find the original field (the updater only stores
- * the field offset) and mark it as unsafe accessed.
- */
-@AutomaticallyRegisteredFeature
-class AtomicFieldUpdaterFeature implements InternalFeature {
-
-    private final ConcurrentMap<Object, Boolean> processedUpdaters = new ConcurrentHashMap<>();
-    private Consumer<Field> markAsUnsafeAccessed;
-
-    @Override
-    public void duringSetup(DuringSetupAccess access) {
-        access.registerObjectReplacer(this::processObject);
-    }
-
-    @Override
-    public void beforeAnalysis(BeforeAnalysisAccess access) {
-        markAsUnsafeAccessed = (field -> access.registerAsUnsafeAccessed(field));
-    }
-
-    @Override
-    public void beforeCompilation(BeforeCompilationAccess access) {
-        markAsUnsafeAccessed = null;
-    }
-
-    private Object processObject(Object obj) {
-        if (obj instanceof AtomicReferenceFieldUpdater || obj instanceof AtomicIntegerFieldUpdater || obj instanceof AtomicLongFieldUpdater) {
-            if (processedUpdaters.putIfAbsent(obj, true) == null) {
-                processFieldUpdater(obj);
-            }
-        }
-        return obj;
-    }
-
-    /*
-     * This code runs multi-threaded during the static analysis. It must not be called after static
-     * analysis, because that would mean that we missed an atomic field updater during static
-     * analysis.
-     */
-    private void processFieldUpdater(Object updater) {
-        VMError.guarantee(markAsUnsafeAccessed != null, "New atomic field updater found after static analysis");
-
-        Class<?> updaterClass = updater.getClass();
-        Class<?> tclass = ReflectionUtil.readField(updaterClass, "tclass", updater);
-        long searchOffset = ReflectionUtil.readField(updaterClass, "offset", updater);
-        // search the declared fields for a field with a matching offset
-        for (Field f : tclass.getDeclaredFields()) {
-            if (!Modifier.isStatic(f.getModifiers())) {
-                long fieldOffset = Unsafe.getUnsafe().objectFieldOffset(f);
-                if (fieldOffset == searchOffset) {
-                    markAsUnsafeAccessed.accept(f);
-                    return;
-                }
-            }
-        }
-        throw VMError.shouldNotReachHere("unknown field offset class: " + tclass + ", offset = " + searchOffset);
-    }
-}
-
 @AutomaticallyRegisteredFeature
 @Platforms(InternalPlatform.NATIVE_ONLY.class)
 class InnocuousForkJoinWorkerThreadFeature implements InternalFeature {
     @Override
     public void duringSetup(DuringSetupAccess access) {
-        ImageSingletons.lookup(RuntimeClassInitializationSupport.class).rerunInitialization(access.findClassByName("java.util.concurrent.ForkJoinWorkerThread$InnocuousForkJoinWorkerThread"),
+        ImageSingletons.lookup(RuntimeClassInitializationSupport.class).initializeAtRunTime(access.findClassByName("java.util.concurrent.ForkJoinWorkerThread$InnocuousForkJoinWorkerThread"),
                         "innocuousThreadGroup must be initialized at run time");
     }
 }
@@ -331,19 +259,13 @@ final class Target_java_util_concurrent_ForkJoinPool {
         return ForkJoinPoolCommonAccessor.get().getParallelism();
     }
 
-    /* Delete the original static field for common parallelism. */
-    @Delete //
-    @TargetElement(onlyWith = JDK17OrEarlier.class)//
-    static int COMMON_PARALLELISM;
-
-    @Alias @TargetElement(onlyWith = JDK19OrLater.class) //
+    @Alias //
     private static Unsafe U;
 
-    @Alias @TargetElement(onlyWith = JDK19OrLater.class) //
+    @Alias //
     private static long POOLIDS;
 
     @Substitute
-    @TargetElement(onlyWith = JDK19OrLater.class) //
     private static int getAndAddPoolIds(int x) {
         // Original method wrongly uses ForkJoinPool.class instead of calling U.staticFieldBase()
         return U.getAndAddInt(StaticFieldsSupport.getStaticPrimitiveFields(), POOLIDS, x);
@@ -388,44 +310,6 @@ class ForkJoinPoolCommonAccessor {
         }
         return result;
     }
-}
-
-@TargetClass(java.util.concurrent.CompletableFuture.class)
-final class Target_java_util_concurrent_CompletableFuture {
-
-    @Alias @InjectAccessors(CompletableFutureAsyncPoolAccessor.class) //
-    private static Executor ASYNC_POOL;
-}
-
-class CompletableFutureAsyncPoolAccessor {
-    static Executor get() {
-        return ForkJoinPoolCommonAccessor.get();
-    }
-}
-
-@TargetClass(value = java.util.concurrent.ForkJoinTask.class, onlyWith = JDK11OrEarlier.class)
-@SuppressWarnings("static-method")
-final class Target_java_util_concurrent_ForkJoinTask_JDK11OrEarlier {
-    @Alias @RecomputeFieldValue(kind = Kind.FromAlias) //
-    private static Target_java_util_concurrent_ForkJoinTask_ExceptionNode[] exceptionTable;
-    @Alias @RecomputeFieldValue(kind = Kind.FromAlias) //
-    private static ReentrantLock exceptionTableLock;
-    @Alias @RecomputeFieldValue(kind = Kind.FromAlias) //
-    private static ReferenceQueue<Object> exceptionTableRefQueue;
-
-    static {
-        exceptionTableLock = new ReentrantLock();
-        exceptionTableRefQueue = new ReferenceQueue<>();
-        /*
-         * JDK 8 has a static final field EXCEPTION_MAP_CAPACITY with value 32, later versions just
-         * use 32 hardcoded. To be JDK version independent, we duplicate the hardcoded value.
-         */
-        exceptionTable = new Target_java_util_concurrent_ForkJoinTask_ExceptionNode[32];
-    }
-}
-
-@TargetClass(value = java.util.concurrent.ForkJoinTask.class, innerClass = "ExceptionNode", onlyWith = JDK11OrEarlier.class)
-final class Target_java_util_concurrent_ForkJoinTask_ExceptionNode {
 }
 
 /** Dummy class to have a class with the file's name. */

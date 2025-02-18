@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import jdk.internal.reflect.ConstantPool;
-import jdk.vm.ci.meta.JavaConstant;
 import sun.reflect.annotation.ExceptionProxy;
 
 public final class AnnotationArrayValue extends AnnotationMemberValue {
@@ -52,10 +51,11 @@ public final class AnnotationArrayValue extends AnnotationMemberValue {
         return skip ? null : new AnnotationArrayValue(elements);
     }
 
-    AnnotationArrayValue(Class<?> elementType, Object[] values) {
-        this.elements = new AnnotationMemberValue[values.length];
-        for (int i = 0; i < values.length; ++i) {
-            this.elements[i] = AnnotationMemberValue.from(elementType, values[i]);
+    AnnotationArrayValue(Class<?> elementType, Object values) {
+        int length = Array.getLength(values);
+        this.elements = new AnnotationMemberValue[length];
+        for (int i = 0; i < length; ++i) {
+            this.elements[i] = AnnotationMemberValue.from(elementType, Array.get(values, i));
         }
     }
 
@@ -83,24 +83,6 @@ public final class AnnotationArrayValue extends AnnotationMemberValue {
     }
 
     @Override
-    public List<String> getStrings() {
-        List<String> strings = new ArrayList<>();
-        for (AnnotationMemberValue element : elements) {
-            strings.addAll(element.getStrings());
-        }
-        return strings;
-    }
-
-    @Override
-    public List<JavaConstant> getExceptionProxies() {
-        List<JavaConstant> exceptionProxies = new ArrayList<>();
-        for (AnnotationMemberValue element : elements) {
-            exceptionProxies.addAll(element.getExceptionProxies());
-        }
-        return exceptionProxies;
-    }
-
-    @Override
     public char getTag() {
         return '[';
     }
@@ -108,7 +90,7 @@ public final class AnnotationArrayValue extends AnnotationMemberValue {
     @Override
     public Object get(Class<?> memberType) {
         Class<?> componentType = memberType.getComponentType();
-        Object[] result = (Object[]) Array.newInstance(memberType.getComponentType(), elements.length);
+        Object result = Array.newInstance(memberType.getComponentType(), elements.length);
         int tag = 0;
         boolean typeMismatch = false;
         for (int i = 0; i < elements.length; ++i) {
@@ -117,7 +99,7 @@ public final class AnnotationArrayValue extends AnnotationMemberValue {
                 typeMismatch = true;
                 tag = elements[i].getTag();
             } else {
-                result[i] = value;
+                Array.set(result, i, value);
             }
         }
         if (typeMismatch) {

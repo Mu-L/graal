@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,10 +40,13 @@
  */
 package com.oracle.truffle.api.impl;
 
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.graalvm.options.OptionDescriptors;
 import org.graalvm.options.OptionValues;
+import org.graalvm.polyglot.SandboxPolicy;
 
 import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CallTarget;
@@ -54,6 +57,8 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.BlockNode;
 import com.oracle.truffle.api.nodes.BlockNode.ElementExecutor;
 import com.oracle.truffle.api.nodes.BytecodeOSRNode;
+import com.oracle.truffle.api.nodes.DirectCallNode;
+import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 
@@ -84,8 +89,32 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
+        public long getCallTargetId(CallTarget target) {
+            if (target instanceof DefaultCallTarget) {
+                return ((DefaultCallTarget) target).id;
+            } else {
+                return 0;
+            }
+        }
+
+        @Override
+        public boolean isLegacyCompilerOption(String key) {
+            return false;
+        }
+
+        @Override
         public boolean isLoaded(CallTarget callTarget) {
             return ((DefaultCallTarget) callTarget).isLoaded();
+        }
+
+        @Override
+        public DirectCallNode createDirectCallNode(CallTarget target) {
+            return new DefaultDirectCallNode(target);
+        }
+
+        @Override
+        public IndirectCallNode createIndirectCallNode() {
+            return new DefaultIndirectCallNode();
         }
 
         @Override
@@ -111,7 +140,7 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
-        public Object tryBytecodeOSR(BytecodeOSRNode osrNode, int target, Object interpreterState, Runnable beforeTransfer, VirtualFrame parentFrame) {
+        public Object tryBytecodeOSR(BytecodeOSRNode osrNode, long target, Object interpreterState, Runnable beforeTransfer, VirtualFrame parentFrame) {
             return null;
         }
 
@@ -122,12 +151,12 @@ final class DefaultRuntimeAccessor extends Accessor {
 
         @Override
         // Support for deprecated frame transfer: GR-38296
-        public void transferOSRFrame(BytecodeOSRNode osrNode, Frame source, Frame target, int bytecodeTarget) {
+        public void transferOSRFrame(BytecodeOSRNode osrNode, Frame source, Frame target, long bytecodeTarget) {
             throw new UnsupportedOperationException();
         }
 
         @Override
-        public void transferOSRFrame(BytecodeOSRNode osrNode, Frame source, Frame target, int bytecodeTarget, Object targetMetadata) {
+        public void transferOSRFrame(BytecodeOSRNode osrNode, Frame source, Frame target, long bytecodeTarget, Object targetMetadata) {
             throw new UnsupportedOperationException();
         }
 
@@ -137,7 +166,7 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
-        public OptionDescriptors getEngineOptionDescriptors() {
+        public OptionDescriptors getRuntimeOptionDescriptors() {
             return OptionDescriptors.EMPTY;
         }
 
@@ -168,18 +197,13 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
-        public String getSavedProperty(String key) {
-            return System.getProperty(key);
-        }
-
-        @Override
         public Object callInlined(Node callNode, CallTarget target, Object... arguments) {
-            return ((DefaultCallTarget) target).callDirectOrIndirect(callNode, arguments);
+            return ((DefaultCallTarget) target).call(callNode, arguments);
         }
 
         @Override
         public Object callProfiled(CallTarget target, Object... arguments) {
-            return ((DefaultCallTarget) target).call(arguments);
+            return ((DefaultCallTarget) target).call(null, arguments);
         }
 
         @Override
@@ -203,7 +227,7 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
-        public Object createRuntimeData(OptionValues options, Function<String, TruffleLogger> loggerFactory) {
+        public Object createRuntimeData(Object engine, OptionValues engineOptions, Function<String, TruffleLogger> loggerFactory, SandboxPolicy sandboxPolicy) {
             return null;
         }
 
@@ -223,7 +247,7 @@ final class DefaultRuntimeAccessor extends Accessor {
         }
 
         @Override
-        public void onEnginePatch(Object runtimeData, OptionValues options, Function<String, TruffleLogger> loggerFactory) {
+        public void onEnginePatch(Object runtimeData, OptionValues runtimeOptions, Function<String, TruffleLogger> loggerFactory, SandboxPolicy sandboxPolicy) {
 
         }
 
@@ -262,13 +286,7 @@ final class DefaultRuntimeAccessor extends Accessor {
 
         @SuppressWarnings("unused")
         @Override
-        public Object[] getResolvedFields(Class<?> type, boolean includePrimitive, boolean includeSuperclasses) {
-            throw new UnsupportedOperationException();
-        }
-
-        @SuppressWarnings("unused")
-        @Override
-        public Object getFieldValue(Object resolvedJavaField, Object obj) {
+        public int[] getFieldOffsets(Class<?> type, boolean includePrimitive, boolean includeSuperclasses) {
             throw new UnsupportedOperationException();
         }
 
@@ -277,6 +295,10 @@ final class DefaultRuntimeAccessor extends Accessor {
             return DefaultContextThreadLocal.SINGLETON;
         }
 
+        @Override
+        public <T> ThreadLocal<T> createTerminatingThreadLocal(Supplier<T> initialValue, Consumer<T> onThreadTermination) {
+            return ThreadLocal.withInitial(initialValue);
+        }
     }
 
 }

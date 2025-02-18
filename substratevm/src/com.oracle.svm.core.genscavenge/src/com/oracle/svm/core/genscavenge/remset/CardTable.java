@@ -26,16 +26,14 @@ package com.oracle.svm.core.genscavenge.remset;
 
 import java.lang.ref.Reference;
 
-import org.graalvm.compiler.core.common.SuppressFBWarnings;
-import org.graalvm.compiler.nodes.extended.BranchProbabilityNode;
-import org.graalvm.compiler.word.Word;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.UnmanagedMemoryUtil;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.HeapImpl;
+import com.oracle.svm.core.genscavenge.SerialGCOptions;
 import com.oracle.svm.core.genscavenge.graal.BarrierSnippets;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
 import com.oracle.svm.core.heap.ReferenceAccess;
@@ -46,6 +44,12 @@ import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.util.UnsignedUtils;
+
+import jdk.graal.compiler.api.directives.GraalDirectives;
+import jdk.graal.compiler.core.common.SuppressFBWarnings;
+import jdk.graal.compiler.nodes.extended.BranchProbabilityNode;
+import jdk.graal.compiler.replacements.ReplacementsUtil;
+import jdk.graal.compiler.word.Word;
 
 /**
  * A card table is a remembered set that summarizes pointer stores into a region. A card is "dirty"
@@ -74,34 +78,36 @@ import com.oracle.svm.core.util.UnsignedUtils;
 final class CardTable {
     public static final int BYTES_COVERED_BY_ENTRY = 512;
 
-    private static final int ENTRY_SIZE_BYTES = 1;
-
-    private static final int DIRTY_ENTRY = 0;
-    private static final int CLEAN_ENTRY = 1;
+    static final byte DIRTY_ENTRY = 0;
+    static final byte CLEAN_ENTRY = 1;
+    static final UnsignedWord CLEAN_WORD = Word.unsigned(0x0101010101010101L);
 
     private static final CardTableVerificationVisitor CARD_TABLE_VERIFICATION_VISITOR = new CardTableVerificationVisitor();
 
     private CardTable() {
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void cleanTable(Pointer tableStart, UnsignedWord size) {
-        UnmanagedMemoryUtil.fill(tableStart, size, (byte) CLEAN_ENTRY);
+        UnmanagedMemoryUtil.fill(tableStart, size, CLEAN_ENTRY);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void setDirty(Pointer table, UnsignedWord index) {
-        UnsignedWord tableOffset = indexToTableOffset(index);
-        byte valueBefore = table.readByte(tableOffset, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
+        byte valueBefore = table.readByte(index, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
         // Using a likely probability should typically avoid placing the write below at a separate
         // location with an extra jump back to after the barrier for more compact code.
         if (BranchProbabilityNode.probability(BranchProbabilityNode.LIKELY_PROBABILITY, valueBefore != DIRTY_ENTRY)) {
-            table.writeByte(tableOffset, (byte) DIRTY_ENTRY, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
+            table.writeByte(index, DIRTY_ENTRY, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void setClean(Pointer table, UnsignedWord index) {
-        table.writeByte(indexToTableOffset(index), (byte) CLEAN_ENTRY, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
+        table.writeByte(index, CLEAN_ENTRY, BarrierSnippets.CARD_REMEMBERED_SET_LOCATION);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean isDirty(Pointer table, UnsignedWord index) {
         int entry = readEntry(table, index);
         return entry == DIRTY_ENTRY;
@@ -112,55 +118,75 @@ final class CardTable {
         return entry == CLEAN_ENTRY;
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static int readEntry(Pointer table, UnsignedWord index) {
-        return table.readByte(indexToTableOffset(index));
+        byte entry = table.readByte(index);
+        if (GraalDirectives.inIntrinsic()) {
+            ReplacementsUtil.dynamicAssert(entry == CLEAN_ENTRY || entry == DIRTY_ENTRY, "valid entry");
+        } else {
+            assert entry == CLEAN_ENTRY || entry == DIRTY_ENTRY;
+        }
+        return entry;
     }
 
-    private static UnsignedWord indexToTableOffset(UnsignedWord index) {
-        return index.multiply(ENTRY_SIZE_BYTES);
-    }
-
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord memoryOffsetToIndex(UnsignedWord offset) {
         return offset.unsignedDivide(BYTES_COVERED_BY_ENTRY);
     }
 
-    public static Pointer indexToMemoryPointer(Pointer memoryStart, UnsignedWord index) {
-        UnsignedWord offset = index.multiply(BYTES_COVERED_BY_ENTRY);
-        return memoryStart.add(offset);
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static Pointer cardToHeapAddress(Pointer cardTableStart, Pointer cardAddr, Pointer objectsStart) {
+        UnsignedWord offset = cardAddr.subtract(cardTableStart).multiply(CardTable.BYTES_COVERED_BY_ENTRY);
+        return objectsStart.add(offset);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord tableSizeForMemorySize(UnsignedWord memorySize) {
-        UnsignedWord maxIndex = indexLimitForMemorySize(memorySize);
-        return maxIndex.multiply(ENTRY_SIZE_BYTES);
+        return indexLimitForMemorySize(memorySize);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord indexLimitForMemorySize(UnsignedWord memorySize) {
-        UnsignedWord roundedMemory = UnsignedUtils.roundUp(memorySize, WordFactory.unsigned(BYTES_COVERED_BY_ENTRY));
+        UnsignedWord roundedMemory = UnsignedUtils.roundUp(memorySize, Word.unsigned(BYTES_COVERED_BY_ENTRY));
         return CardTable.memoryOffsetToIndex(roundedMemory);
     }
 
-    public static boolean verify(Pointer cardTableStart, Pointer objectsStart, Pointer objectsLimit) {
+    public static boolean verify(Pointer cardTableStart, Pointer cardTableEnd, Pointer objectsStart, Pointer objectsLimit) {
         boolean success = true;
-        Pointer curPtr = objectsStart;
-        while (curPtr.belowThan(objectsLimit)) {
-            // As we only use imprecise card marking at the moment, only the card at the address of
-            // the object may be dirty.
-            Object obj = curPtr.toObject();
-            UnsignedWord cardTableIndex = memoryOffsetToIndex(curPtr.subtract(objectsStart));
-            if (isClean(cardTableStart, cardTableIndex)) {
-                CARD_TABLE_VERIFICATION_VISITOR.initialize(obj, cardTableStart, objectsStart);
-                InteriorObjRefWalker.walkObject(obj, CARD_TABLE_VERIFICATION_VISITOR);
-                success &= CARD_TABLE_VERIFICATION_VISITOR.success;
+        if (SerialGCOptions.VerifyRememberedSet.getValue()) {
+            Pointer curPtr = objectsStart;
+            while (curPtr.belowThan(objectsLimit)) {
+                // As we only use imprecise card marking at the moment, only the card at the address
+                // of the object may be dirty.
+                Object obj = curPtr.toObject();
+                UnsignedWord cardTableIndex = memoryOffsetToIndex(curPtr.subtract(objectsStart));
+                if (isClean(cardTableStart, cardTableIndex)) {
+                    CARD_TABLE_VERIFICATION_VISITOR.initialize(obj, cardTableStart, objectsStart);
+                    InteriorObjRefWalker.walkObject(obj, CARD_TABLE_VERIFICATION_VISITOR);
+                    success &= CARD_TABLE_VERIFICATION_VISITOR.success;
+                    CARD_TABLE_VERIFICATION_VISITOR.reset();
 
-                DynamicHub hub = KnownIntrinsics.readHub(obj);
-                if (hub.isReferenceInstanceClass()) {
-                    // The referent field of java.lang.Reference is excluded from the reference map,
-                    // so we need to verify it separately.
-                    Reference<?> ref = (Reference<?>) obj;
-                    success &= verifyReferent(ref, cardTableStart, objectsStart);
+                    DynamicHub hub = KnownIntrinsics.readHub(obj);
+                    if (hub.isReferenceInstanceClass()) {
+                        // The referent field of java.lang.Reference is excluded from the reference
+                        // map, so we need to verify it separately.
+                        Reference<?> ref = (Reference<?>) obj;
+                        success &= verifyReferent(ref, cardTableStart, objectsStart);
+                    }
                 }
+                curPtr = LayoutEncoding.getObjectEndInGC(obj);
             }
-            curPtr = LayoutEncoding.getObjectEnd(obj);
+        } else {
+            /* Do a basic sanity check of the card table data. */
+            Pointer pos = cardTableStart;
+            while (pos.belowThan(cardTableEnd)) {
+                byte v = pos.readByte(0);
+                if (v != DIRTY_ENTRY && v != CLEAN_ENTRY) {
+                    Log.log().string("Card at ").zhex(pos).string(" is neither dirty nor clean: ").zhex(v).newline();
+                    return false;
+                }
+                pos = pos.add(1);
+            }
         }
         return success;
     }
@@ -170,28 +196,31 @@ final class CardTable {
     }
 
     private static boolean verifyReference(Object parentObject, Pointer cardTableStart, Pointer objectsStart, Pointer reference, Pointer referencedObject) {
-        if (referencedObject.isNonNull() && !HeapImpl.getHeapImpl().isInImageHeap(referencedObject)) {
-            Object obj = referencedObject.toObject();
-            HeapChunk.Header<?> objChunk = HeapChunk.getEnclosingHeapChunk(obj);
-            // Fail if we find a reference from the image heap to the runtime heap, or from the
-            // old generation (which is the only one with remembered sets) to the young generation.
-            boolean fromImageHeap = HeapImpl.usesImageHeapCardMarking() && HeapImpl.getHeapImpl().isInImageHeap(parentObject);
-            if (fromImageHeap || HeapChunk.getSpace(objChunk).isYoungSpace()) {
-                UnsignedWord cardTableIndex = memoryOffsetToIndex(Word.objectToUntrackedPointer(parentObject).subtract(objectsStart));
-                Pointer cardTableAddress = cardTableStart.add(indexToTableOffset(cardTableIndex));
-                Log.log().string("Object ").zhex(Word.objectToUntrackedPointer(parentObject)).string(" (").string(parentObject.getClass().getName()).character(')')
-                                .string(fromImageHeap ? ", which is in the image heap, " : " ")
-                                .string("has an object reference at ")
-                                .zhex(reference).string(" that points to ").zhex(referencedObject).string(" (").string(obj.getClass().getName()).string("), ")
-                                .string("which is in the ").string(fromImageHeap ? "runtime heap" : "young generation").string(". ")
-                                .string("However, the card table at ").zhex(cardTableAddress).string(" is clean.").newline();
-                return false;
-            }
+        if (referencedObject.isNull() ||
+                        HeapImpl.getHeapImpl().isInImageHeap(referencedObject) ||
+                        HeapImpl.getHeapImpl().isInImageHeap(parentObject) && !HeapImpl.usesImageHeapCardMarking()) {
+            return true;
+        }
+
+        Object obj = referencedObject.toObject();
+        HeapChunk.Header<?> objChunk = HeapChunk.getEnclosingHeapChunk(obj);
+        /* Fail if we find a reference to the young generation. */
+        boolean fromImageHeap = HeapImpl.getHeapImpl().isInImageHeap(parentObject);
+        if (fromImageHeap || HeapChunk.getSpace(objChunk).isYoungSpace()) {
+            UnsignedWord cardTableIndex = memoryOffsetToIndex(Word.objectToUntrackedPointer(parentObject).subtract(objectsStart));
+            Pointer cardTableAddress = cardTableStart.add(cardTableIndex);
+            Log.log().string("Object ").zhex(Word.objectToUntrackedPointer(parentObject)).string(" (").string(parentObject.getClass().getName()).character(')')
+                            .string(fromImageHeap ? ", which is in the image heap, " : " ")
+                            .string("has an object reference at ")
+                            .zhex(reference).string(" that points to ").zhex(referencedObject).string(" (").string(obj.getClass().getName()).string("), ")
+                            .string("which is in the ").string(fromImageHeap ? "runtime heap" : "young generation").string(". ")
+                            .string("However, the card table at ").zhex(cardTableAddress).string(" is clean.").newline();
+            return false;
         }
         return true;
     }
 
-    private static class CardTableVerificationVisitor implements ObjectReferenceVisitor {
+    private static final class CardTableVerificationVisitor implements ObjectReferenceVisitor {
         private Object parentObject;
         private Pointer cardTableStart;
         private Pointer objectsStart;
@@ -199,10 +228,18 @@ final class CardTable {
 
         @SuppressWarnings("hiding")
         public void initialize(Object parentObject, Pointer cardTableStart, Pointer objectsStart) {
+            assert this.parentObject == null && this.cardTableStart.isNull() && this.objectsStart.isNull() && !this.success;
             this.parentObject = parentObject;
             this.cardTableStart = cardTableStart;
             this.objectsStart = objectsStart;
             this.success = true;
+        }
+
+        public void reset() {
+            this.parentObject = null;
+            this.cardTableStart = Word.nullPointer();
+            this.objectsStart = Word.nullPointer();
+            this.success = false;
         }
 
         @Override

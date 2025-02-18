@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,8 @@ package com.oracle.truffle.api.profiles;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.dsl.InlineSupport.InlineTarget;
+import com.oracle.truffle.api.dsl.NeverDefault;
 
 /**
  * <p>
@@ -67,17 +69,12 @@ import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
  *     }
  * }
  * </pre>
- * <p>
- *
- *
- * {@inheritDoc}
  *
  * @see #createIdentityProfile()
  * @see ValueProfile
  * @since 0.10
  */
 public final class IntValueProfile extends Profile {
-
     private static final IntValueProfile DISABLED;
     static {
         IntValueProfile profile = new IntValueProfile();
@@ -175,8 +172,9 @@ public final class IntValueProfile extends Profile {
      * @see IntValueProfile
      * @since 22.1
      */
+    @NeverDefault
     public static IntValueProfile create() {
-        if (Profile.isProfilingEnabled()) {
+        if (isProfilingEnabled()) {
             return new IntValueProfile();
         } else {
             return DISABLED;
@@ -190,6 +188,16 @@ public final class IntValueProfile extends Profile {
      */
     public static IntValueProfile getUncached() {
         return DISABLED;
+    }
+
+    /**
+     * Returns an inlined version of the profile. This version is automatically used by Truffle DSL
+     * node inlining.
+     *
+     * @since 23.0
+     */
+    public static InlinedIntValueProfile inline(InlineTarget target) {
+        return InlinedIntValueProfile.inline(target);
     }
 
 }

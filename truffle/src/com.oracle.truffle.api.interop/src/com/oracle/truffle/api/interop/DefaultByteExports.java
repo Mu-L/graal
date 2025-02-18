@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,8 +40,10 @@
  */
 package com.oracle.truffle.api.interop;
 
-import com.oracle.truffle.api.TruffleLanguage;
+import java.math.BigInteger;
+
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 import com.oracle.truffle.api.source.SourceSection;
@@ -76,6 +78,11 @@ final class DefaultByteExports {
     }
 
     @ExportMessage
+    static boolean fitsInBigInteger(Byte receiver) {
+        return true;
+    }
+
+    @ExportMessage
     static boolean fitsInFloat(Byte receiver) {
         return true;
     }
@@ -103,6 +110,12 @@ final class DefaultByteExports {
     @ExportMessage
     static long asLong(Byte receiver) {
         return receiver;
+    }
+
+    @ExportMessage
+    @TruffleBoundary
+    static BigInteger asBigInteger(Byte receiver) {
+        return BigInteger.valueOf(receiver);
     }
 
     @ExportMessage

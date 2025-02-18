@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,12 +24,12 @@
  */
 package com.oracle.svm.graal.meta;
 
-import org.graalvm.compiler.core.common.CompressEncoding;
-import org.graalvm.compiler.word.BarrieredAccess;
+import jdk.graal.compiler.core.common.CompressEncoding;
+import jdk.graal.compiler.word.BarrieredAccess;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.SignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.graal.meta.SubstrateMemoryAccessProvider;
 import com.oracle.svm.core.heap.ReferenceAccess;
@@ -109,7 +109,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
             if (displacement < LayoutEncoding.getArrayBaseOffsetAsInt(layoutEncoding)) {
                 /* Trying to read before the first array element. */
                 return null;
-            } else if (WordFactory.unsigned(displacement).aboveOrEqual(LayoutEncoding.getArrayElementOffset(layoutEncoding, ((Object[]) baseObject).length))) {
+            } else if (Word.unsigned(displacement).aboveOrEqual(LayoutEncoding.getArrayElementOffset(layoutEncoding, ((Object[]) baseObject).length))) {
                 /* Trying to read after the last array element. */
                 return null;
             } else if ((displacement & (LayoutEncoding.getArrayIndexScale(layoutEncoding) - 1)) != 0) {
@@ -124,7 +124,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
     }
 
     static JavaConstant readObjectUnchecked(Object baseObject, long displacement, boolean createCompressedConstant, boolean isVolatile) {
-        Object rawValue = isVolatile ? BarrieredAccess.readObjectVolatile(baseObject, WordFactory.signed(displacement)) : BarrieredAccess.readObject(baseObject, WordFactory.signed(displacement));
+        Object rawValue = isVolatile ? BarrieredAccess.readObjectVolatile(baseObject, Word.signed(displacement)) : BarrieredAccess.readObject(baseObject, Word.signed(displacement));
         return SubstrateObjectConstant.forObject(rawValue, createCompressedConstant);
     }
 
@@ -150,7 +150,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
         } else if (displacement <= 0) {
             /* Trying to read before the object, or the hub. No need to look into the object. */
             return null;
-        } else if (WordFactory.unsigned(displacement + bits / 8).aboveThan(LayoutEncoding.getSizeFromObject(baseObject))) {
+        } else if (Word.unsigned(displacement + bits / 8).aboveThan(LayoutEncoding.getMomentarySizeFromObject(baseObject))) {
             /* Trying to read after the end of the object. */
             return null;
         }
@@ -158,7 +158,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
     }
 
     static JavaConstant readPrimitiveUnchecked(JavaKind kind, Object baseObject, long displacement, int bits, boolean isVolatile) {
-        SignedWord offset = WordFactory.signed(displacement);
+        SignedWord offset = Word.signed(displacement);
         long rawValue;
         switch (bits) {
             case Byte.SIZE:
@@ -174,7 +174,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
                 rawValue = isVolatile ? BarrieredAccess.readLongVolatile(baseObject, offset) : BarrieredAccess.readLong(baseObject, offset);
                 break;
             default:
-                throw VMError.shouldNotReachHere();
+                throw VMError.shouldNotReachHereUnexpectedInput(bits); // ExcludeFromJacocoGeneratedReport
         }
         return toConstant(kind, rawValue);
     }
@@ -198,7 +198,7 @@ public final class SubstrateMemoryAccessProviderImpl implements SubstrateMemoryA
             case Double:
                 return JavaConstant.forDouble(Double.longBitsToDouble(rawValue));
             default:
-                throw VMError.shouldNotReachHere();
+                throw VMError.shouldNotReachHereUnexpectedInput(kind); // ExcludeFromJacocoGeneratedReport
         }
     }
 }

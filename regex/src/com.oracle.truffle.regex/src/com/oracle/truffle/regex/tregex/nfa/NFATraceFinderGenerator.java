@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -207,6 +207,9 @@ public final class NFATraceFinderGenerator {
         dummyInitialState.setPredecessors(new NFAStateTransition[]{newAnchoredEntry, newUnAnchoredEntry});
         ArrayList<PathElement> graphPath = new ArrayList<>();
         for (NFAStateTransition entry : new NFAStateTransition[]{originalNFA.getAnchoredEntry()[0], originalNFA.getUnAnchoredEntry()[0]}) {
+            if (entry == null) {
+                continue;
+            }
             for (NFAStateTransition t : entry.getTarget().getSuccessors()) {
                 // All paths start from the original initial states, which will be duplicated and
                 // become leaf nodes in the tree.
@@ -238,21 +241,23 @@ public final class NFATraceFinderGenerator {
                             final NFAStateTransition pathTransition = graphPath.get(i).getTransition();
                             NFAState copy = copy(pathTransition.getTarget(), resultID);
                             createTransition(lastCopied, copy, pathTransition, result, iResult);
-                            iResult += getEncodedSize(copy);
+                            iResult += getEncodedSize(pathTransition);
                             lastCopied = copy;
                         }
                         // link the copied path to the existing tree
                         createTransition(lastCopied, duplicate, curElement.getTransition(), result, iResult);
                         // traverse the existing tree to the root to complete the pre-calculated
                         // result.
+                        NFAStateTransition parentTransition = curElement.getTransition();
                         NFAState treeNode = duplicate;
                         while (!treeNode.isFinalState()) {
-                            iResult += getEncodedSize(treeNode);
+                            iResult += getEncodedSize(parentTransition);
                             assert treeNode.getSuccessors().length == 1;
+                            parentTransition = treeNode.getSuccessors()[0];
                             treeNode.addPossibleResult(resultID);
-                            GroupBoundaries groupBoundaries = treeNode.getSuccessors()[0].getGroupBoundaries();
+                            GroupBoundaries groupBoundaries = parentTransition.getGroupBoundaries();
                             groupBoundaries.applyToResultFactory(result, iResult, trackLastGroup);
-                            treeNode = treeNode.getSuccessors()[0].getTarget();
+                            treeNode = parentTransition.getTarget();
                         }
                         treeNode.addPossibleResult(resultID);
                         result.setLength(iResult);
@@ -328,9 +333,9 @@ public final class NFATraceFinderGenerator {
         assert states.get(copy.getId()) == copy;
     }
 
-    private int getEncodedSize(NFAState s) {
+    private int getEncodedSize(NFAStateTransition t) {
         Encoding encoding = originalNFA.getAst().getEncoding();
-        assert encoding.isFixedCodePointWidth(s.getCharSet());
-        return encoding.getEncodedSize(s.getCharSet().getMin());
+        assert encoding.isFixedCodePointWidth(t.getCodePointSet());
+        return encoding.getEncodedSize(t.getCodePointSet().getMin());
     }
 }

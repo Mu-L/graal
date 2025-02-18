@@ -24,7 +24,6 @@
  */
 package com.oracle.graal.pointsto.flow.context.bytecode;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 
@@ -42,31 +41,20 @@ public class ContextSensitiveSingleTypeState extends SingleTypeState {
     /** The objects of this type state. */
     protected final AnalysisObject[] objects;
 
-    public ContextSensitiveSingleTypeState(PointsToAnalysis bb, boolean canBeNull, int properties, AnalysisType type, ArrayList<AnalysisObject> objects) {
-        this(bb, canBeNull, properties, type, objects.toArray(AnalysisObject.EMPTY_ARRAY));
-        assert objects.size() > 0 : "Single type state with no objects.";
-    }
-
     /** Creates a new type state from incoming objects. */
-    public ContextSensitiveSingleTypeState(PointsToAnalysis bb, boolean canBeNull, int properties, AnalysisType type, AnalysisObject... objects) {
-        super(bb, canBeNull, properties, type);
+    public ContextSensitiveSingleTypeState(boolean canBeNull, AnalysisType type, AnalysisObject... objects) {
+        super(canBeNull, type);
         this.objects = objects;
-        assert !bb.extendedAsserts() || checkObjects(bb);
-
-        PointsToStats.registerTypeState(bb, this);
+        assert checkObjects(objects);
     }
 
     /** Create a type state with the same content and a reversed canBeNull value. */
-    protected ContextSensitiveSingleTypeState(PointsToAnalysis bb, boolean canBeNull, ContextSensitiveSingleTypeState other) {
-        super(bb, canBeNull, other);
+    protected ContextSensitiveSingleTypeState(boolean canBeNull, ContextSensitiveSingleTypeState other) {
+        super(canBeNull, other);
         this.objects = other.objects;
-
-        PointsToStats.registerTypeState(bb, this);
     }
 
-    protected boolean checkObjects(BigBang bb) {
-        assert bb.extendedAsserts();
-
+    private static boolean checkObjects(AnalysisObject[] objects) {
         /* Check that the objects array are sorted by type. */
         for (int idx = 0; idx < objects.length - 1; idx++) {
             AnalysisObject o0 = objects[idx];
@@ -119,14 +107,14 @@ public class ContextSensitiveSingleTypeState extends SingleTypeState {
         if (stateCanBeNull == this.canBeNull()) {
             return this;
         } else {
-            return new ContextSensitiveSingleTypeState(bb, stateCanBeNull, this);
+            return PointsToStats.registerTypeState(bb, new ContextSensitiveSingleTypeState(stateCanBeNull, this));
         }
     }
 
     /** Note that the objects of this type state have been merged. */
     @Override
     public void noteMerge(PointsToAnalysis bb) {
-        assert bb.analysisPolicy().isMergingEnabled();
+        assert bb.analysisPolicy().isMergingEnabled() : "policy mismatch";
 
         if (!merged) {
             for (AnalysisObject obj : objects) {

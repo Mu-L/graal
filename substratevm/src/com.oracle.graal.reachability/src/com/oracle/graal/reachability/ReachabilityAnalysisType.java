@@ -24,16 +24,15 @@
  */
 package com.oracle.graal.reachability;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
-import com.oracle.graal.pointsto.util.AtomicUtils;
+
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
-
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 /**
  * Reachability specific extension of AnalysisType. Contains mainly information necessary to resolve
@@ -50,23 +49,15 @@ public class ReachabilityAnalysisType extends AnalysisType {
 
     private final Set<ReachabilityAnalysisMethod> invokedVirtualMethods = ConcurrentHashMap.newKeySet();
 
-    private static final AtomicIntegerFieldUpdater<ReachabilityAnalysisType> isInstantiatedUpdater = AtomicIntegerFieldUpdater
-                    .newUpdater(ReachabilityAnalysisType.class, "isInstantiated");
-
-    @SuppressWarnings("unused") private volatile int isInstantiated;
+    private final Set<ReachabilityAnalysisMethod> invokedSpecialMethods = ConcurrentHashMap.newKeySet();
 
     public ReachabilityAnalysisType(AnalysisUniverse universe, ResolvedJavaType javaType, JavaKind storageKind, AnalysisType objectType, AnalysisType cloneableType) {
         super(universe, javaType, storageKind, objectType, cloneableType);
     }
 
-    public boolean registerAsInstantiated() {
-        return AtomicUtils.atomicMark(this, isInstantiatedUpdater);
-    }
-
     /** Register the type as instantiated with all its super types. */
     @Override
-    protected void onInstantiated(UsageKind usage) {
-        super.onInstantiated(usage);
+    protected void onInstantiated() {
         forAllSuperTypes(t -> ((ReachabilityAnalysisType) t).instantiatedSubtypes.add(this));
     }
 
@@ -80,6 +71,14 @@ public class ReachabilityAnalysisType extends AnalysisType {
 
     public void addInvokedVirtualMethod(ReachabilityAnalysisMethod method) {
         invokedVirtualMethods.add(method);
+    }
+
+    public void addSpecialInvokedMethod(ReachabilityAnalysisMethod method) {
+        invokedSpecialMethods.add(method);
+    }
+
+    public Set<ReachabilityAnalysisMethod> getInvokedSpecialMethods() {
+        return invokedSpecialMethods;
     }
 
     @Override

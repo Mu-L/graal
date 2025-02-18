@@ -37,14 +37,29 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-import org.graalvm.compiler.core.common.SuppressFBWarnings;
-
+import com.oracle.svm.core.option.OptionUtils.MacroOptionKind;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.core.common.SuppressFBWarnings;
 
 public abstract class OptionOrigin {
 
-    public static final OptionOrigin commandLineOptionOriginSingleton = new CommandLineOptionOrigin();
+    public static final OptionOrigin commandLineAPIOptionOriginSingleton = new CommandLineOptionOrigin(true);
+    public static final OptionOrigin commandLineNonAPIOptionOriginSingleton = new CommandLineOptionOrigin(false);
+    public static final OptionOrigin driverStableOriginSingleton = new DriverOptionOrigin();
     public static final String argFilePrefix = "argfile:";
+
+    public static final String originUser = "user";
+
+    public static final String originDriver = "driver";
+
+    public static final String isAPISuffix = "+api";
+
+    protected final boolean isStable;
+
+    public OptionOrigin(boolean isStable) {
+        this.isStable = isStable;
+    }
 
     public URI container() {
         return null;
@@ -58,6 +73,14 @@ public abstract class OptionOrigin {
         return false;
     }
 
+    public boolean isStable() {
+        return isStable;
+    }
+
+    public boolean isInternal() {
+        return false;
+    }
+
     /**
      * Return the option values contained in the redirection file specified by the given path.
      * Depending on the specific kind of OptionOrigin the method to retrieve those values can
@@ -68,31 +91,56 @@ public abstract class OptionOrigin {
     }
 
     public static OptionOrigin from(String origin) {
+        return from(origin, true);
+    }
 
-        if (origin == null || origin.startsWith(argFilePrefix)) {
-            return commandLineOptionOriginSingleton;
+    public static OptionOrigin from(String originArg, boolean strict) {
+        String origin = originArg;
+
+        boolean isStable = false;
+        if (origin != null && isAPI(origin)) {
+            isStable = true;
+            origin = origin.substring(0, origin.length() - isAPISuffix.length());
+        }
+
+        if (origin == null || originUser.equals(origin) || origin.startsWith(argFilePrefix)) {
+            return isStable ? commandLineAPIOptionOriginSingleton : commandLineNonAPIOptionOriginSingleton;
+        }
+
+        if (originDriver.equals(origin)) {
+            return driverStableOriginSingleton;
         }
 
         URI originURI = originURI(origin);
         if (originURI == null) {
-            var macroOption = MacroOptionOrigin.from(origin);
+            var macroOption = MacroOptionOrigin.from(isStable, origin);
             if (macroOption != null) {
                 return macroOption;
             }
-            throw VMError.shouldNotReachHere("Unsupported OptionOrigin: " + origin);
+            if (strict) {
+                throw VMError.shouldNotReachHere("Unsupported OptionOrigin: " + origin);
+            }
+            return null;
         }
         switch (originURI.getScheme()) {
             case "jar":
-                return new JarOptionOrigin(originURI);
+                return new JarOptionOrigin(isStable, originURI);
             case "file":
                 Path originPath = Path.of(originURI);
-                if (!Files.isReadable(originPath)) {
+                if (!Files.isReadable(originPath) && strict) {
                     VMError.shouldNotReachHere("Directory origin with path that cannot be read: " + originPath);
                 }
-                return new DirectoryOptionOrigin(originPath);
+                return new DirectoryOptionOrigin(isStable, originPath);
             default:
-                throw VMError.shouldNotReachHere("OptionOrigin of unsupported scheme: " + originURI);
+                if (strict) {
+                    throw VMError.shouldNotReachHere("OptionOrigin of unsupported scheme: " + originURI);
+                }
+                return null;
         }
+    }
+
+    public static boolean isAPI(String originArg) {
+        return originArg.endsWith(isAPISuffix);
     }
 
     protected static URI originURI(String origin) {
@@ -112,18 +160,18 @@ public abstract class OptionOrigin {
 }
 
 final class CommandLineOptionOrigin extends OptionOrigin {
-
-    CommandLineOptionOrigin() {
+    CommandLineOptionOrigin(boolean isStable) {
+        super(isStable);
     }
 
     @Override
     public int hashCode() {
-        return 0;
+        return Objects.hash(System.identityHashCode(this), isStable);
     }
 
     @Override
     public boolean equals(Object obj) {
-        return obj instanceof CommandLineOptionOrigin;
+        return obj instanceof CommandLineOptionOrigin cloo && this.isStable == cloo.isStable;
     }
 
     @Override
@@ -137,13 +185,45 @@ final class CommandLineOptionOrigin extends OptionOrigin {
     }
 }
 
+final class DriverOptionOrigin extends OptionOrigin {
+    DriverOptionOrigin() {
+        super(false);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(System.identityHashCode(this), isStable);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        return obj instanceof DriverOptionOrigin doo && this.isStable == doo.isStable;
+    }
+
+    @Override
+    public boolean commandLineLike() {
+        return true;
+    }
+
+    @Override
+    public boolean isInternal() {
+        return true;
+    }
+
+    @Override
+    public String toString() {
+        return "internal";
+    }
+}
+
 final class MacroOptionOrigin extends OptionOrigin {
 
     public final OptionUtils.MacroOptionKind kind;
     public final String name;
     public final Path optionDirectory;
 
-    private MacroOptionOrigin(OptionUtils.MacroOptionKind kind, String name, URI optionDirectory) {
+    private MacroOptionOrigin(boolean isStable, OptionUtils.MacroOptionKind kind, String name, URI optionDirectory) {
+        super(isStable);
         this.kind = kind;
         this.name = name;
         VMError.guarantee(optionDirectory != null, "Invalid optionDirectory origin");
@@ -165,7 +245,7 @@ final class MacroOptionOrigin extends OptionOrigin {
         return false;
     }
 
-    public static MacroOptionOrigin from(String rawOrigin) {
+    public static MacroOptionOrigin from(boolean isStable, String rawOrigin) {
         for (OptionUtils.MacroOptionKind kind : OptionUtils.MacroOptionKind.values()) {
             String prefix = kind.getDescriptionPrefix(true);
             if (rawOrigin.startsWith(prefix)) {
@@ -177,7 +257,7 @@ final class MacroOptionOrigin extends OptionOrigin {
                     /* Strip optional trailing argumentOrigin */
                     optionDirectory = optionDirectory.substring(0, argumentOriginSep);
                 }
-                return new MacroOptionOrigin(kind, rawOrigin.substring(prefix.length()), originURI(optionDirectory));
+                return new MacroOptionOrigin(isStable, kind, rawOrigin.substring(prefix.length()), originURI(optionDirectory));
             }
         }
         return null;
@@ -185,7 +265,7 @@ final class MacroOptionOrigin extends OptionOrigin {
 
     @Override
     public boolean commandLineLike() {
-        return OptionUtils.MacroOptionKind.Macro.equals(kind);
+        return MacroOptionKind.Macro.equals(kind);
     }
 
     @Override
@@ -201,6 +281,10 @@ final class MacroOptionOrigin extends OptionOrigin {
 }
 
 abstract class URIOptionOrigin extends OptionOrigin {
+
+    URIOptionOrigin(boolean isStable) {
+        super(isStable);
+    }
 
     protected URI container;
 
@@ -238,7 +322,8 @@ abstract class URIOptionOrigin extends OptionOrigin {
 }
 
 final class JarOptionOrigin extends URIOptionOrigin {
-    protected JarOptionOrigin(URI rawOrigin) {
+    protected JarOptionOrigin(boolean isStable, URI rawOrigin) {
+        super(isStable);
         var specific = rawOrigin.getSchemeSpecificPart();
         int sep = specific.lastIndexOf('!');
         VMError.guarantee(sep > 0, "Invalid jar origin");
@@ -270,7 +355,8 @@ final class JarOptionOrigin extends URIOptionOrigin {
 
 final class DirectoryOptionOrigin extends URIOptionOrigin {
     @SuppressFBWarnings(value = "NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE", justification = "originPath.getRoot() is never null")
-    protected DirectoryOptionOrigin(Path originPath) {
+    protected DirectoryOptionOrigin(boolean isStable, Path originPath) {
+        super(isStable);
         int pathPos = 0;
         int metaInfPos = -1;
         for (Path entry : originPath) {

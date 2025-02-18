@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -39,6 +39,8 @@
  * SOFTWARE.
  */
 package com.oracle.truffle.nfi.test.interop;
+
+import java.math.BigInteger;
 
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.TruffleObject;
@@ -113,6 +115,11 @@ public class BoxedPrimitive implements TruffleObject {
     }
 
     @ExportMessage
+    boolean fitsInBigInteger(@CachedLibrary("this.primitive") InteropLibrary interop) {
+        return interop.fitsInBigInteger(primitive);
+    }
+
+    @ExportMessage
     boolean fitsInFloat(@CachedLibrary("this.primitive") InteropLibrary interop) {
         return interop.fitsInFloat(primitive);
     }
@@ -140,6 +147,11 @@ public class BoxedPrimitive implements TruffleObject {
     @ExportMessage
     long asLong(@CachedLibrary("this.primitive") InteropLibrary interop) throws UnsupportedMessageException {
         return interop.asLong(primitive);
+    }
+
+    @ExportMessage
+    BigInteger asBigInteger(@CachedLibrary("this.primitive") InteropLibrary interop) throws UnsupportedMessageException {
+        return interop.asBigInteger(primitive);
     }
 
     @ExportMessage

@@ -24,8 +24,6 @@
  */
 package com.oracle.svm.core.jdk;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -36,14 +34,12 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform.HOSTED_ONLY;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.PointerBase;
-import org.graalvm.word.WordFactory;
 
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.jdk.PlatformNativeLibrarySupport.NativeLibrary;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
+import com.oracle.svm.core.jdk.PlatformNativeLibrarySupport.NativeLibrary;
 
 @AutomaticallyRegisteredImageSingleton
-public final class NativeLibrarySupport {
+public final class NativeLibrarySupport extends NativeLibraries {
     // Essentially a revised implementation of the relevant methods in OpenJDK's ClassLoader
 
     public interface LibraryInitializer {
@@ -61,8 +57,6 @@ public final class NativeLibrarySupport {
     private final List<NativeLibrary> knownLibraries = new CopyOnWriteArrayList<>();
 
     private final Deque<NativeLibrary> currentLoadContext = new ArrayDeque<>();
-
-    private String[] paths;
 
     private LibraryInitializer libraryInitializer;
 
@@ -85,49 +79,9 @@ public final class NativeLibrarySupport {
         return knownLibraries.stream().anyMatch(l -> l.isBuiltin() && l.getCanonicalIdentifier().equals(name));
     }
 
-    public void loadLibraryAbsolute(File file) {
-        if (loadLibrary0(file, false)) {
-            return;
-        }
-        throw new UnsatisfiedLinkError("Can't load library: " + file);
-    }
-
-    public void loadLibraryRelative(String name) {
-        // Test if this is a built-in library
-        if (loadLibrary0(new File(name), true)) {
-            return;
-        }
-        String libname = System.mapLibraryName(name);
-        if (paths == null) {
-            String[] tokens = SubstrateUtil.split(System.getProperty("java.library.path", ""), File.pathSeparator);
-            for (int i = 0; i < tokens.length; i++) {
-                if (tokens[i].isEmpty()) {
-                    tokens[i] = ".";
-                }
-            }
-            paths = tokens;
-        }
-        for (String path : paths) {
-            File libpath = new File(path, libname);
-            if (loadLibrary0(libpath, false)) {
-                return;
-            }
-            File altpath = Target_jdk_internal_loader_ClassLoaderHelper.mapAlternativeName(libpath);
-            if (altpath != null && loadLibrary0(altpath, false)) {
-                return;
-            }
-        }
-        throw new UnsatisfiedLinkError("no " + name + " in java.library.path");
-    }
-
-    private boolean loadLibrary0(File file, boolean asBuiltin) {
-        String canonical;
-        try {
-            canonical = asBuiltin ? file.getName() : file.getCanonicalPath();
-        } catch (IOException e) {
-            return false;
-        }
-        return addLibrary(asBuiltin, canonical, true);
+    @Override
+    protected boolean addLibrary(String canonical, boolean builtin) {
+        return addLibrary(builtin, canonical, true);
     }
 
     private boolean addLibrary(boolean asBuiltin, String canonical, boolean initialize) {
@@ -186,16 +140,11 @@ public final class NativeLibrarySupport {
         }
     }
 
+    @Override
     public PointerBase findSymbol(String name) {
         lock.lock();
         try {
-            for (NativeLibrary lib : knownLibraries) {
-                PointerBase entry = lib.findSymbol(name);
-                if (entry.isNonNull()) {
-                    return entry;
-                }
-            }
-            return WordFactory.nullPointer();
+            return findSymbol(knownLibraries, name);
         } finally {
             lock.unlock();
         }

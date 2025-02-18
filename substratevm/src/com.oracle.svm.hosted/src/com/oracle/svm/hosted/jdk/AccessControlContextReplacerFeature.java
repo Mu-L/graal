@@ -31,17 +31,22 @@ import java.security.ProtectionDomain;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
+import jdk.graal.compiler.serviceprovider.JavaVersionUtil;
 
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.AccessControllerUtil;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.util.ReflectionUtil;
 
 @AutomaticallyRegisteredFeature
 @SuppressWarnings({"unused"})
 class AccessControlContextReplacerFeature implements InternalFeature {
+
+    @Override
+    public boolean isInConfiguration(IsInConfigurationAccess access) {
+        return JavaVersionUtil.JAVA_SPEC == 21;
+    }
 
     static Map<String, AccessControlContext> allowedContexts = new HashMap<>();
 
@@ -82,22 +87,7 @@ class AccessControlContextReplacerFeature implements InternalFeature {
         allowContextIfExists("java.util.Calendar$CalendarAccessControlContext", "INSTANCE");
         allowContextIfExists("javax.management.monitor.Monitor", "noPermissionsACC");
 
-        if (JavaVersionUtil.JAVA_SPEC >= 11) {
-            allowContextIfExists("java.security.AccessController$AccHolder", "innocuousAcc");
-            if (JavaVersionUtil.JAVA_SPEC < 19) {
-                allowContextIfExists("java.util.concurrent.ForkJoinPool$DefaultForkJoinWorkerThreadFactory", "ACC");
-            }
-        }
-        if (JavaVersionUtil.JAVA_SPEC < 17) {
-            allowContextIfExists("java.util.concurrent.ForkJoinWorkerThread", "INNOCUOUS_ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC >= 11 && JavaVersionUtil.JAVA_SPEC < 17) {
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$InnocuousForkJoinWorkerThreadFactory", "ACC");
-        }
-        if (JavaVersionUtil.JAVA_SPEC >= 17 && JavaVersionUtil.JAVA_SPEC < 19) {
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$WorkQueue", "INNOCUOUS_ACC");
-            allowContextIfExists("java.util.concurrent.ForkJoinPool$DefaultCommonPoolForkJoinWorkerThreadFactory", "ACC");
-        }
+        allowContextIfExists("java.security.AccessController$AccHolder", "innocuousAcc");
         access.registerObjectReplacer(AccessControlContextReplacerFeature::replaceAccessControlContext);
     }
 

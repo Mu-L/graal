@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # The Universal Permissive License (UPL), Version 1.0
@@ -46,6 +46,7 @@ import mx
 import mx_gate
 import mx_sdk_vm
 import mx_sdk_vm_impl
+import pathlib
 import mx_sdk_benchmark # pylint: disable=unused-import
 import mx_sdk_clangformat # pylint: disable=unused-import
 import datetime
@@ -55,6 +56,9 @@ from mx_bisect_strategy import BuildStepsGraalVMStrategy
 from mx_gate import Task
 from mx_unittest import unittest
 
+# re-export custom mx project classes, so they can be used from suite.py
+from mx_sdk_toolchain import ToolchainTestProject # pylint: disable=unused-import
+from mx_sdk_shaded import ShadedLibraryProject # pylint: disable=unused-import
 
 _suite = mx.suite('sdk')
 
@@ -63,8 +67,9 @@ define_bisect_default_build_steps(BuildStepsGraalVMStrategy())
 
 
 def _sdk_gate_runner(args, tasks):
-    with Task('SDK UnitTests', tasks, tags=['test']) as t:
-        if t: unittest(['--suite', 'sdk', '--enable-timing', '--verbose', '--fail-fast'])
+    with Task('SDK UnitTests', tasks, tags=['test'], report=True) as t:
+        if t:
+            unittest(['--suite', 'sdk', '--enable-timing', '--verbose', '--max-class-failures=25'], test_report_tags={'task': t.title})
     with Task('Check Copyrights', tasks) as t:
         if t:
             if mx.command_function('checkcopyrights')(['--primary', '--', '--projects', 'src']) != 0:
@@ -94,7 +99,16 @@ def build_oracle_compliant_javadoc_args(suite, product_name, feature_name):
 def javadoc(args):
     """build the Javadoc for all API packages"""
     extraArgs = build_oracle_compliant_javadoc_args(_suite, 'GraalVM', 'SDK')
-    mx.javadoc(['--unified', '--exclude-packages', 'org.graalvm.polyglot.tck'] + extraArgs + args)
+    excludedPackages = [
+        'org.graalvm.polyglot.tck',
+        'org.graalvm.sdk',
+        'org.graalvm.shadowed.org.jline.reader',
+        'org.graalvm.shadowed.org.jline.reader.impl.completer',
+        'org.graalvm.shadowed.org.jline.reader.impl.history',
+        'org.graalvm.shadowed.org.jline.terminal.impl',
+        'org.graalvm.shadowed.org.jline.utils',
+    ]
+    mx.javadoc(['--unified', '--disallow-all-warnings', '--exclude-packages', ','.join(excludedPackages)] + extraArgs + args)
 
 def upx(args):
     """compress binaries using the upx tool"""
@@ -103,19 +117,65 @@ def upx(args):
     upx_cmd = [upx_path] + args
     mx.run(upx_cmd, mx.TeeOutputCapture(mx.OutputCapture()), mx.TeeOutputCapture(mx.OutputCapture()))
 
-mx_sdk_vm.register_graalvm_component(mx_sdk_vm.GraalVmJreComponent(
+
+# SDK modules included if truffle, compiler and native-image is included
+graalvm_sdk_component = mx_sdk_vm.GraalVmJreComponent(
     suite=_suite,
     name='Graal SDK',
     short_name='sdk',
     dir_name='graalvm',
     license_files=[],
     third_party_license_files=[],
-    dependencies=[],
-    jar_distributions=['sdk:LAUNCHER_COMMON'],
-    boot_jars=['sdk:GRAAL_SDK'],
+    dependencies=['sdkni'],
+    jar_distributions=[],
+    boot_jars=['sdk:POLYGLOT', 'sdk:GRAAL_SDK'],
     stability="supported",
-))
+)
+mx_sdk_vm.register_graalvm_component(graalvm_sdk_component)
 
+# SDK modules included if the compiler (jargraal) is included
+graal_sdk_compiler_component = mx_sdk_vm.GraalVmJreComponent(
+    suite=_suite,
+    name='Graal SDK Compiler',
+    short_name='sdkc',
+    dir_name='graalvm',
+    license_files=[],
+    third_party_license_files=[],
+    dependencies=[],
+    jar_distributions=[],
+    boot_jars=['sdk:WORD', 'sdk:COLLECTIONS', 'sdk:NATIVEIMAGE'],
+    stability="supported",
+)
+mx_sdk_vm.register_graalvm_component(graal_sdk_compiler_component)
+
+# SDK modules included if the compiler and native-image is included
+graalvm_sdk_native_image_component = mx_sdk_vm.GraalVmJreComponent(
+    suite=_suite,
+    name='Graal SDK Native Image',
+    short_name='sdkni',
+    dir_name='graalvm',
+    license_files=[],
+    third_party_license_files=[],
+    dependencies=['sdkc'],
+    jar_distributions=[],
+    boot_jars=['sdk:NATIVEIMAGE', 'sdk:NATIVEIMAGE_LIBGRAAL'],
+    stability="supported",
+)
+mx_sdk_vm.register_graalvm_component(graalvm_sdk_native_image_component)
+
+graalvm_launcher_common_component = mx_sdk_vm.GraalVmJreComponent(
+    suite=_suite,
+    name='GraalVM Launcher Common',
+    short_name='sdkl',
+    dir_name='graalvm',
+    license_files=[],
+    third_party_license_files=[],
+    dependencies=['Graal SDK'],
+    jar_distributions=['sdk:LAUNCHER_COMMON', 'sdk:JLINE3'],
+    boot_jars=[],
+    stability="supported",
+)
+mx_sdk_vm.register_graalvm_component(graalvm_launcher_common_component)
 
 mx_sdk_vm.register_graalvm_component(mx_sdk_vm.GraalVmJreComponent(
     suite=_suite,
@@ -130,7 +190,6 @@ mx_sdk_vm.register_graalvm_component(mx_sdk_vm.GraalVmJreComponent(
     support_distributions=['LLVM_TOOLCHAIN'],
     stability="supported",
 ))
-
 
 def mx_register_dynamic_suite_constituents(register_project, register_distribution):
     mx_sdk_vm_impl.mx_register_dynamic_suite_constituents(register_project, register_distribution)
@@ -158,6 +217,7 @@ GraalVmTruffleComponent = mx_sdk_vm.GraalVmTruffleComponent
 GraalVmLanguage = mx_sdk_vm.GraalVmLanguage
 GraalVmTool = mx_sdk_vm.GraalVmTool
 GraalVMSvmMacro = mx_sdk_vm.GraalVMSvmMacro
+GraalVmSvmTool = mx_sdk_vm.GraalVmSvmTool
 GraalVmJdkComponent = mx_sdk_vm.GraalVmJdkComponent
 GraalVmJreComponent = mx_sdk_vm.GraalVmJreComponent
 GraalVmJvmciComponent = mx_sdk_vm.GraalVmJvmciComponent
@@ -185,13 +245,122 @@ def jdk_enables_jvmci_by_default(jdk):
 
 def jlink_new_jdk(jdk, dst_jdk_dir, module_dists, ignore_dists,
                   root_module_names=None,
-                  missing_export_target_action='create',
+                  missing_export_target_action=None,
                   with_source=lambda x: True,
                   vendor_info=None,
-                  use_upgrade_module_path=False):
+                  use_upgrade_module_path=False,
+                  default_to_jvmci=False):
     return mx_sdk_vm.jlink_new_jdk(jdk, dst_jdk_dir, module_dists, ignore_dists,
                                    root_module_names=root_module_names,
                                    missing_export_target_action=missing_export_target_action,
                                    with_source=with_source,
                                    vendor_info=vendor_info,
-                                   use_upgrade_module_path=use_upgrade_module_path)
+                                   use_upgrade_module_path=use_upgrade_module_path,
+                                   default_to_jvmci=default_to_jvmci)
+
+class GraalVMJDKConfig(mx.JDKConfig):
+    """
+    A JDKConfig that configures the built GraalVM as a JDK config.
+    """
+    def __init__(self):
+        default_jdk = mx.get_jdk(tag='default')
+        if GraalVMJDKConfig.is_graalvm(default_jdk.home):
+            graalvm_home = default_jdk.home
+            additional_vm_args = []
+        elif GraalVMJDKConfig.is_libgraal_jdk(default_jdk.home):
+            # Oracle JDK includes the libjvmci compiler, allowing it to function as GraalVM.
+            # However, the Graal compiler is disabled by default and must be explicitly enabled using the -XX:+UseJVMCICompiler option.
+            graalvm_home = default_jdk.home
+            # GR-58388: Switch '-XX:+UseJVMCINativeLibrary' to '-XX:+UseGraalJIT'
+            additional_vm_args = ['-XX:+UnlockExperimentalVMOptions', '-XX:+EnableJVMCI', '-XX:+UseJVMCINativeLibrary', '-XX:-UnlockExperimentalVMOptions']
+        else:
+            graalvm_home = mx_sdk_vm.graalvm_home(fatalIfMissing=True)
+            additional_vm_args = []
+        self._home_internal = graalvm_home
+        self._vm_args = additional_vm_args
+        mx.JDKConfig.__init__(self, graalvm_home, tag='graalvm')
+
+    @property
+    def home(self):
+        return self._home_internal
+
+    @home.setter
+    def home(self, home):
+        return
+
+    def processArgs(self, args, addDefaultArgs=True):
+        processed_args = super(GraalVMJDKConfig, self).processArgs(args, addDefaultArgs)
+        if addDefaultArgs and self._vm_args:
+            processed_args = self._vm_args + processed_args
+        return processed_args
+
+    @staticmethod
+    def is_graalvm(java_home):
+        release_file = os.path.join(java_home, 'release')
+        if not os.path.isfile(release_file):
+            return False
+        with open(release_file, 'r') as file:
+            for line in file:
+                if line.startswith('GRAALVM_VERSION'):
+                    return True
+        return False
+
+    @staticmethod
+    def is_libgraal_jdk(java_home):
+        release_file = os.path.join(java_home, 'release')
+        if not os.path.isfile(release_file):
+            return False
+        with open(release_file, 'r') as file:
+            for line in file:
+                if line.startswith('MODULES') and 'jdk.graal.compiler.lib' in line:
+                    # Oracle JDK has libjvmcicompiler
+                    return True
+        return False
+
+class GraalVMJDK(mx.JDKFactory):
+
+    def getJDKConfig(self):
+        return GraalVMJDKConfig()
+
+    def description(self):
+        return "GraalVM JDK"
+
+mx.addJDKFactory('graalvm', mx.get_jdk(tag='default').javaCompliance, GraalVMJDK())
+
+
+def maven_deploy_public_repo_dir():
+    return os.path.join(_suite.get_mx_output_dir(), 'public-maven-repo')
+
+@mx.command(_suite.name, 'maven-deploy-public')
+def maven_deploy_public(args, licenses=None, deploy_snapshots=True):
+    """Helper to simplify deploying all public Maven dependendencies into the mxbuild directory"""
+    if deploy_snapshots:
+        artifact_version = f'{mx_sdk_vm_impl.graalvm_version("graalvm")}-SNAPSHOT'
+    else:
+        artifact_version = f'{mx_sdk_vm_impl.graalvm_version("graalvm")}'
+    path = maven_deploy_public_repo_dir()
+    mx.rmtree(path, ignore_errors=True)
+    os.mkdir(path)
+
+    if not licenses:
+        # default licenses used
+        licenses = ['GFTC', 'EPL-2.0', 'PSF-License', 'GPLv2-CPE', 'ICU,GPLv2', 'BSD-simplified', 'BSD-new', 'UPL', 'MIT']
+
+    deploy_args = [
+            '--tags=public',
+            '--all-suites',
+            '--all-distribution-types',
+            f'--version-string={artifact_version}',
+            '--validate=full',
+            '--licenses', ','.join(licenses),
+            'local',
+            pathlib.Path(path).as_uri(),
+        ]
+    if mx.get_jdk().javaCompliance > '17':
+        mx.warn("Javadoc won't be deployed as a JDK > 17 is not yet compatible with javadoc doclets. In order to deploy javadoc use a JDK 17 as a JDK on JAVA_HOME.")
+        deploy_args += ["--suppress-javadoc"]
+
+    mx.log(f'mx maven-deploy {" ".join(deploy_args)}')
+    mx.maven_deploy(deploy_args)
+    mx.log(f'Deployed Maven artefacts to {path}')
+    return path

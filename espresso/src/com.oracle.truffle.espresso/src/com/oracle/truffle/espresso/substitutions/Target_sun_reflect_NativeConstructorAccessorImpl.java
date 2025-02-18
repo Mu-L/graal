@@ -31,10 +31,15 @@ import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.interop.ToEspressoNode;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 @EspressoSubstitutions(nameProvider = Target_sun_reflect_NativeConstructorAccessorImpl.SharedNativeConstructorAccessorImpl.class)
 public final class Target_sun_reflect_NativeConstructorAccessorImpl {
+    private static final String[] NAMES = {
+                    "Target_sun_reflect_NativeConstructorAccessorImpl",
+                    "Target_jdk_internal_reflect_NativeConstructorAccessorImpl",
+                    "Target_jdk_internal_reflect_DirectConstructorHandleAccessor$NativeAccessor"
+    };
 
     @Substitution(methodName = "newInstance0")
     abstract static class NewInstance0 extends SubstitutionNode {
@@ -44,13 +49,13 @@ public final class Target_sun_reflect_NativeConstructorAccessorImpl {
                         @Inject EspressoLanguage language,
                         @Inject Meta meta);
 
-        @Specialization()
+        @Specialization
         public @JavaType(Object.class) StaticObject newInstance(
                         @JavaType(Constructor.class) StaticObject constructor,
                         @JavaType(Object[].class) StaticObject args0,
                         @Inject EspressoLanguage language,
                         @Inject Meta meta,
-                        @Cached ToEspressoNode toEspressoNode) {
+                        @Cached ToEspressoNode.DynamicToEspresso toEspressoNode) {
             Klass klass = meta.java_lang_reflect_Constructor_clazz.getObject(constructor).getMirrorKlass(meta);
             klass.safeInitialize();
             if (klass.isArray() || klass.isPrimitive() || klass.isInterface() || klass.isAbstract()) {
@@ -65,10 +70,6 @@ public final class Target_sun_reflect_NativeConstructorAccessorImpl {
     }
 
     public static class SharedNativeConstructorAccessorImpl extends SubstitutionNamesProvider {
-        private static String[] NAMES = new String[]{
-                        TARGET_SUN_REFLECT_NATIVECONSTRUCTORACCESSORIMPL,
-                        TARGET_JDK_INTERNAL_REFLECT_NATIVECONSTRUCTORACCESSORIMPL
-        };
         public static SubstitutionNamesProvider INSTANCE = new SharedNativeConstructorAccessorImpl();
 
         @Override
@@ -77,6 +78,4 @@ public final class Target_sun_reflect_NativeConstructorAccessorImpl {
         }
     }
 
-    private static final String TARGET_SUN_REFLECT_NATIVECONSTRUCTORACCESSORIMPL = "Target_sun_reflect_NativeConstructorAccessorImpl";
-    private static final String TARGET_JDK_INTERNAL_REFLECT_NATIVECONSTRUCTORACCESSORIMPL = "Target_jdk_internal_reflect_NativeConstructorAccessorImpl";
 }

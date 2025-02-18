@@ -32,7 +32,7 @@ import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.EspressoLanguage;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * AASTORE bytecode with interop extensions.
@@ -58,7 +58,7 @@ public abstract class ReferenceArrayStore extends EspressoNode {
     public abstract void execute(StaticObject receiver, int index, StaticObject value);
 
     @Specialization
-    void executeWithNullCheck(StaticObject array, int index, StaticObject value,
+    void doWithNullCheck(StaticObject array, int index, StaticObject value,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck objectArrayStore) {
         objectArrayStore.execute(nullCheck.execute(array), index, value);

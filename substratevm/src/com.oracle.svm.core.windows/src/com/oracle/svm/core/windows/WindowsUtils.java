@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,9 +27,8 @@ package com.oracle.svm.core.windows;
 import static com.oracle.svm.core.annotate.RecomputeFieldValue.Kind.Custom;
 
 import java.io.FileDescriptor;
-import java.io.IOException;
 
-import org.graalvm.nativeimage.PinnedObject;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.struct.CPointerTo;
@@ -39,7 +38,6 @@ import org.graalvm.nativeimage.c.type.CLongPointer;
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.Uninterruptible;
@@ -48,6 +46,7 @@ import com.oracle.svm.core.annotate.RecomputeFieldValue;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.c.function.CEntryPointActions;
 import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
+import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.core.windows.headers.FileAPI;
 import com.oracle.svm.core.windows.headers.LibLoaderAPI;
 import com.oracle.svm.core.windows.headers.WinBase;
@@ -62,7 +61,7 @@ public class WindowsUtils {
 
     public static int getpid(java.lang.Process process) {
         Target_java_lang_ProcessImpl processImpl = SubstrateUtil.cast(process, Target_java_lang_ProcessImpl.class);
-        return com.oracle.svm.core.windows.headers.Process.NoTransitions.GetProcessId(WordFactory.pointer(processImpl.handle));
+        return com.oracle.svm.core.windows.headers.Process.NoTransitions.GetProcessId(Word.pointer(processImpl.handle));
     }
 
     @TargetClass(java.io.FileDescriptor.class)
@@ -81,10 +80,6 @@ public class WindowsUtils {
 
     static void setHandle(FileDescriptor descriptor, long handle) {
         SubstrateUtil.cast(descriptor, Target_java_io_FileDescriptor.class).handle = handle;
-    }
-
-    static boolean outOfBounds(int off, int len, byte[] array) {
-        return off < 0 || len < 0 || array.length - off < len;
     }
 
     /** Return the error string for the last error, or a default message. */
@@ -107,7 +102,7 @@ public class WindowsUtils {
 
             CIntPointer bytesWritten = UnsafeStackValue.get(CIntPointer.class);
 
-            int ret = FileAPI.WriteFile(handle, curBuf, curLen, bytesWritten, WordFactory.nullPointer());
+            int ret = FileAPI.WriteFile(handle, curBuf, curLen, bytesWritten, Word.nullPointer());
 
             if (ret == 0) {
                 return false;
@@ -132,44 +127,14 @@ public class WindowsUtils {
         return (result != 0);
     }
 
-    @SuppressWarnings("unused")
-    static void writeBytes(FileDescriptor descriptor, byte[] bytes, int off, int len, boolean append) throws IOException {
-        if (bytes == null) {
-            throw new NullPointerException();
-        } else if (WindowsUtils.outOfBounds(off, len, bytes)) {
-            throw new IndexOutOfBoundsException();
-        }
-        if (len == 0) {
-            return;
-        }
-
-        try (PinnedObject bytesPin = PinnedObject.create(bytes)) {
-            CCharPointer curBuf = bytesPin.addressOfArrayElement(off);
-            UnsignedWord curLen = WordFactory.unsigned(len);
-            /** Temp fix until we complete FileDescriptor substitutions. */
-            int handle = FileAPI.GetStdHandle(FileAPI.STD_ERROR_HANDLE());
-
-            CIntPointer bytesWritten = UnsafeStackValue.get(CIntPointer.class);
-
-            int ret = FileAPI.WriteFile(handle, curBuf, curLen, bytesWritten, WordFactory.nullPointer());
-
-            if (ret == 0) {
-                throw new IOException(lastErrorString("Write error"));
-            }
-
-            int writtenCount = bytesWritten.read();
-            if (curLen.notEqual(writtenCount)) {
-                throw new IOException(lastErrorString("Write error"));
-            }
-        }
-    }
-
     private static long performanceFrequency = 0L;
     public static final long NANOSECS_PER_SEC = 1000000000L;
     public static final int NANOSECS_PER_MILLISEC = 1000000;
 
     /** Retrieve a nanosecond counter for elapsed time measurement. */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23+26/src/hotspot/os/windows/os_windows.cpp#L1089-L1096")
+    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-23+26/src/hotspot/os/windows/os_windows.cpp#L1194-L1200")
     public static long getNanoCounter() {
         if (performanceFrequency == 0L) {
             CLongPointer count = StackValue.get(CLongPointer.class);
@@ -185,7 +150,7 @@ public class WindowsUtils {
     }
 
     /** Sentinel value denoting the uninitialized kernel handle. */
-    public static final PointerBase UNINITIALIZED_HANDLE = WordFactory.pointer(1);
+    public static final PointerBase UNINITIALIZED_HANDLE = Word.pointer(1);
 
     @CPointerTo(nameOfCType = "void*")
     interface CFunctionPointerPointer<T extends CFunctionPointer> extends PointerBase {
@@ -195,14 +160,14 @@ public class WindowsUtils {
     }
 
     /** Sentinel value denoting the uninitialized pointer. */
-    static final PointerBase UNINITIALIZED_POINTER = WordFactory.pointer(0xBAD);
+    static final PointerBase UNINITIALIZED_POINTER = Word.pointer(0xBAD);
 
     /**
      * Retrieves and caches the address of an exported function from an already loaded DLL if the
      * cached function pointer is {@linkplain #UNINITIALIZED_POINTER uninitialized}, otherwise it
      * returns the cached value.
      */
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     static <T extends CFunctionPointer> T getAndCacheFunctionPointer(CFunctionPointerPointer<T> cachedFunctionPointer,
                     CCharPointer dllName, CCharPointer functionName) {
         T functionPointer = cachedFunctionPointer.read();
@@ -215,7 +180,7 @@ public class WindowsUtils {
 
     /** Retrieves the address of an exported function from an already loaded DLL. */
     @SuppressWarnings("unchecked")
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     static <T extends CFunctionPointer> T getFunctionPointer(CCharPointer dllName, CCharPointer functionName, boolean failOnError) {
         PointerBase functionPointer = LibLoaderAPI.GetProcAddress(getDLLHandle(dllName), functionName);
         if (functionPointer.isNull() && failOnError) {
@@ -224,7 +189,7 @@ public class WindowsUtils {
         return (T) functionPointer;
     }
 
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static HMODULE getDLLHandle(CCharPointer dllName) {
         HMODULE dllHandle = LibLoaderAPI.GetModuleHandleA(dllName);
         if (dllHandle.isNull()) {

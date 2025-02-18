@@ -40,12 +40,31 @@ import com.oracle.svm.core.util.VMError;
  * during image generation. They are initialized during startup of the VM, i.e., every VM condition
  * consumes resources and contributes to VM startup time.
  */
-public class VMCondition {
+public class VMCondition extends VMLockingPrimitive {
     protected final VMMutex mutex;
+
+    @Platforms(Platform.HOSTED_ONLY.class) //
+    private final String name;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public VMCondition(VMMutex mutex) {
+        this(mutex, null);
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public VMCondition(VMMutex mutex, String name) {
         this.mutex = mutex;
+        this.name = name;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public String getName() {
+        return name == null ? mutex.getName() : mutex.getName() + "_" + name;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public String getConditionName() {
+        return name;
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -65,7 +84,7 @@ public class VMCondition {
      * called from uninterruptible code that did an <b>explicit</b> to-native transition before, as
      * blocking while still in Java-mode could result in a deadlock.
      */
-    @Uninterruptible(reason = "Called from uninterruptible code.", callerMustBe = true)
+    @Uninterruptible(reason = "Should only be called if the thread did an explicit transition to native earlier.", callerMustBe = true)
     public void blockNoTransition() {
         throw VMError.shouldNotReachHere("VMCondition cannot be used during native image generation");
     }
@@ -81,7 +100,7 @@ public class VMCondition {
     /**
      * Like {@linkplain #blockNoTransition()} but with a timeout (see {@linkplain #block(long)}).
      */
-    @Uninterruptible(reason = "Called from uninterruptible code.", callerMustBe = true)
+    @Uninterruptible(reason = "Should only be called if the thread did an explicit transition to native earlier.", callerMustBe = true)
     public long blockNoTransition(@SuppressWarnings("unused") long nanoseconds) {
         throw VMError.shouldNotReachHere("VMCondition cannot be used during native image generation");
     }
@@ -90,7 +109,7 @@ public class VMCondition {
      * Like {@linkplain #blockNoTransition()}, but an unspecified lock owner is used. Only use this
      * method in places where {@linkplain CurrentIsolate#getCurrentThread()} can return null.
      */
-    @Uninterruptible(reason = "Called from uninterruptible code.", callerMustBe = true)
+    @Uninterruptible(reason = "Should only be called if the thread did an explicit transition to native earlier.", callerMustBe = true)
     public void blockNoTransitionUnspecifiedOwner() {
         throw VMError.shouldNotReachHere("VMCondition cannot be used during native image generation");
     }
@@ -98,6 +117,7 @@ public class VMCondition {
     /**
      * Wakes up a single thread that is waiting on this condition.
      */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public void signal() {
         throw VMError.shouldNotReachHere("VMCondition cannot be used during native image generation");
     }
@@ -105,6 +125,7 @@ public class VMCondition {
     /**
      * Wakes up all threads that are waiting on this condition.
      */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public void broadcast() {
         throw VMError.shouldNotReachHere("VMCondition cannot be used during native image generation");
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -43,6 +43,7 @@ package com.oracle.truffle.api.dsl.test;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.test.CodeFormatTestFactory.LineWrappingTestFactory;
 import com.oracle.truffle.api.dsl.test.TypeSystemTest.ValueNode;
@@ -50,6 +51,7 @@ import com.oracle.truffle.api.dsl.test.TypeSystemTest.ValueNode;
 /**
  * Tests the generated code compiles without warnings for unusual large guard names.
  */
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing"})
 public class CodeFormatTest {
 
     @Test
@@ -62,10 +64,12 @@ public class CodeFormatTest {
         LineWrappingTest() {
         }
 
+        @Idempotent
         protected static boolean guardWithaReeeeeeeeaaaaaaaaaaalllllllllyyyyyyyyLLLLLLLLLLLLLoooooooonnnnnnngggggggName1() {
             return true;
         }
 
+        @Idempotent
         protected static boolean guardWithaReeeeeeeeaaaaaaaaaaalllllllllyyyyyyyyLLLLLLLLLLLLLoooooooonnnnnnngggggggName2() {
             return true;
         }
@@ -75,7 +79,7 @@ public class CodeFormatTest {
                         "guardWithaReeeeeeeeaaaaaaaaaaalllllllllyyyyyyyyLLLLLLLLLLLLLoooooooonnnnnnngggggggName1()",
                         "guardWithaReeeeeeeeaaaaaaaaaaalllllllllyyyyyyyyLLLLLLLLLLLLLoooooooonnnnnnngggggggName2()",
                         "guardWithaReeeeeeeeaaaaaaaaaaalllllllllyyyyyyyyLLLLLLLLLLLLLoooooooonnnnnnngggggggName1()"})
-        public int execute() {
+        public int doDefault() {
             return 42;
         }
     }

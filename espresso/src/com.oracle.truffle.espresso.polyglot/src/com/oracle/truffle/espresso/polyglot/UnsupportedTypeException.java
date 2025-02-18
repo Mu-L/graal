@@ -38,8 +38,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 package com.oracle.truffle.espresso.polyglot;
+
+import java.io.IOException;
+import java.io.NotSerializableException;
+import java.io.ObjectOutputStream;
 
 /**
  * An exception thrown if an interop {@link Object} does not support the type of one ore more
@@ -47,10 +50,8 @@ package com.oracle.truffle.espresso.polyglot;
  *
  * @since 21.0
  */
+@SuppressWarnings("serial")
 public final class UnsupportedTypeException extends InteropException {
-
-    private static final long serialVersionUID = 1857745390734085182L;
-
     private final Object[] suppliedValues;
 
     private UnsupportedTypeException(String message, Object[] suppliedValues) {
@@ -112,4 +113,8 @@ public final class UnsupportedTypeException extends InteropException {
         return new UnsupportedTypeException(hint, suppliedValues, cause);
     }
 
+    @SuppressWarnings({"static-method", "unused"})
+    private void writeObject(ObjectOutputStream outputStream) throws IOException {
+        throw new NotSerializableException(UnsupportedTypeException.class.getSimpleName() + " serialization is not supported.");
+    }
 }

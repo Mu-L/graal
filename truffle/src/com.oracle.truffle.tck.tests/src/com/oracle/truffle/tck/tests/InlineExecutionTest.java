@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -110,14 +110,17 @@ public class InlineExecutionTest {
         }
         context.getContext().initialize(testRun.getID());
         context.setInlineSnippet(testRun.getID(), inlineSnippet, verifier);
+        Value result = null;
+        PolyglotException ex = null;
         try {
-            Value result = null;
             try {
                 result = testRun.getSnippet().getExecutableValue().execute(testRun.getActualParameters().toArray());
             } catch (IllegalArgumentException e) {
-                TestUtil.validateResult(testRun, context.getContext().asValue(e).as(PolyglotException.class));
+                ex = context.getContext().asValue(e).as(PolyglotException.class);
+                TestUtil.validateResult(testRun, ex);
                 success = true;
             } catch (PolyglotException e) {
+                ex = e;
                 TestUtil.validateResult(testRun, e);
                 success = true;
             }
@@ -132,9 +135,9 @@ public class InlineExecutionTest {
         } catch (PolyglotException | AssertionError e) {
             throw new AssertionError(
                             TestUtil.formatErrorMessage(
-                                            "Unexpected Exception: " + e.getMessage(),
+                                            "Unexpected Exception: " + e,
                                             testRun,
-                                            context),
+                                            context, result, ex),
                             e);
         } finally {
             context.setInlineSnippet(null, null, null);
@@ -142,7 +145,7 @@ public class InlineExecutionTest {
         }
     }
 
-    private class TestResultVerifier implements InlineVerifier.ResultVerifier {
+    private final class TestResultVerifier implements InlineVerifier.ResultVerifier {
 
         Exception exception;
 

@@ -77,12 +77,13 @@ public abstract class SizableInfo extends ElementInfo {
     private final PropertyInfo<Integer> sizeInfo;
     private final PropertyInfo<SignednessValue> signednessInfo;
 
+    @SuppressWarnings("this-escape")
     public SizableInfo(String name, ElementKind kind) {
         super(name);
         this.kind = kind;
-        this.sizeInfo = adoptChild(new PropertyInfo<Integer>("size"));
+        this.sizeInfo = adoptChild(new PropertyInfo<>("size"));
         if (kind == ElementKind.INTEGER) {
-            this.signednessInfo = adoptChild(new PropertyInfo<SignednessValue>("signedness"));
+            this.signednessInfo = adoptChild(new PropertyInfo<>("signedness"));
         } else {
             this.signednessInfo = null;
         }
@@ -92,6 +93,11 @@ public abstract class SizableInfo extends ElementInfo {
         return kind;
     }
 
+    public final int getSizeInBytes() {
+        return getSizeInfo().getProperty();
+    }
+
+    /** Size in bytes. */
     public final PropertyInfo<Integer> getSizeInfo() {
         return sizeInfo;
     }

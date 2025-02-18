@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,10 +25,9 @@
 package com.oracle.graal.pointsto.flow;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
-import org.graalvm.compiler.options.OptionValues;
 
 import com.oracle.graal.pointsto.PointsToAnalysis;
 import com.oracle.graal.pointsto.api.PointstoOptions;
@@ -39,6 +38,8 @@ import com.oracle.graal.pointsto.flow.context.bytecode.BytecodeSensitiveAnalysis
 import com.oracle.graal.pointsto.meta.PointsToAnalysisMethod;
 import com.oracle.graal.pointsto.typestate.TypeState;
 import com.oracle.graal.pointsto.util.AnalysisError;
+
+import jdk.graal.compiler.options.OptionValues;
 
 public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
 
@@ -71,6 +72,14 @@ public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
                     MethodFlowsGraphClone newFlows = new MethodFlowsGraphClone(method, flowsGraph, newContext);
                     newFlows.cloneOriginalFlows(bb);
                     newFlows.linkCloneFlows(bb);
+                    /*
+                     * If this method has opaque return, then it will not be linked to any internal
+                     * flows. Instead, it needs to be linked to its declared type's flow.
+                     */
+                    if (flowsGraph.method.hasOpaqueReturn()) {
+                        var newReturnFlow = newFlows.getReturnFlow();
+                        newReturnFlow.getDeclaredType().getTypeFlow(bb, true).addUse(bb, newReturnFlow);
+                    }
 
                     return newFlows;
                 });
@@ -81,7 +90,7 @@ public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
     }
 
     @Override
-    protected void initFlowsGraph(PointsToAnalysis bb) {
+    protected void initFlowsGraph(PointsToAnalysis bb, List<TypeFlow<?>> postInitFlows) {
         // nothing to do, cloning does all the initialization
     }
 
@@ -95,11 +104,6 @@ public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
         return clonedMethodFlows.values();
     }
 
-    public MethodFlowsGraph getFlows(AnalysisContext calleeContext) {
-        ensureFlowsGraphSealed();
-        return clonedMethodFlows.get(calleeContext);
-    }
-
     /**
      * Get a type state containing the union of states over all the clones of the original flow.
      *
@@ -111,7 +115,10 @@ public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
         if (originalTypeFlow == null) {
             return null;
         }
-
+        if (originalTypeFlow instanceof FieldTypeFlow || originalTypeFlow instanceof ArrayElementsTypeFlow) {
+            // field and array flows are not call site sensitive and thus not cloneable
+            return originalTypeFlow.getState();
+        }
         TypeState result = TypeState.forEmpty();
         for (MethodFlowsGraph methodFlows : clonedMethodFlows.values()) {
             TypeFlow<?> clonedTypeFlow = methodFlows.lookupCloneOf(bb, originalTypeFlow);
@@ -130,6 +137,10 @@ public class CallSiteSensitiveMethodTypeFlow extends MethodTypeFlow {
     /** Check if the type flow is saturated, i.e., any of its clones is saturated. */
     @Override
     public boolean isSaturated(PointsToAnalysis bb, TypeFlow<?> originalTypeFlow) {
+        if (originalTypeFlow instanceof FieldTypeFlow || originalTypeFlow instanceof ArrayElementsTypeFlow) {
+            // field and array flows are not call site sensitive and thus not cloneable
+            return originalTypeFlow.isSaturated();
+        }
         boolean saturated = false;
         for (MethodFlowsGraph methodFlows : clonedMethodFlows.values()) {
             TypeFlow<?> clonedTypeFlow = methodFlows.lookupCloneOf(bb, originalTypeFlow);

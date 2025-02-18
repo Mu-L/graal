@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -41,12 +41,15 @@
 
 package com.oracle.truffle.api.strings.test;
 
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 import org.junit.Assert;
 import org.junit.Test;
 
 import com.oracle.truffle.api.strings.TruffleString;
+import com.oracle.truffle.api.strings.TruffleStringBuilder;
+import com.oracle.truffle.api.strings.TruffleStringBuilderUTF16;
 import com.oracle.truffle.api.strings.TruffleStringIterator;
 
 public class TStringUTF16Tests extends TStringTestBase {
@@ -64,7 +67,7 @@ public class TStringUTF16Tests extends TStringTestBase {
         Assert.assertTrue(utf16.codeRangeEqualsUncached(TruffleString.CodeRange.BROKEN));
 
         Assert.assertEquals(4, utf16.codePointLengthUncached(TruffleString.Encoding.UTF_16));
-        if (utf16.isCompatibleTo(TruffleString.Encoding.UTF_16LE)) {
+        if (TruffleString.Encoding.UTF_16 == TruffleString.Encoding.UTF_16LE) {
             Assert.assertArrayEquals(new byte[]{91, 0, -1, -37, -1, -33, -128, -36, 93, 0}, utf16.copyToByteArrayUncached(TruffleString.Encoding.UTF_16LE));
         }
         Assert.assertEquals('[', utf16.codePointAtIndexUncached(0, TruffleString.Encoding.UTF_16));
@@ -131,5 +134,41 @@ public class TStringUTF16Tests extends TStringTestBase {
                         -112, -17, -73, -113, -17, -73, -81, -17, -73, -80, -17, -65, -66, -17, -65, -65};
         byte[] actualUTF8Bytes = utf8.copyToByteArrayUncached(TruffleString.Encoding.UTF_8);
         Assert.assertArrayEquals(Arrays.toString(actualUTF8Bytes), expectedUTF8Bytes, actualUTF8Bytes);
+    }
+
+    @Test(expected = OutOfMemoryError.class)
+    public void testStringBuilderAppendCodePoint() {
+        TruffleStringBuilderUTF16 sb = TruffleStringBuilder.createUTF16();
+        sb.appendCodePointUncached(Character.MAX_CODE_POINT, Integer.MAX_VALUE - 10, false);
+    }
+
+    @Test
+    public void testToJavaString() {
+        TruffleString a = TruffleString.fromCharArrayUTF16Uncached(new char[]{'a', 'b', 'c'});
+        Assert.assertEquals("abc", a.toJavaStringUncached());
+    }
+
+    private static TruffleString.Encoding getForeignEndian() {
+        return ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? TruffleString.Encoding.UTF_16BE : TruffleString.Encoding.UTF_16LE;
+    }
+
+    private byte[] getByteSwappedArray(String s) {
+        byte[] array = new byte[s.length() << 1];
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN) {
+                c = Character.reverseBytes(c);
+            }
+            array[i << 1] = (byte) (c >> 8);
+            array[(i << 1) + 1] = (byte) c;
+        }
+        return array;
+    }
+
+    @Test
+    public void testForeignEndian() {
+        TruffleString a = TruffleString.fromByteArrayUncached(getByteSwappedArray("a\udc00"), getForeignEndian());
+        Assert.assertEquals(2, a.codePointLengthUncached(getForeignEndian()));
+        Assert.assertEquals("a\udc00", a.toJavaStringUncached());
     }
 }

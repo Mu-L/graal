@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,11 +29,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.ProtectionDomain;
 
-import org.graalvm.compiler.nodes.extended.MembarNode;
 import org.graalvm.nativeimage.ImageSingletons;
-import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.impl.UnsafeMemorySupport;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.annotate.Alias;
@@ -43,11 +40,17 @@ import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.config.ConfigurationValues;
+import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.hub.PredefinedClassesSupport;
+import com.oracle.svm.core.memory.NativeMemory;
+import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.os.VirtualMemoryProvider;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.nodes.extended.MembarNode;
+import jdk.graal.compiler.word.Word;
 
 @TargetClass(className = "jdk.internal.misc.Unsafe")
 @SuppressWarnings({"static-method", "unused"})
@@ -55,17 +58,17 @@ final class Target_jdk_internal_misc_Unsafe_Core {
 
     @Substitute
     private long allocateMemory0(long bytes) {
-        return UnmanagedMemory.malloc(WordFactory.unsigned(bytes)).rawValue();
+        return NativeMemory.malloc(Word.unsigned(bytes), NmtCategory.Unsafe).rawValue();
     }
 
     @Substitute
     private long reallocateMemory0(long address, long bytes) {
-        return UnmanagedMemory.realloc(WordFactory.unsigned(address), WordFactory.unsigned(bytes)).rawValue();
+        return NativeMemory.realloc(Word.unsigned(address), Word.unsigned(bytes), NmtCategory.Unsafe).rawValue();
     }
 
     @Substitute
     private void freeMemory0(long address) {
-        UnmanagedMemory.free(WordFactory.unsigned(address));
+        NativeMemory.free(Word.unsigned(address));
     }
 
     @Substitute
@@ -95,8 +98,15 @@ final class Target_jdk_internal_misc_Unsafe_Core {
     }
 
     @Substitute
-    public int arrayBaseOffset(Class<?> clazz) {
+    @TargetElement(name = "arrayBaseOffset", onlyWith = JDK21OrEarlier.class)
+    public int arrayBaseOffsetJDK21(Class<?> clazz) {
         return (int) LayoutEncoding.getArrayBaseOffset(DynamicHub.fromClass(clazz).getLayoutEncoding()).rawValue();
+    }
+
+    @Substitute
+    @TargetElement(name = "arrayBaseOffset", onlyWith = JDKLatest.class)
+    public long arrayBaseOffset(Class<?> clazz) {
+        return LayoutEncoding.getArrayBaseOffset(DynamicHub.fromClass(clazz).getLayoutEncoding()).rawValue();
     }
 
     @Substitute
@@ -139,13 +149,6 @@ final class Target_jdk_internal_misc_Unsafe_Core {
         return PredefinedClassesSupport.loadClass(loader, name, b, off, len, protectionDomain);
     }
 
-    // JDK-8243287
-    @Substitute
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private Class<?> defineAnonymousClass(Class<?> hostClass, byte[] data, Object[] cpPatches) {
-        throw VMError.unsupportedFeature("Defining anonymous classes at runtime is not supported.");
-    }
-
     @Substitute
     private int getLoadAverage0(double[] loadavg, int nelems) {
         /* Adapted from `Unsafe_GetLoadAverage0` in `src/hotspot/share/prims/unsafe.cpp`. */
@@ -153,6 +156,12 @@ final class Target_jdk_internal_misc_Unsafe_Core {
             return ImageSingletons.lookup(LoadAverageSupport.class).getLoadAverage(loadavg, nelems);
         }
         return -1; /* The load average is unobtainable. */
+    }
+
+    @Substitute
+    public Object getUncompressedObject(long address) {
+        /* Adapted from `Unsafe_GetUncompressedObject` in `src/hotspot/share/prims/unsafe.cpp`. */
+        return ReferenceAccess.singleton().readObjectAt(Word.pointer(address), false);
     }
 
     /*
@@ -188,31 +197,14 @@ final class Target_jdk_internal_misc_Unsafe_Core {
     @Delete
     private native int arrayIndexScale0(Class<?> arrayClass);
 
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native int addressSize0();
-
     @Substitute
     @SuppressWarnings("unused")
     private Class<?> defineClass0(String name, byte[] b, int off, int len, ClassLoader loader, ProtectionDomain protectionDomain) {
         throw VMError.unsupportedFeature("Target_Unsafe_Core.defineClass0(String, byte[], int, int, ClassLoader, ProtectionDomain)");
     }
-
-    // JDK-8243287
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native Class<?> defineAnonymousClass0(Class<?> hostClass, byte[] data, Object[] cpPatches);
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native boolean unalignedAccess0();
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native boolean isBigEndian0();
 }
 
-@TargetClass(classNameProvider = Package_jdk_internal_access.class, className = "SharedSecrets")
+@TargetClass(jdk.internal.access.SharedSecrets.class)
 final class Target_jdk_internal_access_SharedSecrets {
     @Substitute
     private static Target_jdk_internal_access_JavaAWTAccess getJavaAWTAccess() {
@@ -224,15 +216,14 @@ final class Target_jdk_internal_access_SharedSecrets {
      * captures state like "is a tty". The only way to remove such state is by resetting the field.
      */
     @Alias @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.Reset) //
-    @TargetElement(onlyWith = JDK17OrLater.class) //
     private static Target_jdk_internal_access_JavaIOAccess javaIOAccess;
 }
 
-@TargetClass(className = "jdk.internal.access.JavaIOAccess", onlyWith = JDK17OrLater.class)
+@TargetClass(jdk.internal.access.JavaIOAccess.class)
 final class Target_jdk_internal_access_JavaIOAccess {
 }
 
-@TargetClass(classNameProvider = Package_jdk_internal_access.class, className = "JavaAWTAccess")
+@TargetClass(jdk.internal.access.JavaAWTAccess.class)
 final class Target_jdk_internal_access_JavaAWTAccess {
 }
 

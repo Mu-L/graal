@@ -29,7 +29,6 @@ import java.util.Collections;
 import java.util.List;
 
 import com.oracle.graal.pointsto.PointsToAnalysis;
-import com.oracle.graal.pointsto.api.PointstoOptions;
 import com.oracle.graal.pointsto.flow.ArrayElementsTypeFlow;
 import com.oracle.graal.pointsto.flow.FieldFilterTypeFlow;
 import com.oracle.graal.pointsto.flow.FieldTypeFlow;
@@ -52,13 +51,13 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
 
     public ContextSensitiveAnalysisObject(AnalysisUniverse universe, AnalysisType type, AnalysisObjectKind kind) {
         super(universe, type, kind);
-        assert PointstoOptions.AllocationSiteSensitiveHeap.getValue(universe.hostVM().options());
+        assert universe.analysisPolicy().allocationSiteSensitiveHeap() : "policy mismatch";
     }
 
     /** The object has been in contact with an context insensitive object in an union operation. */
     @Override
     public void noteMerge(PointsToAnalysis bb) {
-        assert bb.analysisPolicy().isMergingEnabled();
+        assert bb.analysisPolicy().isMergingEnabled() : "policy mismatch";
 
         if (!merged) {
             super.noteMerge(bb);
@@ -74,7 +73,7 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
     }
 
     private void mergeArrayElementsFlow(PointsToAnalysis bb) {
-        assert this.isObjectArray();
+        assert this.isObjectArray() : this;
 
         ArrayElementsTypeFlow contextInsensitiveWriteArrayElementsFlow = type.getContextInsensitiveAnalysisObject().getArrayElementsFlow(bb, true);
         contextInsensitiveWriteArrayElementsFlow.addUse(bb, this.arrayElementsTypeStore.writeFlow());
@@ -120,8 +119,8 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
 
     @Override
     public ArrayElementsTypeFlow getArrayElementsFlow(PointsToAnalysis bb, boolean isStore) {
-        assert type.isArray();
-        assert PointstoOptions.AllocationSiteSensitiveHeap.getValue(bb.getOptions());
+        assert type.isArray() : type;
+        assert bb.analysisPolicy().allocationSiteSensitiveHeap() : "policy mismatch";
 
         return isStore ? arrayElementsTypeStore.writeFlow() : arrayElementsTypeStore.readFlow();
     }
@@ -129,7 +128,7 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
     /** Returns the filter field flow corresponding to an unsafe accessed field. */
     @Override
     public FieldFilterTypeFlow getInstanceFieldFilterFlow(PointsToAnalysis bb, TypeFlow<?> objectFlow, BytecodePosition context, AnalysisField field) {
-        assert !Modifier.isStatic(field.getModifiers()) && field.isUnsafeAccessed() && PointstoOptions.AllocationSiteSensitiveHeap.getValue(bb.getOptions());
+        assert !Modifier.isStatic(field.getModifiers()) && field.isUnsafeAccessed() && bb.analysisPolicy().allocationSiteSensitiveHeap() : field;
 
         FieldTypeStore fieldTypeStore = getInstanceFieldTypeStore(bb, objectFlow, context, field);
 
@@ -146,7 +145,7 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
 
     @Override
     public FieldTypeFlow getInstanceFieldFlow(PointsToAnalysis bb, TypeFlow<?> objectFlow, BytecodePosition context, AnalysisField field, boolean isStore) {
-        assert !Modifier.isStatic(field.getModifiers()) && PointstoOptions.AllocationSiteSensitiveHeap.getValue(bb.getOptions());
+        assert !Modifier.isStatic(field.getModifiers()) && bb.analysisPolicy().allocationSiteSensitiveHeap() : field;
 
         FieldTypeStore fieldTypeStore = getInstanceFieldTypeStore(bb, objectFlow, context, field);
 
@@ -164,9 +163,9 @@ public class ContextSensitiveAnalysisObject extends AnalysisObject {
     @Override
     protected void linkFieldFlows(PointsToAnalysis bb, AnalysisField field, FieldTypeStore fieldStore) {
         // link the initial instance field flow to the field write flow
-        field.getInitialInstanceFieldFlow().addUse(bb, fieldStore.writeFlow());
-        // link the field read flow to the instance field flow
-        fieldStore.readFlow().addUse(bb, field.getInstanceFieldFlow());
+        field.getInitialFlow().addUse(bb, fieldStore.writeFlow());
+        // link the field read flow to the sink flow that accumulates all field types
+        fieldStore.readFlow().addUse(bb, field.getSinkFlow());
         // Also link the field read flow the field flow on the context insensitive object.
         // This ensures that the all values flowing into a context-sensitive field flow
         // are also visible from the context-insensitive field flow.

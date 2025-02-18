@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -47,8 +47,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
-
-import org.graalvm.polyglot.Source;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
@@ -80,6 +79,8 @@ import com.oracle.truffle.polyglot.PolyglotContextConfig.PreinitConfig;
  */
 final class PolyglotSharingLayer {
 
+    private static final AtomicLong LAYER_COUNTER = new AtomicLong();
+
     final PolyglotEngineImpl engine;
 
     /**
@@ -95,12 +96,14 @@ final class PolyglotSharingLayer {
 
     static final class Shared {
 
-        final PolyglotSourceCache sourceCache = new PolyglotSourceCache();
+        final long id;
+        final PolyglotSourceCache sourceCache;
         // indexed by engine index, not static index
         @CompilationFinal(dimensions = 1) private final PolyglotLanguageInstance[] instances;
         @CompilationFinal ContextPolicy contextPolicy;
         Map<PolyglotLanguage, OptionValuesImpl> previousLanguageOptions;
         final WeakAssumedValue<PolyglotContextImpl> singleContextValue = new WeakAssumedValue<>("single context");
+        private volatile Object[] fastThreadLocalsCache;
         /*
          * Configuration that is common to all contexts created from this layer.
          */
@@ -110,9 +113,11 @@ final class PolyglotSharingLayer {
         int claimedCount;
 
         private Shared(PolyglotEngineImpl engine, ContextPolicy contextPolicy, Map<PolyglotLanguage, OptionValuesImpl> previousLanguageOptions) {
+            this.sourceCache = new PolyglotSourceCache(engine.getDeadSourcesQueue(), TracingSourceCacheListener.createOrNull(engine));
             this.contextPolicy = contextPolicy;
             this.instances = new PolyglotLanguageInstance[engine.languageCount];
             this.previousLanguageOptions = previousLanguageOptions;
+            this.id = LAYER_COUNTER.incrementAndGet();
         }
 
         void updatePreinitConfig(PolyglotContextConfig config) {
@@ -126,6 +131,18 @@ final class PolyglotSharingLayer {
             this.preinitConfig = newConfig;
         }
 
+        Object[] getFastThreadLocals(PolyglotEngineImpl engine) {
+            Object[] data = fastThreadLocalsCache;
+            if (data == null) {
+                data = PolyglotFastThreadLocals.createFastThreadLocals(engine, instances);
+                fastThreadLocalsCache = data;
+            }
+            return data;
+        }
+
+        void resetFastThreadLocalsCache() {
+            fastThreadLocalsCache = null;
+        }
     }
 
     PolyglotSharingLayer(PolyglotEngineImpl engine) {
@@ -323,6 +340,7 @@ final class PolyglotSharingLayer {
         assert isClaimed();
 
         shared.claimedCount--;
+        shared.sourceCache.cleanupStaleEntries();
 
         if (engine.getEngineOptionValues().get(PolyglotEngineOptions.TraceCodeSharing)) {
             traceFreeLayer(context);
@@ -401,6 +419,7 @@ final class PolyglotSharingLayer {
         if (instance == null) {
             instance = language.createInstance(this);
             s.instances[language.engineIndex] = instance;
+            s.resetFastThreadLocalsCache();
 
             if (!isSingleContext()) {
                 EngineAccessor.LANGUAGE.initializeMultiContext(instance.spi);
@@ -465,6 +484,14 @@ final class PolyglotSharingLayer {
             }
             return instance.singleLanguageContext.getConstant();
         }
+    }
+
+    Object[] getFastThreadLocals() {
+        Shared s = this.shared;
+        if (s == null) {
+            return null;
+        }
+        return s.getFastThreadLocals(engine);
     }
 
     public ContextPolicy getContextPolicy() {
@@ -589,7 +616,7 @@ final class PolyglotSharingLayer {
         return newOptions;
     }
 
-    public void listCachedSources(Set<Source> sources) {
+    public void listCachedSources(Set<Object> sources) {
         Shared s = this.shared;
         if (s != null) {
             s.sourceCache.listCachedSources(engine.getImpl(), sources);

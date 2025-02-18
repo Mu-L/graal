@@ -24,12 +24,14 @@
  */
 package com.oracle.svm.core.graal.phases;
 
-import org.graalvm.compiler.nodes.ReturnNode;
-import org.graalvm.compiler.nodes.SafepointNode;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.phases.common.LoopSafepointInsertionPhase;
-import org.graalvm.compiler.phases.tiers.MidTierContext;
+import jdk.graal.compiler.nodes.ReturnNode;
+import jdk.graal.compiler.nodes.SafepointNode;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.phases.common.LoopSafepointInsertionPhase;
+import jdk.graal.compiler.phases.tiers.MidTierContext;
 import org.graalvm.nativeimage.AnnotationAccess;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunction;
 import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 
@@ -37,12 +39,15 @@ import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.meta.SharedMethod;
 
+import jdk.vm.ci.meta.ResolvedJavaMethod;
+
 /**
  * Adds safepoints to loops and at method ends.
  */
 public class SubstrateSafepointInsertionPhase extends LoopSafepointInsertionPhase {
 
-    public static boolean needSafepointCheck(SharedMethod method) {
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public static boolean needSafepointCheck(ResolvedJavaMethod method) {
         if (Uninterruptible.Utils.isUninterruptible(method)) {
             /* Uninterruptible methods must not have a safepoint inserted. */
             return false;
@@ -59,13 +64,19 @@ public class SubstrateSafepointInsertionPhase extends LoopSafepointInsertionPhas
         return true;
     }
 
-    @Override
-    protected void run(StructuredGraph graph, MidTierContext context) {
+    /**
+     * Determines if this (potentially special) method needs safepoint checks.
+     */
+    public static boolean needsSafepointCheck(StructuredGraph graph) {
         SharedMethod method = (SharedMethod) graph.method();
-        if (!needSafepointCheck(method)) {
-            return;
-        }
+        return method.needSafepointCheck();
+    }
 
+    /**
+     * Insert SVM specific safepoints at the method end if necessary.
+     */
+    public static void insertMethodEndSafepoints(StructuredGraph graph, MidTierContext context) {
+        SharedMethod method = (SharedMethod) graph.method();
         if (!((SubstrateBackend) context.getTargetProvider()).safepointCheckedInEpilogue(method)) {
             /* Insert method-end safepoints. */
             for (ReturnNode returnNode : graph.getNodes(ReturnNode.TYPE)) {
@@ -73,6 +84,14 @@ public class SubstrateSafepointInsertionPhase extends LoopSafepointInsertionPhas
                 graph.addBeforeFixed(returnNode, safepointNode);
             }
         }
+    }
+
+    @Override
+    protected void run(StructuredGraph graph, MidTierContext context) {
+        if (!needsSafepointCheck(graph)) {
+            return;
+        }
+        insertMethodEndSafepoints(graph, context);
 
         /* Insert loop safepoints. */
         super.run(graph, context);

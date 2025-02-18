@@ -38,8 +38,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 package com.oracle.truffle.espresso.polyglot;
+
+import java.io.IOException;
+import java.io.NotSerializableException;
+import java.io.ObjectOutputStream;
 
 /**
  * An exception thrown if an object does not contain a hash entry with such a key. Interop
@@ -49,9 +52,8 @@ package com.oracle.truffle.espresso.polyglot;
  * @see Interop
  * @since 21.1.0
  */
+@SuppressWarnings("serial")
 public final class UnknownKeyException extends InteropException {
-
-    private static final long serialVersionUID = 1857745390734085182L;
 
     private final Object unknownKey;
 
@@ -116,4 +118,8 @@ public final class UnknownKeyException extends InteropException {
         return new UnknownKeyException(unknownKey, cause);
     }
 
+    @SuppressWarnings({"static-method", "unused"})
+    private void writeObject(ObjectOutputStream outputStream) throws IOException {
+        throw new NotSerializableException(UnknownKeyException.class.getSimpleName() + " serialization is not supported.");
+    }
 }

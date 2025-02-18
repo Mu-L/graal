@@ -35,17 +35,18 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.graalvm.compiler.options.Option;
+import jdk.graal.compiler.options.Option;
 
 import com.oracle.graal.pointsto.reports.ReportUtils;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.LocatableMultiOptionValue;
+import com.oracle.svm.core.option.AccumulatingLocatableMultiOptionValue;
 import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
+import com.oracle.svm.util.StringUtil;
 
 @AutomaticallyRegisteredFeature
 public class HostedHeapDumpFeature implements InternalFeature {
@@ -53,7 +54,7 @@ public class HostedHeapDumpFeature implements InternalFeature {
     static class Options {
         @Option(help = "Dump the heap at a specific time during image building." +
                         "The option accepts a list of comma separated phases, any of: during-analysis, after-analysis, before-compilation.")//
-        public static final HostedOptionKey<LocatableMultiOptionValue.Strings> DumpHeap = new HostedOptionKey<>(LocatableMultiOptionValue.Strings.commaSeparated());
+        public static final HostedOptionKey<AccumulatingLocatableMultiOptionValue.Strings> DumpHeap = new HostedOptionKey<>(AccumulatingLocatableMultiOptionValue.Strings.buildWithCommaDelimiter());
     }
 
     enum Phases {
@@ -84,8 +85,8 @@ public class HostedHeapDumpFeature implements InternalFeature {
             if (validPhases.contains(value)) {
                 phases.add(value);
             } else {
-                throw UserError.abort("Invalid value %s given for %s. Valid values are: %s.", value,
-                                SubstrateOptionsParser.commandArgument(Options.DumpHeap, ""), String.join(", ", validPhases));
+                throw UserError.abort("Invalid value %s given for %s. Valid values are %s.",
+                                value, SubstrateOptionsParser.commandArgument(Options.DumpHeap, ""), StringUtil.joinSingleQuoted(validPhases));
             }
         }
         return !phases.isEmpty();

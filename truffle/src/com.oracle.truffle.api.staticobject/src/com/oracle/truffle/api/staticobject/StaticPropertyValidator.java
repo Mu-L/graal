@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -43,6 +43,15 @@ package com.oracle.truffle.api.staticobject;
 class StaticPropertyValidator {
     @SuppressWarnings("unused")
     static void validate(Class<?> type) {
-        throw new InternalError("JDK specific overlay for " + StaticPropertyValidator.class.getName() + " missing");
+        String msg = null;
+        if (type.isAnonymousClass()) {
+            msg = "Cannot use an anonymous class as type of a static property";
+        } else if (type.isHidden()) {
+            msg = "Cannot use a hidden class as type of a static property";
+        }
+
+        if (msg != null) {
+            throw new IllegalArgumentException(msg);
+        }
     }
 }

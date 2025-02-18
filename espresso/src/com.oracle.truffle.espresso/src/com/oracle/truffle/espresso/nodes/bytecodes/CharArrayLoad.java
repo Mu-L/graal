@@ -33,7 +33,7 @@ import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * CALOAD bytecode with interop extensions.
@@ -57,7 +57,7 @@ public abstract class CharArrayLoad extends EspressoNode {
     public abstract char execute(StaticObject receiver, int index);
 
     @Specialization
-    char executeWithNullCheck(StaticObject array, int index,
+    char doWithNullCheck(StaticObject array, int index,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck charArrayLoad) {
         return charArrayLoad.execute(nullCheck.execute(array), index);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -71,10 +71,9 @@ public class VerifyCompilationFinalProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         if (roundEnv.processingOver()) {
-            return false;
+            return true;
         }
-        ProcessorContext context = ProcessorContext.enter(processingEnv);
-        try {
+        try (ProcessorContext context = ProcessorContext.enter(processingEnv)) {
             TruffleTypes types = context.getTypes();
             for (Element element : roundEnv.getElementsAnnotatedWith(ElementUtils.castTypeElement(types.CompilerDirectives_CompilationFinal))) {
                 if (!element.getKind().isField()) {
@@ -86,9 +85,7 @@ public class VerifyCompilationFinalProcessor extends AbstractProcessor {
                 }
                 assertNoErrorExpected(element);
             }
-            return false;
-        } finally {
-            ProcessorContext.leave();
+            return true;
         }
     }
 
@@ -127,18 +124,18 @@ public class VerifyCompilationFinalProcessor extends AbstractProcessor {
     }
 
     void assertNoErrorExpected(final Element originatingElm) {
-        ExpectError.assertNoErrorExpected(processingEnv, originatingElm);
+        ExpectError.assertNoErrorExpected(originatingElm);
     }
 
     private void emitError(final Element originatingElm, final String message) {
-        if (ExpectError.isExpectedError(processingEnv, originatingElm, message)) {
+        if (ExpectError.isExpectedError(originatingElm, message)) {
             return;
         }
         processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, message, originatingElm);
     }
 
     private void emitWarning(final Element originatingElm, final String message) {
-        if (ExpectError.isExpectedError(processingEnv, originatingElm, message)) {
+        if (ExpectError.isExpectedError(originatingElm, message)) {
             return;
         }
         processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING, message, originatingElm);

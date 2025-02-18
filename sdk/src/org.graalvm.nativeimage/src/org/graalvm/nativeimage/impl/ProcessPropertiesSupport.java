@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -44,6 +44,7 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import org.graalvm.nativeimage.c.function.CEntryPointLiteral;
+import org.graalvm.word.PointerBase;
 
 public interface ProcessPropertiesSupport {
     String getExecutableName();
@@ -54,8 +55,20 @@ public interface ProcessPropertiesSupport {
 
     String getObjectFile(String symbol);
 
-    String getObjectFile(CEntryPointLiteral<?> symbol);
+    default String getObjectFile(CEntryPointLiteral<?> symbol) {
+        return getObjectFile(symbol.getFunctionPointer());
+    }
 
+    @SuppressWarnings("unused")
+    default String getObjectFile(PointerBase symbolAddress) {
+        return null;
+    }
+
+    /**
+     * @deprecated in 25.0 without replacement. This method is inherently unsafe because
+     *             {@code setlocale(...)} is not thread-safe on the OS level.
+     */
+    @Deprecated
     String setLocale(String category, String locale);
 
     boolean destroy(long processID);

@@ -56,7 +56,7 @@ public class HostedMetaAccess extends UniverseMetaAccess {
 
     @Override
     public HostedType lookupJavaType(JavaConstant constant) {
-        return (HostedType) super.lookupJavaType(constant);
+        return getUniverse().lookup(getWrapped().lookupJavaType(constant));
     }
 
     public Optional<HostedType> optionalLookupJavaType(Class<?> clazz) {

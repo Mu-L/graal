@@ -28,22 +28,21 @@ import java.io.PrintWriter;
 import java.util.List;
 import java.util.function.Function;
 
-import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.debug.DebugHandlersFactory;
-import org.graalvm.compiler.nodes.spi.Replacements;
-import org.graalvm.compiler.options.OptionValues;
-
 import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatures;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
-import com.oracle.graal.pointsto.meta.AnalysisType.UsageKind;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.meta.HostedProviders;
 import com.oracle.graal.pointsto.util.CompletionExecutor;
+import com.oracle.svm.common.meta.MultiMethod;
 
+import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.debug.DebugHandlersFactory;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.code.BytecodePosition;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 
@@ -57,7 +56,7 @@ import jdk.vm.ci.meta.ConstantReflectionProvider;
  *
  * @see PointsToAnalysis
  */
-public interface BigBang extends ReachabilityAnalysis, HeapScanning {
+public interface BigBang extends ReachabilityAnalysis {
     HostVM getHostVM();
 
     UnsupportedFeatures getUnsupportedFeatures();
@@ -69,7 +68,11 @@ public interface BigBang extends ReachabilityAnalysis, HeapScanning {
 
     OptionValues getOptions();
 
-    HostedProviders getProviders();
+    default HostedProviders getProviders(AnalysisMethod method) {
+        return getProviders(method.getMultiMethodKey());
+    }
+
+    HostedProviders getProviders(MultiMethod.MultiMethodKey key);
 
     List<DebugHandlersFactory> getDebugHandlerFactories();
 
@@ -82,17 +85,13 @@ public interface BigBang extends ReachabilityAnalysis, HeapScanning {
 
     SnippetReflectionProvider getSnippetReflectionProvider();
 
+    WordTypes getWordTypes();
+
     DebugContext getDebug();
-
-    Runnable getHeartbeatCallback();
-
-    boolean extendedAsserts();
 
     void runAnalysis(DebugContext debug, Function<AnalysisUniverse, Boolean> duringAnalysisAction) throws InterruptedException;
 
-    boolean strengthenGraalGraphs();
-
-    Replacements getReplacements();
+    boolean trackPrimitiveValues();
 
     /** You can blacklist certain callees here. */
     @SuppressWarnings("unused")
@@ -109,11 +108,15 @@ public interface BigBang extends ReachabilityAnalysis, HeapScanning {
     }
 
     @SuppressWarnings("unused")
-    default void onTypeInstantiated(AnalysisType type, UsageKind usageKind) {
+    default void injectFieldTypes(AnalysisField aField, List<AnalysisType> customTypes, boolean canBeNull) {
     }
 
     @SuppressWarnings("unused")
-    default void onTypeInitialized(AnalysisType type) {
+    default void onTypeInstantiated(AnalysisType type) {
+    }
+
+    @SuppressWarnings("unused")
+    default void onTypeReachable(AnalysisType type) {
     }
 
     void postTask(CompletionExecutor.DebugContextRunnable task);
@@ -127,6 +130,21 @@ public interface BigBang extends ReachabilityAnalysis, HeapScanning {
      * universe builder, which can be too late for some tasks.
      */
     default void afterAnalysis() {
+
+    }
+
+    @SuppressWarnings("unused")
+    default AnalysisMethod fallbackResolveConcreteMethod(AnalysisType resolvingType, AnalysisMethod method) {
+        return null;
+    }
+
+    @SuppressWarnings("unused")
+    default void registerTypeForBaseImage(Class<?> cls) {
+
+    }
+
+    @SuppressWarnings("unused")
+    default void registerMethodForBaseImage(AnalysisMethod method) {
 
     }
 }

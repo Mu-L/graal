@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -51,10 +51,13 @@ import static org.junit.Assert.assertTrue;
 import java.io.File;
 import java.net.URI;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -75,6 +78,7 @@ import com.oracle.truffle.api.instrumentation.test.InstrumentationTestLanguage;
 import com.oracle.truffle.api.source.SourceSection;
 import com.oracle.truffle.api.test.polyglot.ProxyLanguage;
 import com.oracle.truffle.tck.DebuggerTester;
+import com.oracle.truffle.tck.tests.TruffleTestAssumptions;
 
 public class BreakpointTest extends AbstractDebugTest {
 
@@ -973,6 +977,94 @@ public class BreakpointTest extends AbstractDebugTest {
 
     }
 
+    /**
+     * Runs repeated evaluations of the provided Source in a separate thread, until join() is
+     * called.
+     */
+    private static final class EvalLoop {
+
+        private final AtomicBoolean evaluating = new AtomicBoolean(true);
+        private final Thread evalLoop;
+        private final AtomicReference<Throwable> evalThrowable = new AtomicReference<>();
+
+        EvalLoop(DebuggerTester tester, Source source) {
+            evalLoop = new Thread(() -> {
+                while (evaluating.get()) {
+                    tester.startEval(source);
+                    boolean suspended;
+                    do {
+                        suspended = false;
+                        try {
+                            tester.expectDone();
+                        } catch (AssertionError ae) {
+                            if (ae.getCause() != null && ae.getCause().getMessage().startsWith("Expected done but got event Suspended at")) {
+                                // We've hit the breakpoint. We'll resume automatically.
+                                suspended = true;
+                            } else {
+                                throw ae;
+                            }
+                        }
+                    } while (suspended);
+                }
+            });
+            evalLoop.setUncaughtExceptionHandler((thread, thrwbl) -> evalThrowable.set(thrwbl));
+            evalLoop.start();
+        }
+
+        void join() throws InterruptedException, ExecutionException {
+            evaluating.set(false);
+            evalLoop.join();
+            if (evalThrowable.get() != null) {
+                throw new ExecutionException(evalThrowable.get());
+            }
+        }
+    }
+
+    @Test
+    public void testBreakpointInstallDuringDispose() throws InterruptedException, ExecutionException {
+        final Source source = testSource("ROOT(\n" +
+                        "  LOOP(1000,\n" +
+                        "    STATEMENT)\n" + // break here
+                        ")\n");
+        try (DebuggerSession session = startSession()) {
+            EvalLoop evalLoop = new EvalLoop(tester, source);
+            ExecutorService exec = Executors.newSingleThreadExecutor();
+            for (int repeatCount = 0; repeatCount <= 1000; repeatCount++) {
+                Breakpoint breakpoint = Breakpoint.newBuilder(getSourceImpl(source)).lineIs(3).build();
+                breakpoint.setEnabled(false);
+                session.install(breakpoint);
+                Future<?> installation = exec.submit(() -> {
+                    breakpoint.setEnabled(true);
+                });
+                Thread.sleep(0, repeatCount % 100);
+                breakpoint.dispose();
+                installation.get();
+            }
+            exec.shutdown();
+            // We want the test infrastructure to interrupt this to see the full thread dump.
+            exec.awaitTermination(1, TimeUnit.DAYS);
+            evalLoop.join();
+        }
+    }
+
+    @Test
+    public void testBreakpointParallelInstallDispose() throws InterruptedException, ExecutionException {
+        // Install and dispose of breakpoints parallel with the execution.
+        final Source source = testSource("ROOT(\n" +
+                        "  LOOP(1000,\n" +
+                        "    STATEMENT)\n" + // break here
+                        ")\n");
+        try (DebuggerSession session = startSession()) {
+            EvalLoop evalLoop = new EvalLoop(tester, source);
+            for (int repeatCount = 0; repeatCount <= 100; repeatCount++) {
+                Breakpoint breakpoint = Breakpoint.newBuilder(getSourceImpl(source)).lineIs(3).build();
+                session.install(breakpoint);
+                breakpoint.dispose();
+            }
+            evalLoop.join();
+        }
+    }
+
     @Test
     public void testResolveListener() {
         final Source source = testSource("ROOT(\n" +
@@ -1562,7 +1654,8 @@ public class BreakpointTest extends AbstractDebugTest {
                         "STATEMENT)))");
 
         final int numChecks = 1000;
-        try (Context context = Context.create()) {
+        Context.Builder builder = Context.newBuilder();
+        try (Context context = (TruffleTestAssumptions.isOptimizingRuntime() ? builder.option("engine.MaximumCompilations", "-1") : builder).build()) {
             Debugger debugger = context.getEngine().getInstruments().get("debugger").lookup(Debugger.class);
             try (DebuggerSession session = debugger.startSession(event -> {
             })) {

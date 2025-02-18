@@ -20,7 +20,6 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.impl;
 
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_ABSTRACT;
@@ -35,16 +34,16 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.espresso.classfile.ConstantPool;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Name;
-import com.oracle.truffle.espresso.descriptors.Symbol.Signature;
-import com.oracle.truffle.espresso.descriptors.Types;
+import com.oracle.truffle.espresso.classfile.JavaKind;
+import com.oracle.truffle.espresso.classfile.descriptors.Name;
+import com.oracle.truffle.espresso.classfile.descriptors.Signature;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.TypeSymbols;
 import com.oracle.truffle.espresso.impl.ModuleTable.ModuleEntry;
 import com.oracle.truffle.espresso.impl.PackageTable.PackageEntry;
 import com.oracle.truffle.espresso.jdwp.api.MethodRef;
 import com.oracle.truffle.espresso.meta.EspressoError;
-import com.oracle.truffle.espresso.meta.JavaKind;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.substitutions.JavaType;
 
 public final class ArrayKlass extends Klass {
@@ -65,7 +64,7 @@ public final class ArrayKlass extends Klass {
         EspressoError.guarantee(componentType.getJavaKind() != JavaKind.Void, "Invalid void[] class.");
         this.componentType = componentType;
         this.elementalType = componentType.getElementalType();
-        this.dimension = Types.getArrayDimensions(getType());
+        this.dimension = TypeSymbols.getArrayDimensions(getType());
         this.redefineAssumption = componentType.getRedefineAssumption();
         assert getMeta().java_lang_Class != null;
         initializeEspressoClass();
@@ -137,9 +136,9 @@ public final class ArrayKlass extends Klass {
     }
 
     @Override
-    public Method lookupMethod(Symbol<Name> methodName, Symbol<Signature> signature, Klass accessingKlass, LookupMode mode) {
+    public Method lookupMethod(Symbol<Name> methodName, Symbol<Signature> signature, LookupMode mode) {
         KLASS_LOOKUP_METHOD_COUNT.inc();
-        return getSuperKlass().lookupMethod(methodName, signature, accessingKlass, mode);
+        return getSuperKlass().lookupMethod(methodName, signature, mode);
     }
 
     @Override
@@ -172,7 +171,7 @@ public final class ArrayKlass extends Klass {
             if (klass.isPrimitive() || other1.isPrimitive()) {
                 // Reference equality is enough within the same context.
                 assert klass.getContext() == other1.getContext();
-                return klass == other1;
+                return false;
             }
             if (klass.isInterface()) {
                 return klass.checkInterfaceSubclassing(other1);

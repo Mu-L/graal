@@ -25,34 +25,42 @@
 package com.oracle.svm.hosted.analysis;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.ObjectScanner.OtherReason;
+import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.graal.pointsto.meta.BaseLayerType;
+import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.classinitialization.ClassInitializationInfo;
 import com.oracle.svm.core.hub.DynamicHub;
+import com.oracle.svm.core.hub.DynamicHubCompanion;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.BootLoaderSupport;
+import com.oracle.svm.hosted.ClassLoaderFeature;
 import com.oracle.svm.hosted.ExceptionSynthesizer;
 import com.oracle.svm.hosted.SVMHost;
+import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
+import com.oracle.svm.hosted.classinitialization.SimulateClassInitializerSupport;
+import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
+import com.oracle.svm.hosted.jdk.HostedClassLoaderPackageManagement;
 import com.oracle.svm.util.ReflectionUtil;
 
+import jdk.graal.compiler.debug.Assertions;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaKind;
+import jdk.vm.ci.meta.ResolvedJavaField;
 
 public class DynamicHubInitializer {
 
@@ -63,10 +71,10 @@ public class DynamicHubInitializer {
 
     private final Map<InterfacesEncodingKey, DynamicHub[]> interfacesEncodings;
 
-    private final Field dynamicHubClassInitializationInfoField;
-    private final Field dynamicHubArrayHubField;
-    private final Field dynamicHubInterfacesEncodingField;
-    private final Field dynamicHubAnnotationsEnumConstantsReferenceField;
+    private final Field hubCompanionArrayHubField;
+    private final Field hubCompanionClassInitializationInfo;
+    private final Field hubCompanionInterfacesEncoding;
+    private final Field hubCompanionAnnotationsEnumConstantsReference;
 
     public DynamicHubInitializer(BigBang bb) {
         this.bb = bb;
@@ -76,109 +84,167 @@ public class DynamicHubInitializer {
 
         this.interfacesEncodings = new ConcurrentHashMap<>();
 
-        dynamicHubClassInitializationInfoField = ReflectionUtil.lookupField(DynamicHub.class, "classInitializationInfo");
-        dynamicHubArrayHubField = ReflectionUtil.lookupField(DynamicHub.class, "arrayHub");
-        dynamicHubInterfacesEncodingField = ReflectionUtil.lookupField(DynamicHub.class, "interfacesEncoding");
-        dynamicHubAnnotationsEnumConstantsReferenceField = ReflectionUtil.lookupField(DynamicHub.class, "enumConstantsReference");
+        hubCompanionArrayHubField = ReflectionUtil.lookupField(DynamicHubCompanion.class, "arrayHub");
+        hubCompanionClassInitializationInfo = ReflectionUtil.lookupField(DynamicHubCompanion.class, "classInitializationInfo");
+        hubCompanionInterfacesEncoding = ReflectionUtil.lookupField(DynamicHubCompanion.class, "interfacesEncoding");
+        hubCompanionAnnotationsEnumConstantsReference = ReflectionUtil.lookupField(DynamicHubCompanion.class, "enumConstantsReference");
     }
 
     public void initializeMetaData(ImageHeapScanner heapScanner, AnalysisType type) {
         assert type.isReachable() : "Type " + type.toJavaName(true) + " is not marked as reachable.";
-        if (BuildPhaseProvider.isAnalysisFinished()) {
-            throw VMError.shouldNotReachHere("Initializing type metadata after analysis: " + type);
-        }
+
+        AnalysisError.guarantee(!BuildPhaseProvider.isAnalysisFinished(), "Initializing type metadata after analysis for %s.", type.toJavaName(true));
 
         Class<?> javaClass = type.getJavaClass();
-        heapScanner.rescanObject(javaClass.getPackage());
-
         DynamicHub hub = hostVM.dynamicHub(type);
+
+        /*
+         * Since the javaClass is java.lang.Object for BaseLayerTypes, the java.lang package would
+         * be registered in the wrong class loader.
+         */
+        if (!(type.getWrapped() instanceof BaseLayerType)) {
+            registerPackage(heapScanner, javaClass, hub);
+        }
+
+        boolean rescan = shouldRescanHub(heapScanner, hub);
+
         /*
          * Start by rescanning the hub itself. This ensures the correct scan reason in case this is
          * the first time we see this hub.
          */
-        heapScanner.rescanObject(hub, OtherReason.HUB);
-        if (hub.getClassInitializationInfo() == null) {
-            buildClassInitializationInfo(heapScanner, type, hub);
+        if (rescan) {
+            heapScanner.rescanObject(hub, OtherReason.HUB);
         }
-        if (hub.getSignature() == null) {
-            fillSignature(type, hub);
-        }
+
+        buildClassInitializationInfo(heapScanner, type, hub, rescan);
 
         if (type.getJavaKind() == JavaKind.Object) {
             if (type.isArray()) {
+                AnalysisError.guarantee(hub.getComponentHub().getArrayHub() == null, "Array hub already initialized for %s.", type.getComponentType().toJavaName(true));
                 hub.getComponentHub().setArrayHub(hub);
-                heapScanner.rescanField(hub.getComponentHub(), dynamicHubArrayHubField);
+                if (shouldRescanHub(heapScanner, hub.getComponentHub())) {
+                    heapScanner.rescanField(hub.getComponentHub().getCompanion(), hubCompanionArrayHubField);
+                }
             }
 
-            if (hub.getInterfacesEncoding() == null) {
-                fillInterfaces(type, hub);
-                heapScanner.rescanField(hub, dynamicHubInterfacesEncodingField);
+            fillInterfaces(type, hub);
+            if (rescan) {
+                heapScanner.rescanField(hub.getCompanion(), hubCompanionInterfacesEncoding);
             }
 
-            /*
-             * Support for Java enumerations.
-             */
-            if (type.isEnum() && hub.shouldInitEnumConstants()) {
-                if (hostVM.getClassInitializationSupport().shouldInitializeAtRuntime(type)) {
+            /* Support for Java enumerations. */
+            if (type.isEnum()) {
+                AnalysisError.guarantee(hub.shouldInitEnumConstants(), "Enum constants already initialized for %s.", type.toJavaName(true));
+                if (!hostVM.getClassInitializationSupport().maybeInitializeAtBuildTime(type)) {
                     hub.initEnumConstantsAtRuntime(javaClass);
                 } else {
-                    /*
-                     * We want to retrieve the enum constant array that is maintained as a private
-                     * static field in the enumeration class. We do not want a copy because that
-                     * would mean we have the array twice in the native image: as the static field,
-                     * and in the enumConstant field of DynamicHub. The only way to get the original
-                     * value is via a reflective field access, and we even have to guess the field
-                     * name.
-                     */
-                    AnalysisField found = null;
-                    for (AnalysisField f : type.getStaticFields()) {
-                        if (f.getName().endsWith("$VALUES")) {
-                            if (found != null) {
-                                /*
-                                 * Enumeration has more than one static field with enumeration
-                                 * values. Bailout and use Class.getEnumConstants() to get the value
-                                 * instead.
-                                 */
-                                found = null;
-                                break;
-                            }
-                            found = f;
-                        }
-                    }
-                    Enum<?>[] enumConstants;
-                    if (found == null) {
-                        /*
-                         * We could not find a unique $VALUES field, so we use the value returned by
-                         * Class.getEnumConstants(). This is not ideal since
-                         * Class.getEnumConstants() returns a copy of the array, so we will have two
-                         * arrays with the same content in the image heap, but it is better than
-                         * failing image generation.
-                         */
-                        enumConstants = (Enum<?>[]) javaClass.getEnumConstants();
-                    } else {
-                        enumConstants = (Enum<?>[]) SubstrateObjectConstant.asObject(constantReflection.readFieldValue(found, null));
-                        assert enumConstants != null;
-                    }
-                    hub.initEnumConstants(enumConstants);
+                    hub.initEnumConstants(retrieveEnumConstantArray(type, javaClass));
                 }
-                heapScanner.rescanField(hub, dynamicHubAnnotationsEnumConstantsReferenceField);
+                if (rescan) {
+                    heapScanner.rescanField(hub.getCompanion(), hubCompanionAnnotationsEnumConstantsReference);
+                }
             }
         }
     }
 
-    private void buildClassInitializationInfo(ImageHeapScanner heapScanner, AnalysisType type, DynamicHub hub) {
-        ClassInitializationInfo info;
-        if (hostVM.getClassInitializationSupport().shouldInitializeAtRuntime(type)) {
-            info = buildRuntimeInitializationInfo(type);
-        } else {
-            assert type.isInitialized();
-            info = type.getClassInitializer() == null ? ClassInitializationInfo.NO_INITIALIZER_INFO_SINGLETON : ClassInitializationInfo.INITIALIZED_INFO_SINGLETON;
+    /**
+     * The hub should not be rescanned directly if it is from the base layer, as it would try to
+     * access the constant again, which would trigger the dynamic hub initialization again. The hub
+     * has to be rescanned after the initialization is finished. This will be simplified by
+     * GR-60254.
+     */
+    private boolean shouldRescanHub(ImageHeapScanner heapScanner, DynamicHub hub) {
+        if (hostVM.useBaseLayer()) {
+            ImageHeapConstant hubConstant = (ImageHeapConstant) heapScanner.createImageHeapConstant(hub, OtherReason.HUB);
+            return hubConstant == null || !hubConstant.isInBaseLayer();
         }
-        hub.setClassInitializationInfo(info);
-        heapScanner.rescanField(hub, dynamicHubClassInitializationInfoField);
+        return true;
     }
 
-    private ClassInitializationInfo buildRuntimeInitializationInfo(AnalysisType type) {
+    /**
+     * For reachable classes, register class's package in appropriate class loader.
+     */
+    private static void registerPackage(ImageHeapScanner heapScanner, Class<?> javaClass, DynamicHub hub) {
+        /*
+         * Due to using {@link NativeImageSystemClassLoader}, a class's ClassLoader during runtime
+         * may be different from the class used to load it during native-image generation.
+         */
+        Package packageValue = javaClass.getPackage();
+        /* Array types, primitives and void don't have a package. */
+        if (packageValue != null) {
+            ClassLoader classloader = javaClass.getClassLoader();
+            if (classloader == null) {
+                classloader = BootLoaderSupport.getBootLoader();
+            }
+            ClassLoader runtimeClassLoader = ClassLoaderFeature.getRuntimeClassLoader(classloader);
+            VMError.guarantee(runtimeClassLoader != null, "Class loader missing for class %s", hub.getName());
+            String packageName = hub.getPackageName();
+            assert packageName.equals(packageValue.getName()) : Assertions.errorMessage("Package name mismatch:", packageName, packageValue.getName());
+            HostedClassLoaderPackageManagement.singleton().registerPackage(runtimeClassLoader, packageName, packageValue, heapScanner::rescanObject);
+        }
+    }
+
+    private Enum<?>[] retrieveEnumConstantArray(AnalysisType type, Class<?> javaClass) {
+        /*
+         * We want to retrieve the enum constant array that is maintained as a private static field
+         * in the enumeration class. We do not want a copy because that would mean we have the array
+         * twice in the native image: as the static field, and in the enumConstant field of
+         * DynamicHub. The only way to get the original value is via a reflective field access, and
+         * we even have to guess the field name.
+         */
+        AnalysisField found = null;
+        for (ResolvedJavaField javaField : type.getStaticFields()) {
+            AnalysisField f = (AnalysisField) javaField;
+            if (f.getName().endsWith("$VALUES")) {
+                if (found != null) {
+                    /*
+                     * Enumeration has more than one static field with enumeration values. Bailout
+                     * and use Class.getEnumConstants() to get the value instead.
+                     */
+                    found = null;
+                    break;
+                }
+                found = f;
+            }
+        }
+        Enum<?>[] enumConstants;
+        if (found == null) {
+            /*
+             * We could not find a unique $VALUES field, so we use the value returned by
+             * Class.getEnumConstants(). This is not ideal since Class.getEnumConstants() returns a
+             * copy of the array, so we will have two arrays with the same content in the image
+             * heap, but it is better than failing image generation.
+             */
+            enumConstants = (Enum<?>[]) javaClass.getEnumConstants();
+        } else {
+            enumConstants = bb.getSnippetReflectionProvider().asObject(Enum[].class, constantReflection.readFieldValue(found, null));
+            assert enumConstants != null;
+        }
+        return enumConstants;
+    }
+
+    private void buildClassInitializationInfo(ImageHeapScanner heapScanner, AnalysisType type, DynamicHub hub, boolean rescan) {
+        AnalysisError.guarantee(hub.getClassInitializationInfo() == null, "Class initialization info already computed for %s.", type.toJavaName(true));
+        boolean initializedAtBuildTime = SimulateClassInitializerSupport.singleton().trySimulateClassInitializer(bb, type);
+        ClassInitializationInfo info;
+        if (type.getWrapped() instanceof BaseLayerType) {
+            info = HostedImageLayerBuildingSupport.singleton().getLoader().getClassInitializationInfo(type);
+        } else {
+            boolean typeReachedTracked = ClassInitializationSupport.singleton().requiresInitializationNodeForTypeReached(type);
+            if (initializedAtBuildTime) {
+                info = type.getClassInitializer() == null ? ClassInitializationInfo.forNoInitializerInfo(typeReachedTracked)
+                                : ClassInitializationInfo.forInitializedInfo(typeReachedTracked);
+            } else {
+                info = buildRuntimeInitializationInfo(type, typeReachedTracked);
+            }
+        }
+        hub.setClassInitializationInfo(info);
+        if (rescan) {
+            heapScanner.rescanField(hub.getCompanion(), hubCompanionClassInitializationInfo);
+        }
+    }
+
+    private ClassInitializationInfo buildRuntimeInitializationInfo(AnalysisType type, boolean typeReachedTracked) {
         assert !type.isInitialized();
         try {
             /*
@@ -190,14 +256,14 @@ public class DynamicHubInitializer {
         } catch (VerifyError e) {
             /* Synthesize a VerifyError to be thrown at run time. */
             AnalysisMethod throwVerifyError = metaAccess.lookupJavaMethod(ExceptionSynthesizer.throwExceptionMethod(VerifyError.class));
-            bb.addRootMethod(throwVerifyError, true);
-            return new ClassInitializationInfo(new MethodPointer(throwVerifyError));
+            bb.addRootMethod(throwVerifyError, true, "Class initialization error, registered in " + DynamicHubInitializer.class);
+            return new ClassInitializationInfo(new MethodPointer(throwVerifyError), typeReachedTracked);
         } catch (Throwable t) {
             /*
              * All other linking errors will be reported as NoClassDefFoundError when initialization
              * is attempted at run time.
              */
-            return ClassInitializationInfo.FAILED_INFO_SINGLETON;
+            return ClassInitializationInfo.forFailedInfo(typeReachedTracked);
         }
 
         /*
@@ -209,23 +275,10 @@ public class DynamicHubInitializer {
         AnalysisMethod classInitializer = type.getClassInitializer();
         if (classInitializer != null) {
             assert classInitializer.getCode() != null;
-            bb.addRootMethod(classInitializer, true);
+            bb.addRootMethod(classInitializer, true, "Class initialization, registered in " + DynamicHubInitializer.class);
             classInitializerFunction = new MethodPointer(classInitializer);
         }
-        return new ClassInitializationInfo(classInitializerFunction);
-    }
-
-    private static final Method getSignature = ReflectionUtil.lookupMethod(Class.class, "getGenericSignature0");
-
-    private static void fillSignature(AnalysisType type, DynamicHub hub) {
-        Class<?> javaClass = type.getJavaClass();
-        String signature;
-        try {
-            signature = (String) getSignature.invoke(javaClass);
-        } catch (IllegalAccessException | InvocationTargetException e) {
-            throw GraalError.shouldNotReachHere();
-        }
-        hub.setSignature(signature);
+        return new ClassInitializationInfo(classInitializerFunction, typeReachedTracked);
     }
 
     class InterfacesEncodingKey {
@@ -258,6 +311,7 @@ public class DynamicHubInitializer {
      * Fill array returned by Class.getInterfaces().
      */
     private void fillInterfaces(AnalysisType type, DynamicHub hub) {
+        AnalysisError.guarantee(hub.getInterfacesEncoding() == null, "Interfaces already computed for %s.", type.toJavaName(true));
         AnalysisType[] aInterfaces = type.getInterfaces();
         if (aInterfaces.length == 0) {
             hub.setInterfacesEncoding(null);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -91,8 +91,9 @@ public class TStringRegionEqualByteIndexTest extends TStringTestBase {
         TruffleString.Encoding[] encodings = {TruffleString.Encoding.UTF_8, TruffleString.Encoding.UTF_16, TruffleString.Encoding.UTF_32};
         for (int i = 0; i < encodings.length; i++) {
             TruffleString.Encoding encoding = encodings[i];
-            byte[] arr = new byte[strA.byteLength(encoding)];
-            strA.switchEncodingUncached(encoding).copyToByteArrayUncached(0, arr, 0, arr.length, encoding);
+            TruffleString strASwitched = strA.switchEncodingUncached(encoding);
+            byte[] arr = new byte[strASwitched.byteLength(encoding)];
+            strASwitched.copyToByteArrayUncached(0, arr, 0, arr.length, encoding);
             int iFinal = i;
             checkStringVariants(arr, TruffleString.CodeRange.ASCII, true, encoding, codepointsA, null, (a, array, codeRange, isValid, enc, codepoints, byteIndices) -> {
                 Assert.assertTrue(node.execute(a, 0, withMask[iFinal], 0, strB.switchEncodingUncached(encoding).byteLength(encoding), encoding));

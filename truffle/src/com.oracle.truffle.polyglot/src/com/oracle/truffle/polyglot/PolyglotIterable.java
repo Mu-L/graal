@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,32 +40,41 @@
  */
 package com.oracle.truffle.polyglot;
 
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.util.Iterator;
+import java.util.Objects;
+
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.profiles.BranchProfile;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
 import com.oracle.truffle.polyglot.PolyglotIterableFactory.CacheFactory.GetIteratorNodeGen;
-
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.util.Iterator;
-import java.util.Objects;
+import org.graalvm.polyglot.Context;
 
 class PolyglotIterable<T> implements Iterable<T>, PolyglotWrapper {
 
     final Object guestObject;
     final PolyglotLanguageContext languageContext;
     final Cache cache;
+    /**
+     * Strong reference to the creator {@link Context} to prevent it from being garbage collected
+     * and closed while this iterable is still reachable.
+     */
+    final Context contextAnchor;
 
     PolyglotIterable(Class<T> elementClass, Type elementType, Object iterable, PolyglotLanguageContext languageContext) {
         this.guestObject = iterable;
         this.languageContext = languageContext;
         this.cache = Cache.lookup(languageContext, iterable.getClass(), elementClass, elementType);
+        this.contextAnchor = languageContext.context.getContextAPI();
     }
 
     @Override
@@ -86,7 +95,7 @@ class PolyglotIterable<T> implements Iterable<T>, PolyglotWrapper {
     @SuppressWarnings("unchecked")
     @Override
     public Iterator<T> iterator() {
-        return (Iterator<T>) cache.getIterator.call(languageContext, guestObject);
+        return (Iterator<T>) cache.getIterator.call(null, languageContext, guestObject);
     }
 
     @Override
@@ -136,7 +145,7 @@ class PolyglotIterable<T> implements Iterable<T>, PolyglotWrapper {
             }
             assert cache.receiverClass == receiverClass;
             assert cache.valueClass == valueClass;
-            assert cache.valueType == valueType;
+            assert Objects.equals(cache.valueType, valueType);
             return cache;
         }
 
@@ -210,15 +219,16 @@ class PolyglotIterable<T> implements Iterable<T>, PolyglotWrapper {
             }
 
             @Specialization(limit = "LIMIT")
-            @SuppressWarnings("unused")
+            @SuppressWarnings({"unused", "truffle-static-method"})
             Object doCached(PolyglotLanguageContext languageContext, Object receiver, Object[] args,
+                            @Bind Node node,
                             @CachedLibrary("receiver") InteropLibrary iterables,
                             @Cached PolyglotToHostNode toHost,
-                            @Cached BranchProfile error) {
+                            @Cached InlinedBranchProfile error) {
                 try {
-                    return toHost.execute(languageContext, iterables.getIterator(receiver), Iterator.class, cache.iteratorType);
+                    return toHost.execute(node, languageContext, iterables.getIterator(receiver), Iterator.class, cache.iteratorType);
                 } catch (UnsupportedMessageException e) {
-                    error.enter();
+                    error.enter(node);
                     throw PolyglotInteropErrors.iterableUnsupported(languageContext, receiver, cache.valueType, "iterator()");
                 }
             }

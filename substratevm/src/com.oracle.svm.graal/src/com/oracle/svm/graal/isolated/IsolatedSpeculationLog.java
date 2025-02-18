@@ -27,15 +27,16 @@ package com.oracle.svm.graal.isolated;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
-import org.graalvm.compiler.serviceprovider.UnencodedSpeculationReason;
-import org.graalvm.nativeimage.PinnedObject;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.PointerBase;
 
+import com.oracle.svm.core.c.function.CEntryPointOptions;
 import com.oracle.svm.core.deopt.SubstrateSpeculationLog.SubstrateSpeculation;
+import com.oracle.svm.core.handles.PrimitiveArrayView;
 import com.oracle.svm.core.util.VMError;
 
+import jdk.graal.compiler.serviceprovider.UnencodedSpeculationReason;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -133,8 +134,8 @@ public final class IsolatedSpeculationLog extends IsolatedObjectProxy<Speculatio
     @Override
     public boolean maySpeculate(SpeculationReason reason) {
         byte[] bytes = encodeAsByteArray(reason);
-        try (PinnedObject pinnedBytes = PinnedObject.create(bytes)) {
-            return maySpeculate0(IsolatedCompileContext.get().getClient(), handle, pinnedBytes.addressOfArrayElement(0), bytes.length);
+        try (PrimitiveArrayView refBytes = PrimitiveArrayView.createForReading(bytes)) {
+            return maySpeculate0(IsolatedCompileContext.get().getClient(), handle, refBytes.addressOfArrayElement(0), bytes.length);
         }
     }
 
@@ -142,8 +143,8 @@ public final class IsolatedSpeculationLog extends IsolatedObjectProxy<Speculatio
     public Speculation speculate(SpeculationReason reason) {
         byte[] bytes = encodeAsByteArray(reason);
         ClientHandle<SpeculationReason> reasonHandle;
-        try (PinnedObject pinnedBytes = PinnedObject.create(bytes)) {
-            reasonHandle = speculate0(IsolatedCompileContext.get().getClient(), handle, pinnedBytes.addressOfArrayElement(0), bytes.length);
+        try (PrimitiveArrayView refBytes = PrimitiveArrayView.createForReading(bytes)) {
+            reasonHandle = speculate0(IsolatedCompileContext.get().getClient(), handle, refBytes.addressOfArrayElement(0), bytes.length);
         }
         return new SubstrateSpeculation(new IsolatedSpeculationReason(reasonHandle));
     }
@@ -158,17 +159,20 @@ public final class IsolatedSpeculationLog extends IsolatedObjectProxy<Speculatio
         throw VMError.shouldNotReachHere("not required");
     }
 
-    @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPoint(exceptionHandler = IsolatedCompileClient.VoidExceptionHandler.class, include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPointOptions(callerEpilogue = IsolatedCompileClient.ExceptionRethrowCallerEpilogue.class)
     private static void collectFailedSpeculations0(@SuppressWarnings("unused") ClientIsolateThread client, ClientHandle<SpeculationLog> logHandle) {
         IsolatedCompileClient.get().unhand(logHandle).collectFailedSpeculations();
     }
 
-    @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPoint(exceptionHandler = IsolatedCompileClient.BooleanExceptionHandler.class, include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPointOptions(callerEpilogue = IsolatedCompileClient.ExceptionRethrowCallerEpilogue.class)
     private static boolean hasSpeculations0(@SuppressWarnings("unused") ClientIsolateThread client, ClientHandle<SpeculationLog> logHandle) {
         return IsolatedCompileClient.get().unhand(logHandle).hasSpeculations();
     }
 
-    @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPoint(exceptionHandler = IsolatedCompileClient.BooleanExceptionHandler.class, include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPointOptions(callerEpilogue = IsolatedCompileClient.ExceptionRethrowCallerEpilogue.class)
     private static boolean maySpeculate0(@SuppressWarnings("unused") ClientIsolateThread client, ClientHandle<SpeculationLog> logHandle, PointerBase arrayData, int length) {
         byte[] bytes = new byte[length];
         ByteBuffer.wrap(bytes).put(CTypeConversion.asByteBuffer(arrayData, length));
@@ -176,7 +180,8 @@ public final class IsolatedSpeculationLog extends IsolatedObjectProxy<Speculatio
         return log.maySpeculate(new EncodedSpeculationReason(bytes));
     }
 
-    @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPoint(exceptionHandler = IsolatedCompileClient.WordExceptionHandler.class, include = CEntryPoint.NotIncludedAutomatically.class, publishAs = CEntryPoint.Publish.NotPublished)
+    @CEntryPointOptions(callerEpilogue = IsolatedCompileClient.ExceptionRethrowCallerEpilogue.class)
     private static ClientHandle<SpeculationReason> speculate0(@SuppressWarnings("unused") ClientIsolateThread client, ClientHandle<SpeculationLog> logHandle, PointerBase arrayData, int length) {
         byte[] bytes = new byte[length];
         ByteBuffer.wrap(bytes).put(CTypeConversion.asByteBuffer(arrayData, length));

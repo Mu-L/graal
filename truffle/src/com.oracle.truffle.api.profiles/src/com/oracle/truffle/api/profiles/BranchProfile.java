@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,8 @@ package com.oracle.truffle.api.profiles;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.dsl.InlineSupport.InlineTarget;
+import com.oracle.truffle.api.dsl.NeverDefault;
 import com.oracle.truffle.api.nodes.Node;
 
 /**
@@ -54,9 +56,9 @@ import com.oracle.truffle.api.nodes.Node;
  *
  * <p>
  * <b> Usage example: </b>
- * {@link com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile}
- *
- * {@inheritDoc}
+ * 
+ * {@snippet file="com/oracle/truffle/api/profiles/BranchProfile.java"
+ * region="com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile"}
  *
  * @see BranchProfile#enter()
  * @since 0.10
@@ -84,19 +86,6 @@ public final class BranchProfile extends Profile {
         if (!visited) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             visited = true;
-        }
-    }
-
-    /**
-     * Call to create a new instance of a branch profile.
-     *
-     * @since 0.10
-     */
-    public static BranchProfile create() {
-        if (Profile.isProfilingEnabled()) {
-            return new BranchProfile();
-        } else {
-            return getUncached();
         }
     }
 
@@ -133,10 +122,34 @@ public final class BranchProfile extends Profile {
     @Override
     public String toString() {
         if (this == DISABLED) {
-            return toStringDisabled(BranchProfile.class);
+            return toStringDisabled();
         } else {
             return toString(BranchProfile.class, !visited, false, "VISITED");
         }
+    }
+
+    /**
+     * Call to create a new instance of a branch profile.
+     *
+     * @since 0.10
+     */
+    @NeverDefault
+    public static BranchProfile create() {
+        if (isProfilingEnabled()) {
+            return new BranchProfile();
+        } else {
+            return getUncached();
+        }
+    }
+
+    /**
+     * Returns an inlined version of the profile. This version is automatically used by Truffle DSL
+     * node inlining.
+     *
+     * @since 23.0
+     */
+    public static InlinedBranchProfile inline(InlineTarget target) {
+        return InlinedBranchProfile.inline(target);
     }
 
     /**
@@ -150,8 +163,9 @@ public final class BranchProfile extends Profile {
 
 }
 
+// @formatter:off // @replace regex='.*' replacement=''
 class BranchProfileSnippets {
-    // BEGIN: com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile
+    // @start region="com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile"
     class BranchingNode extends Node {
         final BranchProfile errorProfile = BranchProfile.create();
 
@@ -163,5 +177,5 @@ class BranchProfileSnippets {
             return value;
         }
     }
-    // END: com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile
+    // @end region="com.oracle.truffle.api.profiles.BranchProfileSnippets.BranchingNode#errorProfile"
 }

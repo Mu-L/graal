@@ -33,7 +33,7 @@ import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * DALOAD bytecode with interop extensions.
@@ -57,7 +57,7 @@ public abstract class DoubleArrayLoad extends EspressoNode {
     public abstract double execute(StaticObject receiver, int index);
 
     @Specialization
-    double executeWithNullCheck(StaticObject array, int index,
+    double doWithNullCheck(StaticObject array, int index,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck doubleArrayLoad) {
         return doubleArrayLoad.execute(nullCheck.execute(array), index);

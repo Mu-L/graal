@@ -30,18 +30,17 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Function;
 
-import org.graalvm.compiler.options.Option;
+import jdk.graal.compiler.options.Option;
 
 import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.reports.ReportUtils;
-import com.oracle.graal.pointsto.util.GraalAccess;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.hosted.substitute.SubstitutionField;
 import com.oracle.svm.hosted.substitute.SubstitutionMethod;
 import com.oracle.svm.hosted.substitute.SubstitutionType;
@@ -78,7 +77,7 @@ public class SubstitutionReportFeature implements InternalFeature {
     private void findSubstitutedTypes(FeatureImpl.AfterAnalysisAccessImpl access) {
         for (AnalysisType type : access.getUniverse().getTypes()) {
             if (type.isReachable() && !type.isArray()) {
-                ResolvedJavaType t = type.getWrappedWithoutResolve();
+                ResolvedJavaType t = type.getWrapped();
                 if (t instanceof SubstitutionType) {
                     SubstitutionType subType = (SubstitutionType) t;
                     if (subType.isUserSubstitution()) {
@@ -147,7 +146,7 @@ public class SubstitutionReportFeature implements InternalFeature {
     }
 
     private static String getTypeClassFileLocation(ResolvedJavaType type) {
-        Class<?> annotatedClass = OriginalClassProvider.getJavaClass(GraalAccess.getOriginalSnippetReflection(), type);
+        Class<?> annotatedClass = OriginalClassProvider.getJavaClass(type);
         CodeSource source = annotatedClass.getProtectionDomain().getCodeSource();
         return source == null ? "unknown" : source.getLocation().toString();
     }
@@ -156,7 +155,7 @@ public class SubstitutionReportFeature implements InternalFeature {
         return '\'' + jar + "'," + type + ',' + formatter.apply(original) + ',' + formatter.apply(annotated);
     }
 
-    private static class Substitutions {
+    private static final class Substitutions {
         private final Map<ResolvedJavaType, ResolvedJavaType> substitutedTypes = new TreeMap<>(Comparator.comparing(SubstitutionReportFeature::formatType));
         private final Map<ResolvedJavaMethod, ResolvedJavaMethod> substitutedMethods = new TreeMap<>(Comparator.comparing(SubstitutionReportFeature::formatMethod));
         private final Map<ResolvedJavaField, ResolvedJavaField> substitutedFields = new TreeMap<>(Comparator.comparing(SubstitutionReportFeature::formatField));

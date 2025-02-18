@@ -33,7 +33,7 @@ import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * BALOAD* bytecode with interop extensions that <b>only</b> supports boolean[].
@@ -59,7 +59,7 @@ public abstract class BooleanArrayLoad extends EspressoNode {
     public abstract boolean execute(StaticObject receiver, int index);
 
     @Specialization
-    boolean executeWithNullCheck(StaticObject array, int index,
+    boolean doWithNullCheck(StaticObject array, int index,
                     @Cached NullCheck nullCheck,
                     @Cached WithoutNullCheck booleanArrayLoad) {
         return booleanArrayLoad.execute(nullCheck.execute(array), index);

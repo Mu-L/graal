@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.api.dsl.test.otherPackage;
 
+import com.oracle.truffle.api.dsl.GenerateInline;
 import com.oracle.truffle.api.dsl.GenerateUncached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.nodes.Node;
@@ -49,6 +50,7 @@ public class OtherPackageGroup {
     public static class InnerGroup {
 
         @GenerateUncached
+        @GenerateInline(false)
         public abstract static class InnerNode extends Node {
 
             public abstract Object execute(Object arg);
@@ -66,6 +68,7 @@ public class OtherPackageGroup {
     }
 
     @GenerateUncached
+    @GenerateInline(false)
     public abstract static class InnerNode extends Node {
 
         public abstract Object execute(Object arg);
@@ -76,6 +79,7 @@ public class OtherPackageGroup {
         }
 
         @GenerateUncached
+        @GenerateInline(false)
         public abstract static class InnerInnerNode extends Node {
 
             public abstract Object execute(Object arg);
@@ -91,6 +95,7 @@ public class OtherPackageGroup {
         public static class InnerGroup {
 
             @GenerateUncached
+            @GenerateInline(false)
             public abstract static class InnerInnerNode extends Node {
 
                 public abstract Object execute(Object arg);

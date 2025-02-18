@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,8 +40,11 @@
  */
 package org.graalvm.wasm;
 
+import java.util.Map;
+
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.InvalidArrayIndexException;
@@ -49,17 +52,16 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnknownIdentifierException;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
-import com.oracle.truffle.api.profiles.BranchProfile;
-
-import java.util.Map;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
 
 @ExportLibrary(InteropLibrary.class)
-@SuppressWarnings({"unused", "static-method"})
-public class WasmScope implements TruffleObject {
-    private Map<String, WasmInstance> instances;
+@SuppressWarnings({"static-method"})
+public final class WasmScope implements TruffleObject {
+    private final WasmContext context;
 
-    public WasmScope(Map<String, WasmInstance> instances) {
-        this.instances = instances;
+    public WasmScope(WasmContext context) {
+        this.context = context;
     }
 
     @ExportMessage
@@ -77,9 +79,14 @@ public class WasmScope implements TruffleObject {
         return true;
     }
 
+    private Map<String, WasmInstance> instances() {
+        return context.moduleInstances();
+    }
+
     @ExportMessage
     @CompilerDirectives.TruffleBoundary
     Object readMember(String member) throws UnknownIdentifierException {
+        var instances = instances();
         Object value = instances.get(member);
         if (value != null) {
             return value;
@@ -90,13 +97,16 @@ public class WasmScope implements TruffleObject {
     @ExportMessage
     @CompilerDirectives.TruffleBoundary
     boolean isMemberReadable(String member) {
+        var instances = instances();
         return instances.containsKey(member);
     }
 
     @ExportMessage
     @CompilerDirectives.TruffleBoundary
     Object getMembers(@SuppressWarnings("unused") boolean includeInternal) {
-        return new InstanceNamesObject(instances.keySet().toArray());
+        var instances = instances();
+        String[] keys = instances.keySet().toArray(new String[instances.size()]);
+        return new InstanceNamesObject(keys);
     }
 
     @ExportMessage
@@ -107,15 +117,15 @@ public class WasmScope implements TruffleObject {
     @ExportMessage
     @CompilerDirectives.TruffleBoundary
     Object toDisplayString(@SuppressWarnings("unused") boolean allowSideEffects) {
-        return "wasm-global-scope" + instances.keySet();
+        return "wasm-global-scope" + instances().keySet();
     }
 
     @ExportLibrary(InteropLibrary.class)
     static final class InstanceNamesObject implements TruffleObject {
 
-        private final Object[] names;
+        private final String[] names;
 
-        InstanceNamesObject(Object[] names) {
+        InstanceNamesObject(String[] names) {
             this.names = names;
         }
 
@@ -135,9 +145,11 @@ public class WasmScope implements TruffleObject {
         }
 
         @ExportMessage
-        Object readArrayElement(long index, @Cached BranchProfile error) throws InvalidArrayIndexException {
+        Object readArrayElement(long index,
+                        @Bind Node node,
+                        @Cached InlinedBranchProfile error) throws InvalidArrayIndexException {
             if (!isArrayElementReadable(index)) {
-                error.enter();
+                error.enter(node);
                 throw InvalidArrayIndexException.create(index);
             }
             return names[(int) index];

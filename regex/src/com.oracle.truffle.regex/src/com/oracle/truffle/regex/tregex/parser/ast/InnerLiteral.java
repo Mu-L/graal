@@ -40,7 +40,6 @@
  */
 package com.oracle.truffle.regex.tregex.parser.ast;
 
-import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.strings.TruffleString;
 import com.oracle.truffle.regex.tregex.string.AbstractString;
 
@@ -72,9 +71,8 @@ public class InnerLiteral {
         return literal;
     }
 
-    public Object getLiteralContent(boolean tString) {
-        CompilerAsserts.partialEvaluationConstant(tString);
-        return tString ? literalTString : literal.content();
+    public TruffleString getLiteralContent() {
+        return literalTString;
     }
 
     /**
@@ -84,15 +82,18 @@ public class InnerLiteral {
         return mask;
     }
 
-    public Object getMaskContent(boolean tString) {
-        CompilerAsserts.partialEvaluationConstant(tString);
-        return mask == null ? null : tString ? maskTString : mask.content();
+    public TruffleString.WithMask getMaskContent() {
+        return hasMask() ? maskTString : null;
+    }
+
+    public boolean hasMask() {
+        return mask != null;
     }
 
     /**
      * The maximum number of code points the regular expression may match before matching this
      * literal. Example: the inner literal of {@code /a?b/} is {@code "b"}, with a max prefix size
-     * of {@code 1}.
+     * of {@code 1}. If there are loops in the prefix, returns {@code -1}.
      */
     public int getMaxPrefixSize() {
         return maxPrefixSize;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -53,8 +53,6 @@ import java.util.function.Predicate;
 
 import org.graalvm.collections.EconomicSet;
 import org.graalvm.polyglot.HostAccess.MutableTargetMapping;
-import org.graalvm.polyglot.PolyglotException;
-import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractHostAccess;
 
 import com.oracle.truffle.api.CompilerDirectives;
@@ -65,7 +63,9 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.GenerateInline;
 import com.oracle.truffle.api.dsl.GenerateUncached;
+import com.oracle.truffle.api.dsl.NeverDefault;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.InvalidArrayIndexException;
@@ -94,7 +94,7 @@ final class HostContext {
     final TruffleLanguage.Env env;
     final AbstractHostAccess access;
 
-    @SuppressWarnings("serial") final HostException stackoverflowError = new HostException(new StackOverflowError() {
+    @SuppressWarnings("serial") final HostException stackoverflowError = HostException.wrap(new StackOverflowError() {
         @SuppressWarnings("sync-override")
         @Override
         public Throwable fillInStackTrace() {
@@ -143,6 +143,7 @@ final class HostContext {
         return language.hostClassCache;
     }
 
+    @NeverDefault
     GuestToHostCodeCache getGuestToHostCache() {
         GuestToHostCodeCache cache = (GuestToHostCodeCache) HostAccessor.ENGINE.getGuestToHostCodeCache(internalContext);
         if (cache == null) {
@@ -190,19 +191,34 @@ final class HostContext {
             return primitiveType;
         }
         try {
-            ClassLoader classLoader = getClassloader();
-            Class<?> foundClass = classLoader.loadClass(className);
-            Object currentModule = getUnnamedModule(classLoader);
-            if (verifyModuleVisibility(currentModule, foundClass)) {
-                return foundClass;
-            } else {
-                throw new HostLanguageException(String.format("Access to host class %s is not allowed or does not exist.", className));
+            if (getHostClassCache().hasCustomNamedLookup()) {
+                try {
+                    return accessClass(getHostClassCache().getMethodLookup(null).findClass(className));
+                } catch (ClassNotFoundException | IllegalAccessException | LinkageError e) {
+                    // fallthrough to class loader lookup
+                }
             }
-        } catch (ClassNotFoundException e) {
-            throw new HostLanguageException(String.format("Access to host class %s is not allowed or does not exist.", className));
-        } catch (LinkageError e) {
-            throw new HostLanguageException(String.format("Access to host class %s is not allowed or does not exist.", className));
+            return accessClass(loadClassViaClassLoader(className));
+        } catch (ClassNotFoundException | LinkageError e) {
+            throw throwClassLoadException(className);
         }
+    }
+
+    private Class<?> accessClass(Class<?> clazz) {
+        if (HostClassDesc.getLookup(clazz, getHostClassCache()) != null) {
+            return clazz;
+        } else {
+            throw throwClassLoadException(clazz.getName());
+        }
+    }
+
+    private Class<?> loadClassViaClassLoader(String className) throws ClassNotFoundException {
+        ClassLoader classLoader = getClassloader();
+        return classLoader.loadClass(className);
+    }
+
+    private static HostLanguageException throwClassLoadException(String className) {
+        throw new HostLanguageException(String.format("Access to host class %s is not allowed or does not exist.", className));
     }
 
     void validateClass(String className) {
@@ -216,40 +232,6 @@ final class HostContext {
             return null;
         }
         return classLoader.getUnnamedModule();
-    }
-
-    static boolean verifyModuleVisibility(Object module, Class<?> memberClass) {
-        Module lookupModule = (Module) module;
-        if (lookupModule == null) {
-            /*
-             * This case may currently happen in AOT as the module support there is not complete.
-             * See GR-19155.
-             */
-            return true;
-        }
-        Module memberModule = memberClass.getModule();
-        if (lookupModule == memberModule) {
-            return true;
-        } else {
-            String pkg = memberClass.getPackageName();
-            if (lookupModule.isNamed()) {
-                if (memberModule.isNamed()) {
-                    // both modules are named. check whether they are exported.
-                    return memberModule.isExported(pkg, lookupModule);
-                } else {
-                    // no access from named modules to unnamed modules
-                    return false;
-                }
-            } else {
-                if (memberModule.isNamed()) {
-                    // unnamed modules see all exported packages
-                    return memberModule.isExported(pkg);
-                } else {
-                    // full access from unnamed modules to unnamed modules
-                    return true;
-                }
-            }
-        }
     }
 
     private static Class<?> getPrimitiveTypeByName(String className) {
@@ -296,19 +278,19 @@ final class HostContext {
      * is why this coercion should only be used in the catch block at the outermost API call.
      */
     @TruffleBoundary
-    <T extends Throwable> RuntimeException hostToGuestException(T e) {
+    <T extends Throwable> RuntimeException hostToGuestException(T e, Node location) {
         assert !(e instanceof HostException) : "host exceptions not expected here";
 
         if (e instanceof ThreadDeath) {
             throw (ThreadDeath) e;
-        } else if (e instanceof PolyglotException) {
+        } else if (e instanceof RuntimeException r && access.isPolyglotException(r)) {
             // this will rethrow if the guest exception in the polyglot exception can be rethrown.
-            language.access.rethrowPolyglotException(internalContext, (PolyglotException) e);
+            language.access.rethrowPolyglotException(internalContext, r);
 
             // fall-through and treat it as any other host exception
         }
         try {
-            return new HostException(e, this);
+            return HostException.wrap(e, this, location);
         } catch (StackOverflowError stack) {
             /*
              * Cannot create a new host exception. Use a readily prepared instance.
@@ -317,7 +299,12 @@ final class HostContext {
         }
     }
 
-    Value asValue(Node node, Object value) {
+    @TruffleBoundary
+    <T extends Throwable> RuntimeException hostToGuestException(T e) {
+        return hostToGuestException(e, null);
+    }
+
+    Object asValue(Node node, Object value) {
         // make language lookup fold if possible
         HostLanguage l = HostLanguage.get(node);
         return l.access.toValue(internalContext, value);
@@ -350,9 +337,10 @@ final class HostContext {
     }
 
     @GenerateUncached
+    @GenerateInline
     abstract static class ToGuestValueNode extends Node {
 
-        abstract Object execute(HostContext context, Object receiver);
+        abstract Object execute(Node node, HostContext context, Object receiver);
 
         @Specialization(guards = "receiver == null")
         Object doNull(HostContext context, @SuppressWarnings("unused") Object receiver) {
@@ -423,7 +411,7 @@ final class HostContext {
             Object[] newArgs = needsCopy ? new Object[nodes.length] : args;
             for (int i = 0; i < nodes.length; i++) {
                 Object arg = args[i];
-                Object newArg = nodes[i].execute(context, arg);
+                Object newArg = nodes[i].execute(this, context, arg);
                 if (needsCopy) {
                     newArgs[i] = newArg;
                 } else if (arg != newArg) {
@@ -446,7 +434,7 @@ final class HostContext {
             Object[] newArgs = needsCopy ? new Object[args.length] : args;
             for (int i = 0; i < args.length; i++) {
                 Object arg = args[i];
-                Object newArg = node.execute(context, arg);
+                Object newArg = node.execute(this, context, arg);
                 if (needsCopy) {
                     newArgs[i] = newArg;
                 } else if (arg != newArg) {

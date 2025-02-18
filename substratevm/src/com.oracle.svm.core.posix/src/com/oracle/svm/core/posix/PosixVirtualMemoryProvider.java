@@ -37,9 +37,9 @@ import static com.oracle.svm.core.posix.headers.Mman.PROT_WRITE;
 import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.mmap;
 import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.mprotect;
 import static com.oracle.svm.core.posix.headers.Mman.NoTransitions.munmap;
-import static org.graalvm.word.WordFactory.nullPointer;
+import static jdk.graal.compiler.word.Word.nullPointer;
 
-import org.graalvm.compiler.word.Word;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.c.type.WordPointer;
@@ -47,7 +47,6 @@ import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.CGlobalData;
@@ -78,15 +77,15 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static UnsignedWord getPageSize() {
         Word value = CACHED_PAGE_SIZE.get().read();
-        if (value.equal(WordFactory.zero())) {
+        if (value.equal(Word.zero())) {
             long queried = Unistd.NoTransitions.sysconf(Unistd._SC_PAGE_SIZE());
-            value = WordFactory.unsigned(queried);
+            value = Word.unsigned(queried);
             CACHED_PAGE_SIZE.get().write(value);
         }
         return value;
     }
 
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     protected static int accessAsProt(int access) {
         int prot = 0;
         if ((access & Access.READ) != 0) {
@@ -102,16 +101,16 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public UnsignedWord getGranularity() {
         return getPageSize();
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public Pointer reserve(UnsignedWord nbytes, UnsignedWord alignment, boolean executable) {
         if (nbytes.equal(0)) {
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         UnsignedWord granularity = getGranularity();
@@ -145,10 +144,10 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public Pointer mapFile(PointerBase start, UnsignedWord nbytes, WordBase fileHandle, UnsignedWord offset, int access) {
         if ((start.isNonNull() && !isAligned(start)) || nbytes.equal(0)) {
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         int flags = MAP_PRIVATE();
@@ -157,14 +156,14 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
         }
         int fd = (int) fileHandle.rawValue();
         Pointer result = mmap(start, nbytes, accessAsProt(access), flags, fd, offset.rawValue());
-        return result.notEqual(MAP_FAILED()) ? result : WordFactory.nullPointer();
+        return result.notEqual(MAP_FAILED()) ? result : Word.nullPointer();
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public Pointer commit(PointerBase start, UnsignedWord nbytes, int access) {
         if ((start.isNonNull() && !isAligned(start)) || nbytes.equal(0)) {
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         int flags = MAP_ANON() | MAP_PRIVATE();
@@ -181,7 +180,7 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public int protect(PointerBase start, UnsignedWord nbytes, int access) {
         if (start.isNull() || !isAligned(start) || nbytes.equal(0)) {
             return -1;
@@ -191,7 +190,7 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public int uncommit(PointerBase start, UnsignedWord nbytes) {
         if (start.isNull() || !isAligned(start) || nbytes.equal(0)) {
             return -1;
@@ -202,7 +201,7 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
     }
 
     @Override
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public int free(PointerBase start, UnsignedWord nbytes) {
         if (start.isNull() || !isAligned(start) || nbytes.equal(0)) {
             return -1;
@@ -214,7 +213,7 @@ public class PosixVirtualMemoryProvider implements VirtualMemoryProvider {
         return munmap(mappingBegin, mappingSize);
     }
 
-    @Uninterruptible(reason = "May be called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private boolean isAligned(PointerBase ptr) {
         return ptr.isNonNull() && UnsignedUtils.isAMultiple((UnsignedWord) ptr, getGranularity());
     }

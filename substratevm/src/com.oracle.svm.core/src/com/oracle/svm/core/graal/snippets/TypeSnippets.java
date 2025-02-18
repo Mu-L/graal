@@ -26,36 +26,36 @@ package com.oracle.svm.core.graal.snippets;
 
 import static com.oracle.svm.core.graal.snippets.SubstrateIntrinsics.loadHub;
 import static com.oracle.svm.core.graal.snippets.SubstrateIntrinsics.loadHubOrNull;
-import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.LIKELY_PROBABILITY;
-import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.NOT_FREQUENT_PROBABILITY;
-import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.probability;
+import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.LIKELY_PROBABILITY;
+import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.NOT_FREQUENT_PROBABILITY;
+import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
 import java.util.Map;
-
-import org.graalvm.compiler.api.replacements.Snippet;
-import org.graalvm.compiler.core.common.calc.UnsignedMath;
-import org.graalvm.compiler.core.common.type.TypeReference;
-import org.graalvm.compiler.graph.Node;
-import org.graalvm.compiler.nodes.NamedLocationIdentity;
-import org.graalvm.compiler.nodes.PiNode;
-import org.graalvm.compiler.nodes.SnippetAnchorNode;
-import org.graalvm.compiler.nodes.calc.FloatingNode;
-import org.graalvm.compiler.nodes.extended.GuardingNode;
-import org.graalvm.compiler.nodes.java.ClassIsAssignableFromNode;
-import org.graalvm.compiler.nodes.java.InstanceOfDynamicNode;
-import org.graalvm.compiler.nodes.java.InstanceOfNode;
-import org.graalvm.compiler.nodes.spi.LoweringTool;
-import org.graalvm.compiler.options.OptionValues;
-import org.graalvm.compiler.phases.util.Providers;
-import org.graalvm.compiler.replacements.InstanceOfSnippetsTemplates;
-import org.graalvm.compiler.replacements.SnippetTemplate;
-import org.graalvm.compiler.replacements.Snippets;
 
 import com.oracle.svm.core.graal.meta.KnownOffsets;
 import com.oracle.svm.core.graal.word.DynamicHubAccess;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.meta.SharedType;
 import com.oracle.svm.core.util.DuplicatedInNativeCode;
+
+import jdk.graal.compiler.api.replacements.Snippet;
+import jdk.graal.compiler.core.common.calc.UnsignedMath;
+import jdk.graal.compiler.core.common.type.TypeReference;
+import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.nodes.NamedLocationIdentity;
+import jdk.graal.compiler.nodes.PiNode;
+import jdk.graal.compiler.nodes.SnippetAnchorNode;
+import jdk.graal.compiler.nodes.calc.FloatingNode;
+import jdk.graal.compiler.nodes.extended.GuardingNode;
+import jdk.graal.compiler.nodes.java.ClassIsAssignableFromNode;
+import jdk.graal.compiler.nodes.java.InstanceOfDynamicNode;
+import jdk.graal.compiler.nodes.java.InstanceOfNode;
+import jdk.graal.compiler.nodes.spi.LoweringTool;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.phases.util.Providers;
+import jdk.graal.compiler.replacements.InstanceOfSnippetsTemplates;
+import jdk.graal.compiler.replacements.SnippetTemplate;
+import jdk.graal.compiler.replacements.Snippets;
 
 public final class TypeSnippets extends SubstrateTemplates implements Snippets {
 
@@ -209,7 +209,7 @@ public final class TypeSnippets extends SubstrateTemplates implements Snippets {
                 args.add("object", node.getValue());
                 args.add("trueValue", replacer.trueValue);
                 args.add("falseValue", replacer.falseValue);
-                args.addConst("allowsNull", node.allowsNull());
+                args.add("allowsNull", node.allowsNull());
                 args.add("exactType", hub);
                 return args;
 
@@ -219,11 +219,11 @@ public final class TypeSnippets extends SubstrateTemplates implements Snippets {
                 args.add("object", node.getValue());
                 args.add("trueValue", replacer.trueValue);
                 args.add("falseValue", replacer.falseValue);
-                args.addConst("allowsNull", node.allowsNull());
+                args.add("allowsNull", node.allowsNull());
                 args.add("start", hub.getTypeCheckStart());
                 args.add("range", hub.getTypeCheckRange());
                 args.add("slot", hub.getTypeCheckSlot());
-                args.addConst("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
+                args.add("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
                 return args;
             }
         }
@@ -252,7 +252,7 @@ public final class TypeSnippets extends SubstrateTemplates implements Snippets {
                 args.add("object", node.getObject());
                 args.add("trueValue", replacer.trueValue);
                 args.add("falseValue", replacer.falseValue);
-                args.addConst("allowsNull", node.allowsNull());
+                args.add("allowsNull", node.allowsNull());
                 args.add("exactType", node.getMirrorOrHub());
                 return args;
 
@@ -262,8 +262,8 @@ public final class TypeSnippets extends SubstrateTemplates implements Snippets {
                 args.add("object", node.getObject());
                 args.add("trueValue", replacer.trueValue);
                 args.add("falseValue", replacer.falseValue);
-                args.addConst("allowsNull", node.allowsNull());
-                args.addConst("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
+                args.add("allowsNull", node.allowsNull());
+                args.add("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
                 return args;
             }
         }
@@ -292,7 +292,7 @@ public final class TypeSnippets extends SubstrateTemplates implements Snippets {
             args.add("checkedHub", node.getOtherClass());
             args.add("trueValue", replacer.trueValue);
             args.add("falseValue", replacer.falseValue);
-            args.addConst("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
+            args.add("typeIDSlotOffset", knownOffsets.getTypeIDSlotsOffset());
             return args;
         }
     }

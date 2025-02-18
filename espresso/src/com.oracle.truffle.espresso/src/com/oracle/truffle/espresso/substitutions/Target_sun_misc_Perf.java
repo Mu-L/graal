@@ -20,14 +20,13 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.substitutions;
 
 import java.nio.ByteBuffer;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.espresso.meta.Meta;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * These (incomplete) substitutions are just a band-aid to run critical internal code (e.g.
@@ -88,7 +87,7 @@ public final class Target_sun_misc_Perf {
                 throw meta.throwException(meta.java_lang_IllegalArgumentException);
         }
 
-        return (StaticObject) meta.java_nio_ByteBuffer_wrap.invokeDirect(null, StaticObject.wrap(longToBytes(value), meta));
+        return (StaticObject) meta.java_nio_ByteBuffer_wrap.invokeDirectStatic(StaticObject.wrap(longToBytes(value), meta));
     }
 
     @Substitution

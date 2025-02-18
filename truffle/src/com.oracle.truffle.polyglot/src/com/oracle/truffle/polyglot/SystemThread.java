@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,8 @@
  */
 package com.oracle.truffle.polyglot;
 
+import static com.oracle.truffle.polyglot.PolyglotThreadLocalActions.TL_HANDSHAKE;
+
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 
 abstract class SystemThread extends Thread {
@@ -61,6 +63,7 @@ abstract class SystemThread extends Thread {
         AbstractPolyglotImpl rootPolyglot = polyglot.getRootImpl();
         try (AbstractPolyglotImpl.ThreadScope threadScope = rootPolyglot.createThreadScope()) {
             beforeExecute();
+            TL_HANDSHAKE.ensureThreadInitialized();
             try {
                 super.run();
             } finally {

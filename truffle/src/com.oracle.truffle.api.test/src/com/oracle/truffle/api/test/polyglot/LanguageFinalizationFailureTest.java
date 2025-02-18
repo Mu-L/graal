@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -229,8 +229,8 @@ public class LanguageFinalizationFailureTest {
         @Override
         protected void disposeContext(ExecutableContext context) {
             AtomicReference<Throwable> throwableRef = new AtomicReference<>();
-            Thread t = context.env.createThread(() -> {
-            });
+            Thread t = context.env.newTruffleThreadBuilder(() -> {
+            }).build();
             t.setUncaughtExceptionHandler((t1, e) -> throwableRef.set(e));
             t.start();
             try {

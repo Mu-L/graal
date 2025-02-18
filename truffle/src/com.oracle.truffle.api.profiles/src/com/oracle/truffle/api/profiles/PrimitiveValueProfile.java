@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -44,6 +44,7 @@ import java.util.Objects;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
+import com.oracle.truffle.api.dsl.NeverDefault;
 
 /**
  * <p>
@@ -52,9 +53,6 @@ import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
  * {@link Float#floatToRawIntBits} and {@link Double#doubleToRawLongBits}, so that for example
  * {@code -0.0} is not considered the same as {@code 0.0}, even though primitive equality would
  * normally say that it was.
- * </p>
- *
- * {@inheritDoc}
  *
  * @since 0.10
  */
@@ -302,7 +300,7 @@ public final class PrimitiveValueProfile extends ValueProfile {
     @Override
     public String toString() {
         if (this == DISABLED) {
-            return toStringDisabled(PrimitiveValueProfile.class);
+            return toStringDisabled();
         } else {
             return toString(PrimitiveValueProfile.class, isUninitialized(), isGeneric(), formatSpecialization());
         }
@@ -333,6 +331,7 @@ public final class PrimitiveValueProfile extends ValueProfile {
      * @since 0.10
      */
     @SuppressWarnings("deprecation")
+    @NeverDefault
     public static PrimitiveValueProfile createEqualityProfile() {
         return create();
     }
@@ -344,6 +343,7 @@ public final class PrimitiveValueProfile extends ValueProfile {
      * @since 22.1
      */
     @SuppressWarnings("deprecation")
+    @NeverDefault
     public static PrimitiveValueProfile create() {
         if (Profile.isProfilingEnabled()) {
             return new PrimitiveValueProfile();

@@ -24,26 +24,26 @@
  */
 package com.oracle.svm.core.heap;
 
-import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.EXTREMELY_FAST_PATH_PROBABILITY;
-import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.probability;
+import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.EXTREMELY_FAST_PATH_PROBABILITY;
+import static jdk.graal.compiler.nodes.extended.BranchProbabilityNode.probability;
 
 import java.lang.ref.Reference;
 import java.lang.ref.SoftReference;
 
-import org.graalvm.compiler.core.common.SuppressFBWarnings;
-import org.graalvm.compiler.debug.GraalError;
-import org.graalvm.compiler.word.BarrieredAccess;
-import org.graalvm.compiler.word.ObjectAccess;
-import org.graalvm.compiler.word.Word;
 import org.graalvm.word.Pointer;
-import org.graalvm.word.WordFactory;
 
+import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.thread.VMOperation;
+import com.oracle.svm.core.util.BasedOnJDKClass;
 import com.oracle.svm.core.util.TimeUtils;
-import com.oracle.svm.core.util.VMError;
 
+import jdk.graal.compiler.core.common.SuppressFBWarnings;
+import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.word.BarrieredAccess;
+import jdk.graal.compiler.word.ObjectAccess;
+import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -53,6 +53,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * not injected into {@link Target_java_lang_ref_Reference} so that subclasses of {@link Reference}
  * cannot interfere with them.
  */
+@BasedOnJDKClass(Reference.class)
 public final class ReferenceInternals {
     public static final String REFERENT_FIELD_NAME = "referent";
 
@@ -69,25 +70,35 @@ public final class ReferenceInternals {
     }
 
     /** Barrier-less read of {@link Target_java_lang_ref_Reference#referent} as a pointer. */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static <T> Pointer getReferentPointer(Reference<T> instance) {
-        return Word.objectToUntrackedPointer(ObjectAccess.readObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.referentFieldOffset)));
+        return Word.objectToUntrackedPointer(ObjectAccess.readObject(instance, Word.signed(Target_java_lang_ref_Reference.referentFieldOffset)));
     }
 
     @SuppressWarnings("unchecked")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static <T> T getReferent(Reference<T> instance) {
         return (T) SubstrateUtil.cast(instance, Target_java_lang_ref_Reference.class).referent;
     }
 
     /** Write {@link Target_java_lang_ref_Reference#referent}. */
-    @SuppressWarnings("unchecked")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void setReferent(Reference<?> instance, Object value) {
-        BarrieredAccess.writeObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.referentFieldOffset), value);
+        BarrieredAccess.writeObject(instance, Word.signed(Target_java_lang_ref_Reference.referentFieldOffset), value);
     }
 
     @Uninterruptible(reason = "Must be atomic with regard to garbage collection.")
     public static boolean refersTo(Reference<?> instance, Object value) {
-        // JDK-8188055
-        return value == ObjectAccess.readObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.referentFieldOffset));
+        /*
+         * Use a read without a barrier to avoid that this code keeps the object alive, see
+         * JDK-8188055.
+         */
+        return value == ObjectAccess.readObject(instance, Word.signed(Target_java_lang_ref_Reference.referentFieldOffset));
+    }
+
+    @Uninterruptible(reason = "Must be atomic with regard to garbage collection.")
+    public static boolean isReferentAlive(Reference<?> instance) {
+        return !refersTo(instance, null);
     }
 
     public static void clear(Reference<?> instance) {
@@ -102,11 +113,12 @@ public final class ReferenceInternals {
          *
          * This barrier-less write is to resolve JDK-8240696.
          */
-        ObjectAccess.writeObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.referentFieldOffset), null);
+        ObjectAccess.writeObject(instance, Word.signed(Target_java_lang_ref_Reference.referentFieldOffset), null);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static <T> Pointer getReferentFieldAddress(Reference<T> instance) {
-        return Word.objectToUntrackedPointer(instance).add(WordFactory.unsigned(Target_java_lang_ref_Reference.referentFieldOffset));
+        return Word.objectToUntrackedPointer(instance).add(Word.unsigned(Target_java_lang_ref_Reference.referentFieldOffset));
     }
 
     public static long getReferentFieldOffset() {
@@ -119,17 +131,32 @@ public final class ReferenceInternals {
     }
 
     /** Barrier-less read of {@link Target_java_lang_ref_Reference#discovered} as a pointer. */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static <T> Pointer getDiscoveredPointer(Reference<T> instance) {
-        return Word.objectToUntrackedPointer(ObjectAccess.readObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.discoveredFieldOffset)));
+        return Word.objectToUntrackedPointer(ObjectAccess.readObject(instance, Word.signed(Target_java_lang_ref_Reference.discoveredFieldOffset)));
     }
 
+    public static long getQueueFieldOffset() {
+        return Target_java_lang_ref_Reference.queueFieldOffset;
+    }
+
+    public static long getNextFieldOffset() {
+        return Target_java_lang_ref_Reference.nextFieldOffset;
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static long getNextDiscoveredFieldOffset() {
         return Target_java_lang_ref_Reference.discoveredFieldOffset;
     }
 
+    public static boolean isAnyReferenceFieldOffset(long offset) {
+        return offset == getReferentFieldOffset() || offset == getQueueFieldOffset() || offset == getNextFieldOffset() || offset == getNextDiscoveredFieldOffset();
+    }
+
     /** Write {@link Target_java_lang_ref_Reference#discovered}. */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static <T> void setNextDiscovered(Reference<T> instance, Reference<?> newNext) {
-        BarrieredAccess.writeObject(instance, WordFactory.signed(Target_java_lang_ref_Reference.discoveredFieldOffset), newNext);
+        BarrieredAccess.writeObject(instance, Word.signed(Target_java_lang_ref_Reference.discoveredFieldOffset), newNext);
     }
 
     public static boolean hasQueue(Reference<?> instance) {
@@ -143,12 +170,20 @@ public final class ReferenceInternals {
     private static final Object processPendingLock = new Object();
     private static boolean processPendingActive = false;
 
+    @NeverInline("Ensure that every exception can be caught, including implicit exceptions.")
     public static void waitForPendingReferences() throws InterruptedException {
         Heap.getHeap().waitForReferencePendingList();
     }
 
+    @NeverInline("Ensure that every exception can be caught, including implicit exceptions.")
     @SuppressFBWarnings(value = "NN_NAKED_NOTIFY", justification = "Notifies on progress, not a specific state change.")
     public static void processPendingReferences() {
+        /*
+         * Note that catching an OutOfMemoryError (e.g. from failing to allocate another exception)
+         * from here and resuming is not advisable because it can break synchronization. We should
+         * generally see these only when processing individual references or cleaners.
+         */
+
         Target_java_lang_ref_Reference<?> pendingList;
         synchronized (processPendingLock) {
             if (processPendingActive) {
@@ -168,32 +203,28 @@ public final class ReferenceInternals {
 
         // Process all references that were discovered by the GC.
         do {
-            try {
-                while (pendingList != null) {
-                    Target_java_lang_ref_Reference<?> ref = pendingList;
-                    pendingList = ref.discovered;
-                    ref.discovered = null;
+            while (pendingList != null) {
+                Target_java_lang_ref_Reference<?> ref = pendingList;
+                pendingList = ref.discovered;
+                ref.discovered = null;
 
-                    if (Target_jdk_internal_ref_Cleaner.class.isInstance(ref)) {
-                        Target_jdk_internal_ref_Cleaner cleaner = Target_jdk_internal_ref_Cleaner.class.cast(ref);
-                        // Cleaner catches all exceptions, cannot be overridden due to private c'tor
-                        cleaner.clean();
-                        synchronized (processPendingLock) {
-                            // Notify any waiters that progress has been made. This improves latency
-                            // for nio.Bits waiters, which are the only important ones.
-                            processPendingLock.notifyAll();
-                        }
-                    } else {
-                        @SuppressWarnings("unchecked")
-                        Target_java_lang_ref_ReferenceQueue<? super Object> queue = SubstrateUtil.cast(ref.queue, Target_java_lang_ref_ReferenceQueue.class);
-                        if (queue != Target_java_lang_ref_ReferenceQueue.NULL) {
-                            // Enqueues, avoiding the potentially overridden Reference.enqueue().
-                            queue.enqueue(ref);
-                        }
+                if (Target_jdk_internal_ref_Cleaner.class.isInstance(ref)) {
+                    Target_jdk_internal_ref_Cleaner cleaner = Target_jdk_internal_ref_Cleaner.class.cast(ref);
+                    // Cleaner catches all exceptions, cannot be overridden due to private c'tor
+                    cleaner.clean();
+                    synchronized (processPendingLock) {
+                        // Notify any waiters that progress has been made. This improves latency
+                        // for nio.Bits waiters, which are the only important ones.
+                        processPendingLock.notifyAll();
+                    }
+                } else {
+                    @SuppressWarnings("unchecked")
+                    Target_java_lang_ref_ReferenceQueue<? super Object> queue = SubstrateUtil.cast(ref.queue, Target_java_lang_ref_ReferenceQueue.class);
+                    if (queue != Target_java_lang_ref_ReferenceQueue.NULL) {
+                        // Enqueues, avoiding the potentially overridden Reference.enqueue().
+                        queue.enqueue(ref);
                     }
                 }
-            } catch (Throwable t) {
-                VMError.shouldNotReachHere("ReferenceQueue and Cleaner must handle all potential exceptions", t);
             }
 
             synchronized (processPendingLock) {
@@ -239,6 +270,7 @@ public final class ReferenceInternals {
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static long getSoftReferenceClock() {
         return Target_java_lang_ref_SoftReference.clock;
     }
@@ -250,6 +282,7 @@ public final class ReferenceInternals {
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static long getSoftReferenceTimestamp(SoftReference<?> instance) {
         Target_java_lang_ref_SoftReference<?> ref = SubstrateUtil.cast(instance, Target_java_lang_ref_SoftReference.class);
         return ref.timestamp;
@@ -269,7 +302,7 @@ public final class ReferenceInternals {
                 return field;
             }
         }
-        throw new GraalError("missing field " + fieldName + " in type " + type);
+        throw new GraalError("Missing field " + fieldName + " in type " + type);
     }
 
     private ReferenceInternals() {

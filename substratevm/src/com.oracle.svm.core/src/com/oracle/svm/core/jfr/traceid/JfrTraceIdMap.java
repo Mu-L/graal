@@ -28,11 +28,12 @@ package com.oracle.svm.core.jfr.traceid;
 
 import java.util.Arrays;
 
-import org.graalvm.compiler.api.replacements.Fold;
+import jdk.graal.compiler.api.replacements.Fold;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
+import com.oracle.svm.core.BuildPhaseProvider.ReadyForCompilation;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.heap.UnknownObjectField;
 import com.oracle.svm.core.hub.DynamicHub;
@@ -41,7 +42,7 @@ import com.oracle.svm.core.hub.DynamicHub;
  * Map for storing trace ids. Initialized before compilation with static class count from analysis.
  */
 public class JfrTraceIdMap {
-    @UnknownObjectField(types = {long[].class}) private long[] traceIDs;
+    @UnknownObjectField(availability = ReadyForCompilation.class) private long[] traceIDs;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public JfrTraceIdMap() {
@@ -65,7 +66,15 @@ public class JfrTraceIdMap {
 
     @Platforms(Platform.HOSTED_ONLY.class)
     void setId(int index, long id) {
+        assert traceIDs[index] == -1;
         traceIDs[index] = id;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    void tag(int index, long value) {
+        long id = traceIDs[index];
+        assert id != -1;
+        traceIDs[index] = id | value;
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)

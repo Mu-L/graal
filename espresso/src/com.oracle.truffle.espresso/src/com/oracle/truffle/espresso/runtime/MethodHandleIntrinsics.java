@@ -26,18 +26,21 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.oracle.truffle.api.CompilerAsserts;
-import com.oracle.truffle.espresso.EspressoLanguage;
-import com.oracle.truffle.espresso.descriptors.Symbol;
-import com.oracle.truffle.espresso.descriptors.Symbol.Name;
-import com.oracle.truffle.espresso.descriptors.Symbol.Signature;
-import com.oracle.truffle.espresso.descriptors.Symbol.Type;
-import com.oracle.truffle.espresso.descriptors.Types;
+import com.oracle.truffle.espresso.classfile.descriptors.Name;
+import com.oracle.truffle.espresso.classfile.descriptors.Signature;
+import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
+import com.oracle.truffle.espresso.classfile.descriptors.Type;
+import com.oracle.truffle.espresso.classfile.descriptors.TypeSymbols;
+import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Names;
+import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Types;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.meta.Meta;
 import com.oracle.truffle.espresso.nodes.methodhandle.MHInvokeBasicNodeGen;
 import com.oracle.truffle.espresso.nodes.methodhandle.MHInvokeGenericNode;
+import com.oracle.truffle.espresso.nodes.methodhandle.MHInvokeGenericNode.MethodHandleInvoker;
+import com.oracle.truffle.espresso.nodes.methodhandle.MHLinkToNativeNode;
 import com.oracle.truffle.espresso.nodes.methodhandle.MHLinkToNodeGen;
 import com.oracle.truffle.espresso.nodes.methodhandle.MethodHandleIntrinsicNode;
 import com.oracle.truffle.espresso.nodes.quick.invoke.InvokeHandleNode;
@@ -47,17 +50,17 @@ import com.oracle.truffle.espresso.nodes.quick.invoke.InvokeHandleNode;
  * espresso Method instances every time a new signature is seen. This is the only place that keeps
  * track of these, as the dummy methods are not present in klasses, since they are merely internal
  * constructs.
- * 
+ * <p>
  * Since the whole method handle machinery is a pretty opaque black box, here is a quick summary of
  * what's happening under espresso's hood.
- * 
+ *
  * <li>Each time a {@link java.lang.invoke.MethodHandle} PolymorphicSignature method is resolved
  * with a signature that was never seen before by the context, espresso creates a dummy placeholder
  * method and keeps track of it.
  * <li>When a call site needs to link against a polymorphic signatures, it obtains the dummy method.
- * It then calls {@link Method#spawnIntrinsicNode(EspressoLanguage, Meta, Klass, Symbol, Symbol)}
- * which gives a truffle node implementing the behavior of the MethodHandle intrinsics (ie:
- * extracting the call target from the arguments, appending an appendix to the erguments, etc...)
+ * It then calls {@link Method#spawnIntrinsicNode(MethodHandleInvoker)} which gives a truffle node
+ * implementing the behavior of the MethodHandle intrinsics (ie: extracting the call target from the
+ * arguments, appending an appendix to the arguments, etc...)
  * <li>This node is then fed to a {@link InvokeHandleNode} whose role is exactly like the other
  * invoke nodes: extracting arguments from the stack and passing it to its child.
  */
@@ -69,22 +72,16 @@ public final class MethodHandleIntrinsics {
         this.intrinsics = new ConcurrentHashMap<>();
     }
 
-    public static MethodHandleIntrinsicNode createIntrinsicNode(EspressoLanguage language, Meta meta, Method method, Klass accessingKlass, Symbol<Name> methodName, Symbol<Signature> signature) {
+    public static MethodHandleIntrinsicNode createIntrinsicNode(Meta meta, Method method, MethodHandleInvoker invoker) {
         PolySigIntrinsics id = getId(method);
-        switch (id) {
-            case InvokeBasic:
-                return MHInvokeBasicNodeGen.create(method);
-            case InvokeGeneric:
-                return MHInvokeGenericNode.create(language, meta, accessingKlass, method, methodName, signature);
-            case LinkToVirtual:
-            case LinkToStatic:
-            case LinkToSpecial:
-            case LinkToInterface:
-                return MHLinkToNodeGen.create(method, id);
-            default:
-                throw EspressoError.shouldNotReachHere("unrecognized intrinsic polymorphic method: " + method);
-
-        }
+        assert (invoker != null) == (id == PolySigIntrinsics.InvokeGeneric);
+        return switch (id) {
+            case InvokeBasic -> MHInvokeBasicNodeGen.create(method);
+            case InvokeGeneric -> MHInvokeGenericNode.create(method, invoker);
+            case LinkToVirtual, LinkToStatic, LinkToSpecial, LinkToInterface -> MHLinkToNodeGen.create(method, id);
+            case LinkToNative -> MHLinkToNativeNode.create(method, meta);
+            case None -> throw EspressoError.shouldNotReachHere();
+        };
     }
 
     public Method findIntrinsic(Method thisMethod, Symbol<Signature> signature) {
@@ -107,24 +104,26 @@ public final class MethodHandleIntrinsics {
     }
 
     public static PolySigIntrinsics getId(Symbol<Name> name, Klass declaringKlass) {
-        if (!(Type.java_lang_invoke_MethodHandle.equals(declaringKlass.getType()) ||
-                        Type.java_lang_invoke_VarHandle.equals(declaringKlass.getType()))) {
+        if (!Meta.isSignaturePolymorphicHolderType(declaringKlass.getType())) {
             return PolySigIntrinsics.None;
         }
-        if (Type.java_lang_invoke_MethodHandle.equals(declaringKlass.getType())) {
-            if (name == Name.linkToStatic) {
+        if (Types.java_lang_invoke_MethodHandle.equals(declaringKlass.getType())) {
+            if (name == Names.linkToStatic) {
                 return PolySigIntrinsics.LinkToStatic;
             }
-            if (name == Name.linkToVirtual) {
+            if (name == Names.linkToVirtual) {
                 return PolySigIntrinsics.LinkToVirtual;
             }
-            if (name == Name.linkToSpecial) {
+            if (name == Names.linkToSpecial) {
                 return PolySigIntrinsics.LinkToSpecial;
             }
-            if (name == Name.linkToInterface) {
+            if (name == Names.linkToInterface) {
                 return PolySigIntrinsics.LinkToInterface;
             }
-            if (name == Name.invokeBasic) {
+            if (name == Names.linkToNative) {
+                return PolySigIntrinsics.LinkToNative;
+            }
+            if (name == Names.invokeBasic) {
                 return PolySigIntrinsics.InvokeBasic;
             }
         }
@@ -191,7 +190,7 @@ public final class MethodHandleIntrinsics {
 
         @Override
         public String toString() {
-            return Types.binaryName(clazz) + "#" + methodName + signature;
+            return TypeSymbols.binaryName(clazz) + "#" + methodName + signature;
         }
 
     }
@@ -203,7 +202,8 @@ public final class MethodHandleIntrinsics {
         LinkToVirtual(true, true),
         LinkToStatic(true, true),
         LinkToSpecial(true, true),
-        LinkToInterface(true, true);
+        LinkToInterface(true, true),
+        LinkToNative(true, true);
 
         public final boolean isSignaturePolymorphicIntrinsic;
         public final boolean isStatic;
@@ -216,7 +216,7 @@ public final class MethodHandleIntrinsics {
         /**
          * Indicates that the given ID represent a static polymorphic signature method. As of Java
          * 11, there exists only 4 such methods.
-         * 
+         *
          * @see "java.lang.invoke.MethodHandle.linkToInterface(Object...)"
          * @see "java.lang.invoke.MethodHandle.linkToSpecial(Object...)"
          * @see "java.lang.invoke.MethodHandle.linkToStatic(Object...)"

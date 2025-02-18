@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -53,7 +53,7 @@ class WindowsSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
     private static final int EX_EXECUTE = 8;
 
     @Override
-    protected void installInternal() {
+    public void install() {
         /*
          * Normally we would use SEH (Structured Exception Handling) for this. However, in order for
          * SEH to work, the OS must be able to perform stack walking. On x64, this requires the
@@ -75,8 +75,7 @@ class WindowsSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
         }
     }
 
-    private static final CEntryPointLiteral<CFunctionPointer> HANDLER_LITERAL = CEntryPointLiteral.create(WindowsSubstrateSegfaultHandler.class,
-                    "handler", ErrHandlingAPI.EXCEPTION_POINTERS.class);
+    private static final CEntryPointLiteral<CFunctionPointer> HANDLER_LITERAL = CEntryPointLiteral.create(WindowsSubstrateSegfaultHandler.class, "handler", ErrHandlingAPI.EXCEPTION_POINTERS.class);
 
     @CEntryPoint(include = CEntryPoint.NotIncludedAutomatically.class, publishAs = Publish.NotPublished)
     @CEntryPointOptions(prologue = NoPrologue.class, epilogue = NoEpilogue.class)
@@ -91,10 +90,14 @@ class WindowsSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
 
         ErrHandlingAPI.CONTEXT context = exceptionInfo.ContextRecord();
         if (tryEnterIsolate(context)) {
-            dump(exceptionInfo, context);
+            dump(exceptionInfo, context, true);
             throw shouldNotReachHere();
         }
-        /* Nothing we can do. */
+
+        /*
+         * Attach failed - nothing we need to do. If there is no other OS-level exception handler
+         * installed, then Windows will abort the process.
+         */
         return ErrHandlingAPI.EXCEPTION_CONTINUE_SEARCH();
     }
 
@@ -119,7 +122,8 @@ class WindowsSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
             } else {
                 log.string(", ExceptionInformation=").zhex(operation);
             }
-            log.string(" ").zhex(exInfo.addressOf(1).read());
+            log.string(" ");
+            printSegfaultAddressInfo(log, exInfo.addressOf(1).read());
         } else {
             if (numParameters > 0) {
                 log.string(", ExceptionInformation=");
@@ -131,9 +135,9 @@ class WindowsSubstrateSegfaultHandler extends SubstrateSegfaultHandler {
         }
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code.")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     @RestrictHeapAccess(access = NO_ALLOCATION, reason = "Must not allocate in segfault handler.")
     private static RuntimeException shouldNotReachHere() {
-        throw VMError.shouldNotReachHere();
+        throw VMError.shouldNotReachHereAtRuntime(); // ExcludeFromJacocoGeneratedReport
     }
 }

@@ -24,13 +24,11 @@
  */
 package com.oracle.svm.core.code;
 
+import static com.oracle.svm.core.deopt.Deoptimizer.Options.LazyDeoptimization;
 import static com.oracle.svm.core.option.RuntimeOptionKey.RuntimeOptionKeyFlag.RelevantForCompilationIsolates;
 import static com.oracle.svm.core.snippets.KnownIntrinsics.readCallerStackPointer;
 
 import org.graalvm.collections.EconomicMap;
-import org.graalvm.compiler.options.Option;
-import org.graalvm.compiler.options.OptionKey;
-import org.graalvm.compiler.options.OptionType;
 import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
@@ -38,24 +36,28 @@ import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
-import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
 import com.oracle.svm.core.deopt.DeoptimizedFrame;
 import com.oracle.svm.core.deopt.Deoptimizer;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
+import com.oracle.svm.core.heap.RestrictHeapAccess;
+import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.stack.JavaStackWalker;
 import com.oracle.svm.core.stack.StackFrameVisitor;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.util.Counter;
+
+import jdk.graal.compiler.options.Option;
+import jdk.graal.compiler.options.OptionKey;
+import jdk.graal.compiler.options.OptionType;
+import jdk.graal.compiler.word.Word;
 
 public class RuntimeCodeCache {
 
@@ -112,7 +114,7 @@ public class RuntimeCodeCache {
         lookupMethodCount.inc();
         assert verifyTable();
         if (numCodeInfos == 0) {
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         int idx = binarySearch(codeInfos, 0, numCodeInfos, ip);
@@ -125,21 +127,21 @@ public class RuntimeCodeCache {
         if (insertionPoint == 0) {
             /* ip is below the first method, so no hit. */
             assert ((UnsignedWord) ip).belowThan((UnsignedWord) UntetheredCodeInfoAccess.getCodeStart(NonmovableArrays.getWord(codeInfos, 0)));
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         UntetheredCodeInfo info = NonmovableArrays.getWord(codeInfos, insertionPoint - 1);
         assert ((UnsignedWord) ip).aboveThan((UnsignedWord) UntetheredCodeInfoAccess.getCodeStart(info));
         if (((UnsignedWord) ip).subtract((UnsignedWord) UntetheredCodeInfoAccess.getCodeStart(info)).aboveOrEqual(UntetheredCodeInfoAccess.getCodeSize(info))) {
             /* ip is not within the range of a method. */
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
         }
 
         return info;
     }
 
     /* Copied and adapted from Arrays.binarySearch. */
-    @Uninterruptible(reason = "called from uninterruptible code")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static int binarySearch(NonmovableArray<UntetheredCodeInfo> a, int fromIndex, int toIndex, CodePointer key) {
         int low = fromIndex;
         int high = toIndex - 1;
@@ -160,7 +162,7 @@ public class RuntimeCodeCache {
     }
 
     public void addMethod(CodeInfo info) {
-        assert VMOperation.isInProgressAtSafepoint();
+        assert VMOperation.isInProgressAtSafepoint() : "invalid state";
         InstalledCodeObserverSupport.activateObservers(RuntimeCodeInfoAccess.getCodeObserverHandles(info));
         addMethod0(info);
         RuntimeCodeInfoHistory.singleton().logAdd(info);
@@ -192,7 +194,7 @@ public class RuntimeCodeCache {
         if (newTableSize < INITIAL_TABLE_SIZE) {
             newTableSize = INITIAL_TABLE_SIZE;
         }
-        NonmovableArray<UntetheredCodeInfo> newCodeInfos = NonmovableArrays.createWordArray(newTableSize);
+        NonmovableArray<UntetheredCodeInfo> newCodeInfos = NonmovableArrays.createWordArray(newTableSize, NmtCategory.Code);
         if (codeInfos.isNonNull()) {
             NonmovableArrays.arraycopy(codeInfos, 0, newCodeInfos, 0, NonmovableArrays.lengthOf(codeInfos));
             NonmovableArrays.releaseUnmanagedArray(codeInfos);
@@ -201,7 +203,7 @@ public class RuntimeCodeCache {
     }
 
     protected void invalidateMethod(CodeInfo info) {
-        assert VMOperation.isInProgressAtSafepoint();
+        assert VMOperation.isInProgressAtSafepoint() : "illegal state";
         prepareInvalidation(info);
 
         /*
@@ -210,14 +212,20 @@ public class RuntimeCodeCache {
          */
         Deoptimizer.deoptimizeInRange(CodeInfoAccess.getCodeStart(info), CodeInfoAccess.getCodeEnd(info), false);
 
-        finishInvalidation(info, true);
+        boolean removeNow = !LazyDeoptimization.getValue();
+        continueInvalidation(info, removeNow);
     }
 
     protected void invalidateNonStackMethod(CodeInfo info) {
         assert VMOperation.isGCInProgress() : "may only be called by the GC";
         prepareInvalidation(info);
         assert codeNotOnStackVerifier.verify(info);
-        finishInvalidation(info, false);
+
+        /*
+         * This method is called by the GC, so we must call continueInvalidation with removeNow
+         * being true, so that code is actually removed from the code cache.
+         */
+        continueInvalidation(info, true);
     }
 
     private void prepareInvalidation(CodeInfo info) {
@@ -226,7 +234,7 @@ public class RuntimeCodeCache {
 
         SubstrateInstalledCode installedCode = RuntimeCodeInfoAccess.getInstalledCode(info);
         if (installedCode != null) {
-            assert !installedCode.isAlive() || CodeInfoAccess.getCodeStart(info).rawValue() == installedCode.getAddress();
+            assert !installedCode.isAlive() || CodeInfoAccess.getCodeStart(info).rawValue() == installedCode.getAddress() : installedCode;
             /*
              * Until here, the InstalledCode may be valid (can be invoked) or alive (frames can be
              * on the stack). All the metadata must be valid until this point. Ensure it is
@@ -236,31 +244,43 @@ public class RuntimeCodeCache {
         }
     }
 
-    private void finishInvalidation(CodeInfo info, boolean notifyGC) {
+    private void continueInvalidation(CodeInfo info, boolean removeNow) {
         InstalledCodeObserverSupport.removeObservers(RuntimeCodeInfoAccess.getCodeObserverHandles(info));
-        finishInvalidation0(info, notifyGC);
-        RuntimeCodeInfoHistory.singleton().logInvalidate(info);
+        if (removeNow) {
+            /* If removeNow, then the CodeInfo is immediately removed from the code cache. */
+            removeFromCodeCache(info);
+            RuntimeCodeInfoHistory.singleton().logInvalidate(info);
+        } else {
+            /*
+             * Otherwise, we leave the CodeInfo to be collected by GC after no stack activations are
+             * remaining by marking it as non-entrant. Note that the corresponding InstalledCode
+             * object is fully invalidated at that point (this is a major difference to normal
+             * non-entrant code, where the InstalledCode object remains valid).
+             */
+            if (CodeInfoAccess.getState(info) < CodeInfo.STATE_NON_ENTRANT) {
+                CodeInfoAccess.setState(info, CodeInfo.STATE_NON_ENTRANT);
+                RuntimeCodeInfoHistory.singleton().logInvalidate(info);
+            }
+        }
     }
 
+    /**
+     * Remove info entry from our table. This should only be called when the CodeInfo is no longer
+     * on the stack and cannot be invoked anymore
+     */
     @Uninterruptible(reason = "Modifying code tables that are used by the GC")
-    private void finishInvalidation0(CodeInfo info, boolean notifyGC) {
-        /*
-         * Now it is guaranteed that the InstalledCode is not on the stack and cannot be invoked
-         * anymore, so we can free the code and all metadata.
-         */
-
-        /* Remove info entry from our table. */
+    private void removeFromCodeCache(CodeInfo info) {
         int idx = binarySearch(codeInfos, 0, numCodeInfos, CodeInfoAccess.getCodeStart(info));
         assert idx >= 0 : "info must be in table";
         NonmovableArrays.arraycopy(codeInfos, idx + 1, codeInfos, idx, numCodeInfos - (idx + 1));
         numCodeInfos--;
-        NonmovableArrays.setWord(codeInfos, numCodeInfos, WordFactory.nullPointer());
+        NonmovableArrays.setWord(codeInfos, numCodeInfos, Word.nullPointer());
 
-        RuntimeCodeInfoAccess.freePartially(info, notifyGC);
+        RuntimeCodeInfoAccess.markAsRemovedFromCodeCache(info);
         assert verifyTable();
     }
 
-    @Uninterruptible(reason = "called from uninterruptible code")
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private boolean verifyTable() {
         if (codeInfos.isNull()) {
             assert numCodeInfos == 0 : "a1";
@@ -297,20 +317,23 @@ public class RuntimeCodeCache {
 
             Pointer sp = readCallerStackPointer();
             JavaStackWalker.walkCurrentThread(sp, this);
-            if (SubstrateOptions.MultiThreaded.getValue()) {
-                for (IsolateThread vmThread = VMThreads.firstThread(); vmThread.isNonNull(); vmThread = VMThreads.nextThread(vmThread)) {
-                    if (vmThread == CurrentIsolate.getCurrentThread()) {
-                        continue;
-                    }
-                    JavaStackWalker.walkThread(vmThread, this);
+            for (IsolateThread vmThread = VMThreads.firstThread(); vmThread.isNonNull(); vmThread = VMThreads.nextThread(vmThread)) {
+                if (vmThread == CurrentIsolate.getCurrentThread()) {
+                    continue;
                 }
+                JavaStackWalker.walkThread(vmThread, this);
             }
             return true;
         }
 
         @Override
-        public boolean visitFrame(Pointer sp, CodePointer ip, CodeInfo currentCodeInfo, DeoptimizedFrame deoptimizedFrame) {
-            assert currentCodeInfo != codeInfoToCheck;
+        public boolean visitRegularFrame(Pointer sp, CodePointer ip, CodeInfo currentCodeInfo) {
+            assert currentCodeInfo != codeInfoToCheck : currentCodeInfo.rawValue();
+            return true;
+        }
+
+        @Override
+        protected boolean visitDeoptimizedFrame(Pointer originalSP, CodePointer deoptStubIP, DeoptimizedFrame deoptimizedFrame) {
             return true;
         }
     }
@@ -322,6 +345,6 @@ public class RuntimeCodeCache {
          * continue, else false.
          */
         @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while visiting code.")
-        <T extends CodeInfo> boolean visitCode(T codeInfo);
+        boolean visitCode(CodeInfo codeInfo);
     }
 }

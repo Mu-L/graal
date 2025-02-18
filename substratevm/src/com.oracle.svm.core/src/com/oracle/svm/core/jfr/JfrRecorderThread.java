@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,30 +24,30 @@
  */
 package com.oracle.svm.core.jfr;
 
-import org.graalvm.compiler.core.common.SuppressFBWarnings;
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
+import java.util.concurrent.locks.ReentrantLock;
+
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.UnsignedWord;
 
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.jdk.UninterruptibleUtils;
-import com.oracle.svm.core.locks.VMCondition;
-import com.oracle.svm.core.locks.VMMutex;
 import com.oracle.svm.core.locks.VMSemaphore;
 import com.oracle.svm.core.sampler.SamplerBuffer;
 import com.oracle.svm.core.sampler.SamplerBuffersAccess;
-import com.oracle.svm.core.sampler.SubstrateSigprofHandler;
 import com.oracle.svm.core.util.VMError;
+
+import jdk.graal.compiler.core.common.SuppressFBWarnings;
 
 /**
  * A daemon thread that is created during JFR startup and torn down by
  * {@link SubstrateJVM#destroyJFR}.
+ * 
  * <p>
- * It is used for persisting the {@link JfrGlobalMemory} buffers to a file and for processing the
- * pool of {@link SamplerBuffer}s collected in signal handler (see {@link SubstrateSigprofHandler}).
- * With that in mind, the thread is using {@link VMSemaphore} for a synchronization between threads
- * as it is async signal safe.
+ * This class is primarily used for persisting the {@link JfrGlobalMemory} buffers to a file.
+ * Besides that, it is also used for processing full {@link SamplerBuffer}s. As
+ * {@link SamplerBuffer}s may also be filled in a signal handler, a {@link VMSemaphore} is used for
+ * notification because it is async-signal-safe.
  * </p>
  */
 public class JfrRecorderThread extends Thread {
@@ -57,27 +57,22 @@ public class JfrRecorderThread extends Thread {
     private final JfrUnlockedChunkWriter unlockedChunkWriter;
 
     private final VMSemaphore semaphore;
+    private final ReentrantLock lock;
+    /* A volatile boolean field would not be enough to ensure synchronization. */
     private final UninterruptibleUtils.AtomicBoolean atomicNotify;
 
-    private final VMMutex mutex;
-    private final VMCondition condition;
-    private volatile boolean notified;
     private volatile boolean stopped;
 
     @Platforms(Platform.HOSTED_ONLY.class)
+    @SuppressWarnings("this-escape")
     public JfrRecorderThread(JfrGlobalMemory globalMemory, JfrUnlockedChunkWriter unlockedChunkWriter) {
         super("JFR recorder");
         this.globalMemory = globalMemory;
         this.unlockedChunkWriter = unlockedChunkWriter;
-        this.mutex = new VMMutex("jfrRecorder");
-        this.condition = new VMCondition(mutex);
-        this.semaphore = new VMSemaphore();
+        this.semaphore = new VMSemaphore("jfrRecorder");
+        this.lock = new ReentrantLock();
         this.atomicNotify = new UninterruptibleUtils.AtomicBoolean(false);
         setDaemon(true);
-    }
-
-    public void setStopped(boolean value) {
-        this.stopped = value;
     }
 
     @Override
@@ -85,39 +80,26 @@ public class JfrRecorderThread extends Thread {
         try {
             while (!stopped) {
                 if (await()) {
-                    run0();
+                    lock.lock();
+                    try {
+                        work();
+                    } finally {
+                        lock.unlock();
+                    }
                 }
             }
         } catch (Throwable e) {
-            VMError.shouldNotReachHere("No exception must by thrown in the JFR recorder thread as this could break file IO operations.");
+            VMError.shouldNotReachHere("No exception must by thrown in the JFR recorder thread as this could break file IO operations.", e);
         }
     }
 
     private boolean await() {
-        if (Platform.includedIn(Platform.DARWIN.class)) {
-            /*
-             * DARWIN is not supporting unnamed semaphores, therefore we must use VMLock and
-             * VMConditional for synchronization.
-             */
-            mutex.lock();
-            try {
-                while (!notified) {
-                    condition.block();
-                }
-                notified = false;
-            } finally {
-                mutex.unlock();
-            }
-            return true;
-        } else {
-            semaphore.await();
-            return atomicNotify.compareAndSet(true, false);
-        }
+        semaphore.await();
+        return atomicNotify.compareAndSet(true, false);
     }
 
-    private void run0() {
-        /* Process all unprocessed sampler buffers. */
-        SamplerBuffersAccess.processSamplerBuffers();
+    private void work() {
+        SamplerBuffersAccess.processFullBuffers(true);
         JfrChunkWriter chunkWriter = unlockedChunkWriter.lock();
         try {
             if (chunkWriter.hasOpenFile()) {
@@ -128,37 +110,54 @@ public class JfrRecorderThread extends Thread {
         }
     }
 
+    void endRecording() {
+        lock.lock();
+        try {
+            SubstrateJVM.JfrEndRecordingOperation vmOp = new SubstrateJVM.JfrEndRecordingOperation();
+            vmOp.enqueue();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     @SuppressFBWarnings(value = "NN_NAKED_NOTIFY", justification = "state change is in native buffer")
     private void persistBuffers(JfrChunkWriter chunkWriter) {
-        JfrBuffers buffers = globalMemory.getBuffers();
-        for (int i = 0; i < globalMemory.getBufferCount(); i++) {
-            JfrBuffer buffer = buffers.addressOf(i).read();
-            if (isFullEnough(buffer)) {
-                boolean shouldNotify = persistBuffer(chunkWriter, buffer);
-                if (shouldNotify) {
-                    Object chunkRotationMonitor = JavaVersionUtil.JAVA_SPEC >= 20
-                                    ? Target_jdk_jfr_internal_JVM.CHUNK_ROTATION_MONITOR
-                                    : Target_jdk_jfr_internal_JVM.FILE_DELTA_CHANGE;
-                    synchronized (chunkRotationMonitor) {
-                        chunkRotationMonitor.notifyAll();
-                    }
-                }
+        JfrBufferList buffers = globalMemory.getBuffers();
+        JfrBufferNode node = buffers.getHead();
+        while (node.isNonNull()) {
+            tryPersistBuffer(chunkWriter, node);
+            node = node.getNext();
+        }
+
+        if (chunkWriter.shouldRotateDisk()) {
+            Object chunkRotationMonitor = getChunkRotationMonitor();
+            synchronized (chunkRotationMonitor) {
+                chunkRotationMonitor.notifyAll();
             }
         }
     }
 
-    @Uninterruptible(reason = "Epoch must not change while in this method.")
-    private static boolean persistBuffer(JfrChunkWriter chunkWriter, JfrBuffer buffer) {
-        if (JfrBufferAccess.acquire(buffer)) {
+    private static Object getChunkRotationMonitor() {
+        if (HasChunkRotationMonitorField.get()) {
+            return Target_jdk_jfr_internal_JVM.CHUNK_ROTATION_MONITOR;
+        } else {
+            return Target_jdk_jfr_internal_JVM.FILE_DELTA_CHANGE;
+        }
+    }
+
+    @Uninterruptible(reason = "Locking without transition requires that the whole critical section is uninterruptible.")
+    private static void tryPersistBuffer(JfrChunkWriter chunkWriter, JfrBufferNode node) {
+        if (JfrBufferNodeAccess.tryLock(node)) {
             try {
-                boolean shouldNotify = chunkWriter.write(buffer);
-                JfrBufferAccess.reinitialize(buffer);
-                return shouldNotify;
+                JfrBuffer buffer = JfrBufferNodeAccess.getBuffer(node);
+                if (isFullEnough(buffer)) {
+                    chunkWriter.write(buffer);
+                    JfrBufferAccess.reinitialize(buffer);
+                }
             } finally {
-                JfrBufferAccess.release(buffer);
+                JfrBufferNodeAccess.unlock(node);
             }
         }
-        return false;
     }
 
     /**
@@ -167,17 +166,8 @@ public class JfrRecorderThread extends Thread {
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public void signal() {
-        if (Platform.includedIn(Platform.DARWIN.class)) {
-            /*
-             * DARWIN is not supporting unnamed semaphores, therefore we must use VMConditional for
-             * signaling.
-             */
-            notified = true;
-            condition.broadcast();
-        } else {
-            atomicNotify.set(true);
-            semaphore.signal();
-        }
+        atomicNotify.set(true);
+        semaphore.signal();
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -189,5 +179,18 @@ public class JfrRecorderThread extends Thread {
     private static boolean isFullEnough(JfrBuffer buffer) {
         UnsignedWord bufferTargetSize = buffer.getSize().multiply(100).unsignedDivide(BUFFER_FULL_ENOUGH_PERCENTAGE);
         return JfrBufferAccess.getAvailableSize(buffer).belowOrEqual(bufferTargetSize);
+    }
+
+    public void shutdown() {
+        this.stopped = true;
+        this.signal();
+        try {
+            this.join();
+        } catch (InterruptedException e) {
+            throw VMError.shouldNotReachHere(e);
+        } finally {
+            /* Temporary workaround util we fix GR-39879. */
+            VMError.guarantee(semaphore.destroy() == 0);
+        }
     }
 }

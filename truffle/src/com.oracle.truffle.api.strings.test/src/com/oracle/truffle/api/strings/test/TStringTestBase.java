@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -47,6 +47,7 @@ import static com.oracle.truffle.api.strings.TruffleString.Encoding.Stateless_IS
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.Stateless_ISO_2022_JP_KDDI;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.US_ASCII;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_16;
+import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_16LE;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_32;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.UTF_8;
 import static com.oracle.truffle.api.strings.TruffleString.Encoding.values;
@@ -97,6 +98,7 @@ public class TStringTestBase {
         context.close();
     }
 
+    protected static final boolean COMPACT_STRINGS_ENABLED;
     protected static final TruffleString S_UTF8 = TruffleString.fromCodePointUncached('a', UTF_8);
     protected static final TruffleString S_UTF16 = TruffleString.fromCodePointUncached('a', UTF_16);
     protected static final TruffleString S_UTF32 = TruffleString.fromCodePointUncached('a', UTF_32);
@@ -121,12 +123,25 @@ public class TStringTestBase {
 
     static {
         Field addressField;
+        Field compactStringsField;
         try {
             addressField = Buffer.class.getDeclaredField("address");
+            compactStringsField = String.class.getDeclaredField("COMPACT_STRINGS");
         } catch (NoSuchFieldException e) {
             throw new RuntimeException("exception while trying to get Buffer.address via reflection:", e);
         }
         byteBufferAddressOffset = getObjectFieldOffset(addressField);
+        COMPACT_STRINGS_ENABLED = UNSAFE.getBoolean(getStaticFieldBase(compactStringsField), getStaticFieldOffset(compactStringsField));
+    }
+
+    @SuppressWarnings("deprecation" /* JDK-8277863 */)
+    private static Object getStaticFieldBase(Field field) {
+        return UNSAFE.staticFieldBase(field);
+    }
+
+    @SuppressWarnings("deprecation" /* JDK-8277863 */)
+    private static long getStaticFieldOffset(Field field) {
+        return UNSAFE.staticFieldOffset(field);
     }
 
     @SuppressWarnings("deprecation")
@@ -425,6 +440,19 @@ public class TStringTestBase {
                 test.run(((TruffleString) string).asNativeUncached(PointerObject::create, encoding, true, false), array, codeRange, isValid, encoding, codepoints, byteIndices);
             }
         }
+        if (encoding == UTF_16LE) {
+            // check fromJavaString with lazy codeRange / codePointLength
+            TruffleString fromJavaString = TruffleString.fromJavaStringUncached(new String(TStringTestUtil.toCharArrayPunned(array)), encoding);
+            if (array.length != 2) {
+                TruffleString.CodeRange codeRangeImprecise = fromJavaString.getCodeRangeImpreciseUncached(encoding);
+                if (COMPACT_STRINGS_ENABLED) {
+                    Assert.assertSame(codeRangeImprecise, (codeRange.isSubsetOf(TruffleString.CodeRange.LATIN_1) ? TruffleString.CodeRange.LATIN_1 : TruffleString.CodeRange.BROKEN));
+                } else {
+                    Assert.assertSame(codeRangeImprecise, codeRange);
+                }
+            }
+            test.run(fromJavaString, array, codeRange, isValid, encoding, codepoints, byteIndices);
+        }
         if (codeRange == TruffleString.CodeRange.ASCII && isAsciiCompatible(encoding)) {
             byte[] bytesUTF16 = new byte[(codepoints.length + 1) * 2];
             for (int i = 0; i < codepoints.length; i++) {
@@ -482,9 +510,9 @@ public class TStringTestBase {
         int lastCPI = codepoints.length - 1;
         int firstCodepoint = codepoints[0];
         int lastCodepoint = codepoints[lastCPI];
-        TruffleString first = TruffleString.fromCodePointUncached(firstCodepoint, encoding);
+        TruffleString first = TruffleString.fromCodePointUncached(firstCodepoint, encoding, false);
         TruffleString firstSubstring = a.substringByteIndexUncached(0, codepoints.length == 1 ? array.length : byteIndices[1], encoding, true);
-        TruffleString last = TruffleString.fromCodePointUncached(lastCodepoint, encoding);
+        TruffleString last = TruffleString.fromCodePointUncached(lastCodepoint, encoding, false);
         TruffleString lastSubstring = a.substringByteIndexUncached(byteIndices[lastCPI], array.length - byteIndices[lastCPI], encoding, true);
         int expectedFirst = lastIndex ? lastIndexOfCodePoint(codepoints, byteIndices, byteIndex, codepoints.length, 0, firstCodepoint) : 0;
         int expectedLast = lastIndex ? byteIndex ? byteIndices[lastCPI] : lastCPI : indexOfCodePoint(codepoints, byteIndices, byteIndex, 0, codepoints.length, lastCodepoint);

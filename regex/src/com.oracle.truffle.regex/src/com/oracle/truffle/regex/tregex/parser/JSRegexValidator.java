@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,24 +42,33 @@ package com.oracle.truffle.regex.tregex.parser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.regex.RegexFlags;
+import com.oracle.truffle.regex.RegexLanguage;
 import com.oracle.truffle.regex.RegexSource;
 import com.oracle.truffle.regex.RegexSyntaxException;
+import com.oracle.truffle.regex.RegexSyntaxException.ErrorCode;
 import com.oracle.truffle.regex.UnsupportedRegexException;
-import com.oracle.truffle.regex.errors.ErrorMessages;
+import com.oracle.truffle.regex.errors.JsErrorMessages;
+import com.oracle.truffle.regex.tregex.buffer.CompilationBuffer;
 
 public class JSRegexValidator implements RegexValidator {
 
+    private final RegexLanguage language;
     private final RegexSource source;
     private final RegexFlags flags;
-    private final RegexLexer lexer;
+    private final CompilationBuffer compilationBuffer;
+    private final JSRegexLexer lexer;
 
-    public JSRegexValidator(RegexSource source) {
+    public JSRegexValidator(RegexLanguage language, RegexSource source, CompilationBuffer compilationBuffer) {
+        this.language = language;
         this.source = source;
         this.flags = RegexFlags.parseFlags(source);
-        this.lexer = new RegexLexer(source, flags);
+        this.compilationBuffer = compilationBuffer;
+        this.lexer = new JSRegexLexer(source, flags, compilationBuffer);
     }
 
     @Override
@@ -94,7 +103,7 @@ public class JSRegexValidator implements RegexValidator {
      * errors.
      * <p>
      * This method simulates the state of {@link JSRegexParser} running
-     * {@link JSRegexParser#parse()}. Most of the syntax errors are handled by {@link RegexLexer}.
+     * {@link JSRegexParser#parse()}. Most of the syntax errors are handled by {@link JSRegexLexer}.
      * In order to correctly identify the remaining syntax errors, we need to track only a fraction
      * of the parser's state (the stack of open parenthesized expressions and a short
      * characterization of the last term).
@@ -115,20 +124,25 @@ public class JSRegexValidator implements RegexValidator {
                 case wordBoundary:
                 case nonWordBoundary:
                 case backReference:
+                case literalChar:
                 case charClass:
+                case charClassBegin:
+                case charClassAtom:
+                case charClassEnd:
+                case classSet:
                     curTermState = CurTermState.Other;
                     break;
                 case quantifier:
                     switch (curTermState) {
                         case Null:
-                            throw syntaxError(ErrorMessages.QUANTIFIER_WITHOUT_TARGET);
+                            throw syntaxError(JsErrorMessages.QUANTIFIER_WITHOUT_TARGET, ErrorCode.InvalidQuantifier);
                         case LookAheadAssertion:
-                            if (flags.isUnicode()) {
-                                throw syntaxError(ErrorMessages.QUANTIFIER_ON_LOOKAHEAD_ASSERTION);
+                            if (flags.isEitherUnicode()) {
+                                throw syntaxError(JsErrorMessages.QUANTIFIER_ON_LOOKAHEAD_ASSERTION, ErrorCode.InvalidQuantifier);
                             }
                             break;
                         case LookBehindAssertion:
-                            throw syntaxError(ErrorMessages.QUANTIFIER_ON_LOOKBEHIND_ASSERTION);
+                            throw syntaxError(JsErrorMessages.QUANTIFIER_ON_LOOKBEHIND_ASSERTION, ErrorCode.InvalidQuantifier);
                         case Other:
                             break;
                     }
@@ -139,6 +153,7 @@ public class JSRegexValidator implements RegexValidator {
                     break;
                 case captureGroupBegin:
                 case nonCaptureGroupBegin:
+                case inlineFlags:
                     syntaxStack.add(RegexStackElem.Group);
                     curTermState = CurTermState.Null;
                     break;
@@ -152,7 +167,7 @@ public class JSRegexValidator implements RegexValidator {
                     break;
                 case groupEnd:
                     if (syntaxStack.isEmpty()) {
-                        throw syntaxError(ErrorMessages.UNMATCHED_RIGHT_PARENTHESIS);
+                        throw syntaxError(JsErrorMessages.UNMATCHED_RIGHT_PARENTHESIS, ErrorCode.UnmatchedParenthesis);
                     }
                     RegexStackElem poppedElem = syntaxStack.remove(syntaxStack.size() - 1);
                     switch (poppedElem) {
@@ -167,14 +182,34 @@ public class JSRegexValidator implements RegexValidator {
                             break;
                     }
                     break;
+                default:
+                    throw CompilerDirectives.shouldNotReachHere();
             }
         }
+        if (lexer.inCharacterClass()) {
+            throw syntaxError(JsErrorMessages.UNMATCHED_LEFT_BRACKET, ErrorCode.UnmatchedBracket);
+        }
         if (!syntaxStack.isEmpty()) {
-            throw syntaxError(ErrorMessages.UNTERMINATED_GROUP);
+            throw syntaxError(JsErrorMessages.UNTERMINATED_GROUP, ErrorCode.UnmatchedParenthesis);
+        }
+        checkNamedCaptureGroups();
+    }
+
+    private void checkNamedCaptureGroups() {
+        if (lexer.getNamedCaptureGroups() != null) {
+            for (Map.Entry<String, List<Integer>> entry : lexer.getNamedCaptureGroups().entrySet()) {
+                if (entry.getValue().size() > 1) {
+                    // if the regexp contains duplicate names of capture groups, we need to parse
+                    // with an actual AST to check whether the two duplicate capture groups can
+                    // participate in the same match
+                    new JSRegexParser(language, source, compilationBuffer).parse();
+                    break;
+                }
+            }
         }
     }
 
-    private RegexSyntaxException syntaxError(String msg) {
-        return RegexSyntaxException.createPattern(source, msg, lexer.getLastTokenPosition());
+    private RegexSyntaxException syntaxError(String msg, ErrorCode errorCode) {
+        return RegexSyntaxException.createPattern(source, msg, lexer.getLastTokenPosition(), errorCode);
     }
 }

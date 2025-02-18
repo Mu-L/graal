@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,17 +40,20 @@
  */
 package com.oracle.truffle.host;
 
+import java.lang.reflect.Type;
+import java.math.BigInteger;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
 import org.graalvm.polyglot.HostAccess.TargetMappingPrecedence;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl.AbstractHostAccess;
-import org.graalvm.polyglot.proxy.Proxy;
 
 import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.dsl.InlineSupport.InlineTarget;
 import com.oracle.truffle.api.impl.Accessor;
 import com.oracle.truffle.api.interop.InteropLibrary;
+import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 
 final class HostAccessor extends Accessor {
@@ -130,7 +133,7 @@ final class HostAccessor extends Accessor {
         }
 
         @Override
-        public Object toDisconnectedHostProxy(Proxy hostValue) {
+        public Object toDisconnectedHostProxy(Object hostValue) {
             return HostProxy.toProxyGuestObject(null, hostValue);
         }
 
@@ -157,6 +160,31 @@ final class HostAccessor extends Accessor {
         @Override
         public boolean isHostLanguage(Class<?> languageClass) {
             return languageClass == HostLanguage.class;
+        }
+
+        @Override
+        public Node inlineToHostNode(Object target) {
+            return HostToTypeNodeGen.inline((InlineTarget) target);
+        }
+
+        @Override
+        public boolean bigIntegerFitsInFloat(BigInteger b) {
+            return HostObject.bigIntegerFitsInFloat(b);
+        }
+
+        @Override
+        public boolean bigIntegerFitsInDouble(BigInteger b) {
+            return HostObject.bigIntegerFitsInDouble(b);
+        }
+
+        @Override
+        public Class<?> getRawTypeFromGenericType(Type genericType, Class<?> defaultRawType) {
+            return HostToTypeNode.getRawTypeFromGenericType(genericType, defaultRawType);
+        }
+
+        @Override
+        public Type findActualTypeArgument(Type typeOrTypeVar, Type genericTargetType) {
+            return HostToTypeNode.findActualTypeArgument(typeOrTypeVar, genericTargetType);
         }
     }
 

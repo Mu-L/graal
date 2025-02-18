@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -42,6 +42,8 @@ package com.oracle.truffle.nfi.test;
 
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
+
+import org.hamcrest.MatcherAssert;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -60,6 +62,7 @@ import com.oracle.truffle.tck.TruffleRunner;
 import com.oracle.truffle.tck.TruffleRunner.Inject;
 
 @RunWith(TruffleRunner.class)
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing"})
 public class SignatureExecuteNFITest extends NFITest {
 
     abstract static class DoDirectExecute extends Node {
@@ -103,7 +106,7 @@ public class SignatureExecuteNFITest extends NFITest {
 
         Object ret = callTarget.call(increment, signature, 41);
 
-        Assert.assertThat("return value", ret, is(instanceOf(Integer.class)));
+        MatcherAssert.assertThat("return value", ret, is(instanceOf(Integer.class)));
         Assert.assertEquals("return value", 42, (int) (Integer) ret);
     }
 }

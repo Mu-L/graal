@@ -46,6 +46,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Set;
 
+import com.oracle.truffle.regex.util.TBitSet;
 import org.graalvm.collections.EconomicMap;
 
 import com.oracle.truffle.regex.tregex.parser.ast.CharacterClass;
@@ -89,16 +90,16 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
         assert lookAroundExpansionQueue.isEmpty();
         for (RegexASTNode t : expandState.getStateSet()) {
             if (t.isInLookAheadAssertion()) {
-                ASTStep laStep = new ASTStep(t);
+                ASTStep laStep = new ASTStep(t, expandState.getMatchedConditionGroups(t));
                 curLookAheads.add(laStep);
                 lookAroundExpansionQueue.push(laStep);
             } else if (t.isInLookBehindAssertion()) {
-                ASTStep lbStep = new ASTStep(t);
+                ASTStep lbStep = new ASTStep(t, expandState.getMatchedConditionGroups(t));
                 curLookBehinds.add(lbStep);
                 lookAroundExpansionQueue.push(lbStep);
             } else {
                 assert stepRoot == null;
-                stepRoot = new ASTStep(t);
+                stepRoot = new ASTStep(t, expandState.getMatchedConditionGroups(t));
             }
         }
         if (stepRoot == null) {
@@ -128,11 +129,13 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
         Term root = (Term) stepRoot.getRoot();
         setTraversableLookBehindAssertions(expandState.getFinishedLookBehinds());
         setCanTraverseCaret(root instanceof PositionAssertion && ast.getNfaAnchoredInitialStates().contains(root));
+        setMatchedConditionGroups(stepCur.getMatchedConditionGroups());
         run(root);
         curLookAheads.clear();
         curLookBehinds.clear();
         while (!lookAroundExpansionQueue.isEmpty()) {
             stepCur = lookAroundExpansionQueue.pop();
+            setMatchedConditionGroups(stepCur.getMatchedConditionGroups());
             root = (Term) stepCur.getRoot();
             run(root);
         }
@@ -141,21 +144,26 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
 
     @Override
     protected void visit(RegexASTNode target) {
+        assert noPredicatesInGuards(getTransitionGuardsOnPath());
         ASTSuccessor successor = new ASTSuccessor();
         ASTTransition transition = new ASTTransition(ast.getLanguage());
         transition.setGroupBoundaries(getGroupBoundaries());
+        TBitSet matchedConditionGroups = getCurrentMatchedConditionGroups();
+        transition.setMatchedConditionGroups(matchedConditionGroups);
         if (dollarsOnPath()) {
             assert target instanceof MatchFound;
-            transition.setTarget(getLastDollarOnPath());
+            transition.setTarget(target.getSubTreeParent().getAnchoredFinalState());
         } else {
             if (target instanceof CharacterClass) {
                 final CharacterClass charClass = (CharacterClass) target;
                 if (!charClass.getLookBehindEntries().isEmpty()) {
                     ArrayList<ASTStep> newLookBehinds = new ArrayList<>(charClass.getLookBehindEntries().size());
                     for (LookBehindAssertion lb : charClass.getLookBehindEntries()) {
-                        final ASTStep lbAstStep = new ASTStep(lb.getGroup());
+                        final ASTStep lbAstStep = new ASTStep(lb.getGroup(), matchedConditionGroups);
                         assert lb.getGroup().isLiteral();
-                        lbAstStep.addSuccessor(new ASTSuccessor(new ASTTransition(ast.getLanguage(), lb.getGroup().getFirstAlternative().getFirstTerm())));
+                        ASTTransition lbAstTransition = new ASTTransition(ast.getLanguage(), lb.getGroup().getFirstAlternative().getFirstTerm());
+                        lbAstTransition.setMatchedConditionGroups(matchedConditionGroups);
+                        lbAstStep.addSuccessor(new ASTSuccessor(lbAstTransition));
                         newLookBehinds.add(lbAstStep);
                     }
                     successor.setLookBehinds(newLookBehinds);
@@ -176,12 +184,29 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
         stepCur.addSuccessor(successor);
     }
 
+    private static boolean noPredicatesInGuards(long[] transitionGuards) {
+        // Normalization should remove any exitZeroWidth, escapeZeroWidth, checkGroupMatched and
+        // checkGroupNotMatched guards. The effect of updateCG guards is implemented using
+        // getGroupBoundaries and enterZeroWidth guards have no effect when exitZeroWidth and
+        // escapeZeroWidth are removed already. Other guards shouldn't be used when building a DFA.
+        for (long guard : transitionGuards) {
+            if (!TransitionGuard.is(guard, TransitionGuard.Kind.updateCG) && !TransitionGuard.is(guard, TransitionGuard.Kind.enterZeroWidth)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     @Override
     protected void enterLookAhead(LookAheadAssertion assertion) {
-        ASTStepCacheKey key = new ASTStepCacheKey(assertion, canTraverseCaret(), getTraversableLookBehindAssertions());
+        TBitSet currentMatchedConditionGroups = getCurrentMatchedConditionGroups();
+        // We don't care about the state of condition groups outside of this assertion, so we can
+        // clear them. This enables more reuse of the ASTStep lookAheadMap cache.
+        currentMatchedConditionGroups.intersect(assertion.getReferencedConditionGroups());
+        ASTStepCacheKey key = new ASTStepCacheKey(assertion, canTraverseCaret(), getTraversableLookBehindAssertions(), currentMatchedConditionGroups);
         ASTStep laStep = lookAheadMap.get(key);
         if (laStep == null) {
-            laStep = new ASTStep(assertion.getGroup());
+            laStep = new ASTStep(assertion.getGroup(), currentMatchedConditionGroups);
             lookAroundExpansionQueue.push(laStep);
             lookAheadMap.put(key, laStep);
         }
@@ -198,11 +223,13 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
         private final RegexASTNode root;
         private final boolean canTraverseCaret;
         private final Set<LookBehindAssertion> traversableLookBehindAssertions;
+        private final TBitSet matchedConditionGroups;
 
-        ASTStepCacheKey(RegexASTNode root, boolean canTraverseCaret, Set<LookBehindAssertion> traversableLookBehindAssertions) {
+        ASTStepCacheKey(RegexASTNode root, boolean canTraverseCaret, Set<LookBehindAssertion> traversableLookBehindAssertions, TBitSet matchedConditionGroups) {
             this.root = root;
             this.canTraverseCaret = canTraverseCaret;
             this.traversableLookBehindAssertions = traversableLookBehindAssertions;
+            this.matchedConditionGroups = matchedConditionGroups;
         }
 
         @Override
@@ -211,17 +238,23 @@ public final class ASTStepVisitor extends NFATraversalRegexASTVisitor {
                 return false;
             }
             ASTStepCacheKey that = (ASTStepCacheKey) obj;
-            return this.root.equals(that.root) && this.canTraverseCaret == that.canTraverseCaret && this.traversableLookBehindAssertions.equals(that.traversableLookBehindAssertions);
+            return this.root.equals(that.root) && this.canTraverseCaret == that.canTraverseCaret && this.traversableLookBehindAssertions.equals(that.traversableLookBehindAssertions) &&
+                            this.matchedConditionGroups.equals(that.matchedConditionGroups);
         }
 
         @Override
         public int hashCode() {
-            return root.hashCode() + 31 * (Boolean.hashCode(canTraverseCaret) + 31 * traversableLookBehindAssertions.hashCode());
+            return root.hashCode() + 31 * (Boolean.hashCode(canTraverseCaret) + 31 * (traversableLookBehindAssertions.hashCode() + 31 * matchedConditionGroups.hashCode()));
         }
     }
 
     @Override
-    protected boolean canTraverseLookArounds() {
+    protected boolean isBuildingDFA() {
+        return true;
+    }
+
+    @Override
+    protected boolean canPruneAfterUnconditionalFinalState() {
         return true;
     }
 }

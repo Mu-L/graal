@@ -36,7 +36,7 @@ import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
 import com.oracle.truffle.espresso.nodes.quick.interop.Utils;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * BASTORE bytecode with interop extensions that only supports boolean[].
@@ -66,7 +66,7 @@ public abstract class BooleanArrayStore extends EspressoNode {
     public abstract void execute(StaticObject receiver, int index, byte value);
 
     @Specialization
-    void executeWithNullCheck(StaticObject array, int index, byte value,
+    void doWithNullCheck(StaticObject array, int index, byte value,
                     @Cached NullCheck nullCheck,
                     @Cached ByteArrayStore.WithoutNullCheck byteArrayStore) {
         byteArrayStore.execute(nullCheck.execute(array), index, value);

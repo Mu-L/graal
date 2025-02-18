@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,19 +24,13 @@
  */
 package com.oracle.svm.core.code;
 
-import java.util.EnumSet;
-
-import org.graalvm.nativeimage.ImageSingletons;
-import org.graalvm.nativeimage.UnmanagedMemory;
+import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.c.function.CodePointer;
-import org.graalvm.nativeimage.impl.UnmanagedMemorySupport;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.util.DuplicatedInNativeCode;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.NonmovableArray;
 import com.oracle.svm.core.c.NonmovableArrays;
@@ -46,7 +40,12 @@ import com.oracle.svm.core.deopt.SubstrateInstalledCode;
 import com.oracle.svm.core.heap.CodeReferenceMapDecoder;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
+import com.oracle.svm.core.memory.NativeMemory;
+import com.oracle.svm.core.memory.NullableNativeMemory;
+import com.oracle.svm.core.nmt.NmtCategory;
 import com.oracle.svm.core.os.CommittedMemoryProvider;
+import com.oracle.svm.core.os.VirtualMemoryProvider;
+import com.oracle.svm.core.util.DuplicatedInNativeCode;
 import com.oracle.svm.core.util.VMError;
 
 /**
@@ -66,15 +65,16 @@ public final class RuntimeCodeInfoAccess {
         return cast(info).getCodeObserverHandles();
     }
 
-    public static void initialize(CodeInfo info, Pointer codeStart, int codeSize, int dataOffset, int dataSize, int codeAndDataMemorySize,
+    public static void initialize(CodeInfo info, Pointer codeStart, int entryPointOffset, int codeSize, int dataOffset, int dataSize, int codeAndDataMemorySize,
                     int tier, NonmovableArray<InstalledCodeObserverHandle> observerHandles, boolean allObjectsAreInImageHeap) {
 
         CodeInfoImpl impl = cast(info);
         impl.setCodeStart((CodePointer) codeStart);
-        impl.setCodeSize(WordFactory.unsigned(codeSize));
-        impl.setDataOffset(WordFactory.unsigned(dataOffset));
-        impl.setDataSize(WordFactory.unsigned(dataSize));
-        impl.setCodeAndDataMemorySize(WordFactory.unsigned(codeAndDataMemorySize));
+        impl.setCodeEntryPointOffset(Word.unsigned(entryPointOffset));
+        impl.setCodeSize(Word.unsigned(codeSize));
+        impl.setDataOffset(Word.unsigned(dataOffset));
+        impl.setDataSize(Word.unsigned(dataSize));
+        impl.setCodeAndDataMemorySize(Word.unsigned(codeAndDataMemorySize));
         impl.setTier(tier);
         impl.setCodeObserverHandles(observerHandles);
         impl.setAllObjectsAreInImageHeap(allObjectsAreInImageHeap);
@@ -82,7 +82,7 @@ public final class RuntimeCodeInfoAccess {
 
     public static void setCodeObjectConstantsInfo(CodeInfo info, NonmovableArray<Byte> refMapEncoding, long refMapIndex) {
         CodeInfoImpl impl = cast(info);
-        assert impl.getCodeStart().isNonNull();
+        assert impl.getCodeStart().isNonNull() : "null";
         impl.setCodeConstantsReferenceMapEncoding(refMapEncoding);
         impl.setCodeConstantsReferenceMapIndex(refMapIndex);
     }
@@ -152,6 +152,7 @@ public final class RuntimeCodeInfoAccess {
     /**
      * Walks all strong references in a {@link CodeInfo} object.
      */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean walkStrongReferences(CodeInfo info, ObjectReferenceVisitor visitor) {
         return NonmovableArrays.walkUnmanagedObjectArray(cast(info).getObjectFields(), visitor, CodeInfoImpl.FIRST_STRONGLY_REFERENCED_OBJFIELD, CodeInfoImpl.STRONGLY_REFERENCED_OBJFIELD_COUNT);
     }
@@ -160,6 +161,7 @@ public final class RuntimeCodeInfoAccess {
      * Walks all weak references in a {@link CodeInfo} object.
      */
     @DuplicatedInNativeCode
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static boolean walkWeakReferences(CodeInfo info, ObjectReferenceVisitor visitor) {
         CodeInfoImpl impl = cast(info);
         boolean continueVisiting = true;
@@ -169,11 +171,27 @@ public final class RuntimeCodeInfoAccess {
             continueVisiting = continueVisiting && CodeReferenceMapDecoder.walkOffsetsFromPointer(impl.getCodeStart(),
                             impl.getCodeConstantsReferenceMapEncoding(), impl.getCodeConstantsReferenceMapIndex(), visitor, null);
         }
-        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getFrameInfoObjectConstants(), visitor);
-        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getFrameInfoSourceClasses(), visitor);
-        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getFrameInfoSourceMethodNames(), visitor);
+        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getObjectConstants(), visitor);
+        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getClasses(), visitor);
+        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getMemberNames(), visitor);
+        continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getOtherStrings(), visitor);
         continueVisiting = continueVisiting && NonmovableArrays.walkUnmanagedObjectArray(impl.getDeoptimizationObjectConstants(), visitor);
         return continueVisiting;
+    }
+
+    /**
+     * This method only walks the tether. You typically want to use {@link #walkStrongReferences}
+     * and/or {@link #walkWeakReferences} instead.
+     */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static boolean walkTether(CodeInfo info, ObjectReferenceVisitor visitor) {
+        Pointer address = NonmovableArrays.addressOf(cast(info).getObjectFields(), CodeInfoImpl.TETHER_OBJFIELD);
+        return callVisitor(visitor, address);
+    }
+
+    @Uninterruptible(reason = "Bridge between uninterruptible and potentially interruptible code.", mayBeInlined = true, calleeMustBe = false)
+    private static boolean callVisitor(ObjectReferenceVisitor visitor, Pointer address) {
+        return visitor.visitObjectReference(address, true, null);
     }
 
     /**
@@ -185,12 +203,12 @@ public final class RuntimeCodeInfoAccess {
     }
 
     public static CodeInfo allocateMethodInfo() {
-        NonmovableObjectArray<Object> objectFields = NonmovableArrays.createObjectArray(Object[].class, CodeInfoImpl.OBJFIELDS_COUNT);
+        NonmovableObjectArray<Object> objectFields = NonmovableArrays.createObjectArray(Object[].class, CodeInfoImpl.OBJFIELDS_COUNT, NmtCategory.Code);
         return allocateMethodInfo(objectFields);
     }
 
     public static CodeInfo allocateMethodInfo(NonmovableObjectArray<Object> objectData) {
-        CodeInfoImpl info = UnmanagedMemory.calloc(CodeInfoAccess.getSizeOfCodeInfo());
+        CodeInfoImpl info = NativeMemory.calloc(CodeInfoAccess.getSizeOfCodeInfo(), NmtCategory.Code);
 
         assert objectData.isNonNull() && NonmovableArrays.lengthOf(objectData) == CodeInfoImpl.OBJFIELDS_COUNT;
         info.setObjectFields(objectData);
@@ -201,86 +219,83 @@ public final class RuntimeCodeInfoAccess {
     }
 
     @Uninterruptible(reason = "Prevent the GC from running - otherwise, it could accidentally visit the freed memory.")
-    static void freePartially(CodeInfo info, boolean notifyGC) {
+    static void markAsRemovedFromCodeCache(CodeInfo info) {
         CodeInfoImpl impl = cast(info);
-        assert CodeInfoAccess.isAliveState(impl.getState()) || impl.getState() == CodeInfo.STATE_READY_FOR_INVALIDATION : "unexpected state (probably already released)";
-        if (notifyGC) {
-            // Notify the GC as long as the object data is still valid.
-            Heap.getHeap().getRuntimeCodeInfoGCSupport().unregisterCodeConstants(info);
-        }
-
-        NonmovableArrays.releaseUnmanagedArray(impl.getCodeObserverHandles());
-        impl.setCodeObserverHandles(NonmovableArrays.nullArray());
-
-        releaseCodeMemory(impl.getCodeStart(), impl.getCodeAndDataMemorySize());
-        /*
-         * Note that we must not null-out any CodeInfo metadata as it can be accessed in a stack
-         * walk even when the CodeInfo data is already partially freed.
-         */
-        CodeInfoAccess.setState(info, CodeInfo.STATE_PARTIALLY_FREED);
+        assert CodeInfoAccess.isAliveState(impl.getState()) || impl.getState() == CodeInfo.STATE_PENDING_REMOVAL_FROM_CODE_CACHE : "unexpected state (probably already released)";
+        /* We can't free any data because only the GC is allowed to free CodeInfo data. */
+        CodeInfoAccess.setState(info, CodeInfo.STATE_REMOVED_FROM_CODE_CACHE);
     }
 
     public static CodePointer allocateCodeMemory(UnsignedWord size) {
-        return (CodePointer) CommittedMemoryProvider.get().allocateExecutableMemory(size, WordFactory.unsigned(SubstrateOptions.codeAlignment()));
+        return (CodePointer) CommittedMemoryProvider.get().allocateExecutableMemory(size, Word.unsigned(SubstrateOptions.codeAlignment()));
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static void releaseCodeMemory(CodePointer codeStart, UnsignedWord codeSize) {
-        CommittedMemoryProvider.get().freeExecutableMemory(codeStart, codeSize, WordFactory.unsigned(SubstrateOptions.codeAlignment()));
+        CommittedMemoryProvider.get().freeExecutableMemory(codeStart, codeSize, Word.unsigned(SubstrateOptions.codeAlignment()));
     }
 
-    public static int makeCodeMemoryExecutableReadOnly(CodePointer codeStart, UnsignedWord codeSize) {
-        return CommittedMemoryProvider.get().protect(codeStart, codeSize, EnumSet.of(CommittedMemoryProvider.Access.READ, CommittedMemoryProvider.Access.EXECUTE));
+    public static void makeCodeMemoryExecutableReadOnly(CodePointer codeStart, UnsignedWord codeSize) {
+        protectCodeMemory(codeStart, codeSize, VirtualMemoryProvider.Access.READ | VirtualMemoryProvider.Access.EXECUTE);
     }
 
-    public static int makeCodeMemoryExecutableWritable(CodePointer start, UnsignedWord size) {
-        return CommittedMemoryProvider.get().protect(start, size, EnumSet.of(CommittedMemoryProvider.Access.READ, CommittedMemoryProvider.Access.WRITE, CommittedMemoryProvider.Access.EXECUTE));
+    public static void makeCodeMemoryExecutableWritable(CodePointer start, UnsignedWord size) {
+        VMError.guarantee(RuntimeCodeCache.Options.WriteableCodeCache.getValue(), "memory must not be writable and executable at the same time unless we have a writable code cache");
+        protectCodeMemory(start, size, VirtualMemoryProvider.Access.READ | VirtualMemoryProvider.Access.WRITE | VirtualMemoryProvider.Access.EXECUTE);
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    private static void protectCodeMemory(CodePointer codeStart, UnsignedWord codeSize, int permissions) {
+        int result = VirtualMemoryProvider.get().protect(codeStart, codeSize, permissions);
+        if (result != 0) {
+            throw VMError.shouldNotReachHere("Failed to modify protection of code memory. This may be caused by " +
+                            "a. a too restrictive OS-limit of allowed memory mappings (see vm.max_map_count on Linux), " +
+                            "b. a too strict security policy if you are running on Security-Enhanced Linux (SELinux), or " +
+                            "c. a Native Image internal error.");
+        }
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     static void releaseMethodInfoOnTearDown(CodeInfo info) {
         InstalledCodeObserverSupport.removeObserversOnTearDown(getCodeObserverHandles(info));
 
         assert ((CodeInfoTether) UntetheredCodeInfoAccess.getTetherUnsafe(info)).getCount() == 1 : "CodeInfo tether must not be referenced by non-teardown code.";
-        free(info, true);
+        free(info);
     }
 
     public interface NonmovableArrayAction {
-        @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+        @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
         void apply(NonmovableArray<?> array);
     }
 
     private static final NonmovableArrayAction RELEASE_ACTION = new NonmovableArrayAction() {
         @Override
-        @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+        @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
         public void apply(NonmovableArray<?> array) {
             NonmovableArrays.releaseUnmanagedArray(array);
         }
     };
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
-    public static void free(CodeInfo info, boolean notifyGC) {
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static void free(CodeInfo info) {
         CodeInfoImpl impl = cast(info);
-        if (CodeInfoAccess.isAliveState(impl.getState()) || impl.getState() == CodeInfo.STATE_READY_FOR_INVALIDATION) {
-            freePartially(info, notifyGC);
-        }
 
-        if (notifyGC) {
-            // Notify the GC as long as the object data is still valid.
-            Heap.getHeap().getRuntimeCodeInfoGCSupport().unregisterRuntimeCodeInfo(info);
-        }
+        /* Free the code observers handles unconditionally (they are never in the image heap). */
+        NonmovableArrays.releaseUnmanagedArray(impl.getCodeObserverHandles());
+        impl.setCodeObserverHandles(NonmovableArrays.nullArray());
+
+        releaseCodeMemory(impl.getCodeStart(), impl.getCodeAndDataMemorySize());
 
         if (!impl.getAllObjectsAreInImageHeap()) {
             forEachArray(info, RELEASE_ACTION);
         }
 
         impl.setState(CodeInfo.STATE_FREED);
-        ImageSingletons.lookup(UnmanagedMemorySupport.class).free(info);
+        NullableNativeMemory.free(info);
     }
 
     private static final NonmovableArrayAction GUARANTEE_ALL_OBJECTS_IN_IMAGE_HEAP_ACTION = new NonmovableArrayAction() {
         @Override
-        @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+        @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
         public void apply(NonmovableArray<?> arg) {
             NonmovableObjectArray<?> array = (NonmovableObjectArray<?>) arg;
             if (array.isNonNull()) {
@@ -293,12 +308,12 @@ public final class RuntimeCodeInfoAccess {
         }
     };
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void guaranteeAllObjectsInImageHeap(CodeInfo info) {
         forEachObjectArray(info, GUARANTEE_ALL_OBJECTS_IN_IMAGE_HEAP_ACTION);
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void forEachArray(CodeInfo info, NonmovableArrayAction action) {
         CodeInfoImpl impl = cast(info);
         action.apply(impl.getCodeInfoIndex());
@@ -309,20 +324,22 @@ public final class RuntimeCodeInfoAccess {
         action.apply(impl.getDeoptimizationEncodings());
         action.apply(impl.getCodeConstantsReferenceMapEncoding());
         action.apply(impl.getCodeObserverHandles());
+        action.apply(impl.getMethodTable());
         forEachObjectArray(info, action);
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void forEachObjectArray(CodeInfo info, NonmovableArrayAction action) {
         CodeInfoImpl impl = cast(info);
         action.apply(impl.getObjectFields());
-        action.apply(impl.getFrameInfoObjectConstants());
-        action.apply(impl.getFrameInfoSourceClasses());
-        action.apply(impl.getFrameInfoSourceMethodNames());
+        action.apply(impl.getObjectConstants());
+        action.apply(impl.getClasses());
+        action.apply(impl.getMemberNames());
+        action.apply(impl.getOtherStrings());
         action.apply(impl.getDeoptimizationObjectConstants());
     }
 
-    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static CodeInfoImpl cast(CodeInfo info) {
         assert CodeInfoAccess.isValid(info);
         return (CodeInfoImpl) info;

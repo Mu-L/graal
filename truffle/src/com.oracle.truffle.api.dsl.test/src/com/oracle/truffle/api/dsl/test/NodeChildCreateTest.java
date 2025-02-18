@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,18 +40,22 @@
  */
 package com.oracle.truffle.api.dsl.test;
 
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.notNullValue;
+
+import org.hamcrest.MatcherAssert;
+import org.junit.Assert;
+import org.junit.Test;
+
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.test.NodeChildCreateTestFactory.CreateTestChildNodeGen;
 import com.oracle.truffle.api.dsl.test.NodeChildCreateTestFactory.CreateTestNodeGen;
 import com.oracle.truffle.api.dsl.test.NodeChildCreateTestFactory.CustomCreateTestNodeGen;
 import com.oracle.truffle.api.nodes.Node;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import org.junit.Assert;
-import org.junit.Test;
 
+@SuppressWarnings({"truffle-inlining", "truffle-neverdefault", "truffle-sharing"})
 public class NodeChildCreateTest {
 
     abstract static class CreateTestBaseNode extends Node {
@@ -81,7 +85,7 @@ public class NodeChildCreateTest {
     @Test
     public void testImplicit() {
         CreateTestNode node = CreateTestNodeGen.create();
-        Assert.assertThat("child0", node.getChild0(), is(notNullValue()));
+        MatcherAssert.assertThat("child0", node.getChild0(), is(notNullValue()));
         Assert.assertTrue("child0 is adoptable", node.getChild0().isAdoptable());
         Assert.assertEquals("result", 6, node.execute());
     }
@@ -104,7 +108,7 @@ public class NodeChildCreateTest {
     @Test
     public void testImplicitCreate() {
         CustomCreateTestNode node = CustomCreateTestNodeGen.create();
-        Assert.assertThat("child0", node.getChild0(), is(instanceOf(CreateTestNode.class)));
+        MatcherAssert.assertThat("child0", node.getChild0(), is(instanceOf(CreateTestNode.class)));
         Assert.assertTrue("child0 is adoptable", node.getChild0().isAdoptable());
         Assert.assertEquals("result", 9, node.execute());
     }

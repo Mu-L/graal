@@ -24,19 +24,21 @@
  */
 package com.oracle.svm.truffle;
 
-import org.graalvm.compiler.debug.GraalError;
-import org.graalvm.compiler.truffle.common.CompilableTruffleAST;
-import org.graalvm.compiler.truffle.compiler.TruffleCompilationIdentifier;
-import org.graalvm.compiler.truffle.runtime.OptimizedCallTarget;
-
 import com.oracle.svm.core.graal.code.SubstrateCompilationIdentifier;
+import com.oracle.truffle.compiler.TruffleCompilable;
+import com.oracle.truffle.compiler.TruffleCompilationTask;
 
-public class SubstrateTruffleCompilationIdentifier extends SubstrateCompilationIdentifier implements TruffleCompilationIdentifier {
+import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.truffle.TruffleCompilationIdentifier;
 
-    private final OptimizedCallTarget optimizedCallTarget;
+public final class SubstrateTruffleCompilationIdentifier extends SubstrateCompilationIdentifier implements TruffleCompilationIdentifier {
 
-    public SubstrateTruffleCompilationIdentifier(OptimizedCallTarget optimizedCallTarget) {
-        this.optimizedCallTarget = optimizedCallTarget;
+    private final TruffleCompilationTask task;
+    private final TruffleCompilable compilable;
+
+    public SubstrateTruffleCompilationIdentifier(TruffleCompilationTask task, TruffleCompilable compilable) {
+        this.task = task;
+        this.compilable = compilable;
     }
 
     @Override
@@ -55,22 +57,28 @@ public class SubstrateTruffleCompilationIdentifier extends SubstrateCompilationI
                 sb.append(']');
                 break;
             default:
-                throw new GraalError("unknown verbosity: " + verbosity);
+                throw new GraalError("Unknown verbosity: " + verbosity);
         }
         return sb;
     }
 
     @Override
     protected void buildName(StringBuilder sb) {
-        sb.append(optimizedCallTarget.toString());
+        sb.append(compilable.toString());
     }
 
     @Override
-    public CompilableTruffleAST getCompilable() {
-        return optimizedCallTarget;
+    public TruffleCompilationTask getTask() {
+        return task;
     }
 
     @Override
-    public void close() {
+    public TruffleCompilable getCompilable() {
+        return compilable;
+    }
+
+    @Override
+    public long getTruffleCompilationId() {
+        return id;
     }
 }

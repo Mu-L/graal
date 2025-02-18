@@ -26,17 +26,14 @@ package com.oracle.svm.core.genscavenge.remset;
 
 import java.util.List;
 
-import org.graalvm.compiler.api.replacements.Fold;
-import org.graalvm.compiler.replacements.nodes.AssertionNode;
-import org.graalvm.compiler.word.Word;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.genscavenge.AlignedHeapChunk;
 import com.oracle.svm.core.genscavenge.AlignedHeapChunk.AlignedHeader;
@@ -44,20 +41,35 @@ import com.oracle.svm.core.genscavenge.GreyToBlackObjectVisitor;
 import com.oracle.svm.core.genscavenge.HeapChunk;
 import com.oracle.svm.core.genscavenge.HeapParameters;
 import com.oracle.svm.core.genscavenge.ObjectHeaderImpl;
+import com.oracle.svm.core.genscavenge.SerialGCOptions;
+import com.oracle.svm.core.genscavenge.compacting.ObjectMoveInfo;
 import com.oracle.svm.core.hub.LayoutEncoding;
 import com.oracle.svm.core.image.ImageHeapObject;
 import com.oracle.svm.core.util.HostedByteBufferPointer;
 import com.oracle.svm.core.util.PointerUtils;
 import com.oracle.svm.core.util.UnsignedUtils;
 
+import jdk.graal.compiler.api.replacements.Fold;
+import jdk.graal.compiler.replacements.nodes.AssertionNode;
+import jdk.graal.compiler.word.Word;
+
 final class AlignedChunkRememberedSet {
     private AlignedChunkRememberedSet() {
     }
 
     @Fold
+    public static int wordSize() {
+        return ConfigurationValues.getTarget().wordSize;
+    }
+
+    @Fold
     public static UnsignedWord getHeaderSize() {
         UnsignedWord headerSize = getFirstObjectTableLimitOffset();
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        if (SerialGCOptions.useCompactingOldGen()) {
+            // Compaction needs room for a ObjectMoveInfo structure before the first object.
+            headerSize = headerSize.add(ObjectMoveInfo.getSize());
+        }
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(headerSize, alignment);
     }
 
@@ -71,25 +83,30 @@ final class AlignedChunkRememberedSet {
         UnsignedWord objectsStartOffset = AlignedHeapChunk.getObjectsStartOffset();
         for (ImageHeapObject obj : objects) {
             long offsetWithinChunk = obj.getOffset() - chunkPosition;
-            assert offsetWithinChunk > 0 && WordFactory.unsigned(offsetWithinChunk).aboveOrEqual(objectsStartOffset);
+            assert offsetWithinChunk > 0 && Word.unsigned(offsetWithinChunk).aboveOrEqual(objectsStartOffset);
 
-            UnsignedWord startOffset = WordFactory.unsigned(offsetWithinChunk).subtract(objectsStartOffset);
-            UnsignedWord endOffset = startOffset.add(WordFactory.unsigned(obj.getSize()));
+            UnsignedWord startOffset = Word.unsigned(offsetWithinChunk).subtract(objectsStartOffset);
+            UnsignedWord endOffset = startOffset.add(Word.unsigned(obj.getSize()));
             FirstObjectTable.setTableForObject(fotStart, startOffset, endOffset);
             // The remembered set bit in the header will be set by the code that writes the objects.
         }
     }
 
     @AlwaysInline("GC performance")
-    public static void enableRememberedSetForObject(AlignedHeader chunk, Object obj) {
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    public static void enableRememberedSetForObject(AlignedHeader chunk, Object obj, UnsignedWord objSize) {
         Pointer fotStart = getFirstObjectTableStart(chunk);
         Pointer objectsStart = AlignedHeapChunk.getObjectsStart(chunk);
-        Pointer startOffset = Word.objectToUntrackedPointer(obj).subtract(objectsStart);
-        Pointer endOffset = LayoutEncoding.getObjectEnd(obj).subtract(objectsStart);
+
+        Word objPtr = Word.objectToUntrackedPointer(obj);
+        UnsignedWord startOffset = objPtr.subtract(objectsStart);
+        UnsignedWord endOffset = startOffset.add(objSize);
+
         FirstObjectTable.setTableForObject(fotStart, startOffset, endOffset);
         ObjectHeaderImpl.setRememberedSetBit(obj);
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void enableRememberedSet(AlignedHeader chunk) {
         // Completely clean the card table and the first object table as further objects may be
         // added later on to this chunk.
@@ -100,11 +117,13 @@ final class AlignedChunkRememberedSet {
         Pointer top = HeapChunk.getTopPointer(chunk);
         while (offset.belowThan(top)) {
             Object obj = offset.toObject();
-            enableRememberedSetForObject(chunk, obj);
-            offset = offset.add(LayoutEncoding.getSizeFromObject(obj));
+            UnsignedWord objSize = LayoutEncoding.getSizeFromObjectInGC(obj);
+            enableRememberedSetForObject(chunk, obj, objSize);
+            offset = offset.add(objSize);
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void clearRememberedSet(AlignedHeader chunk) {
         CardTable.cleanTable(getCardTableStart(chunk), getCardTableSize());
     }
@@ -113,6 +132,7 @@ final class AlignedChunkRememberedSet {
      * Dirty the card corresponding to the given Object. This has to be fast, because it is used by
      * the post-write barrier.
      */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void dirtyCardForObject(Object object, boolean verifyOnly) {
         Pointer objectPointer = Word.objectToUntrackedPointer(object);
         AlignedHeader chunk = AlignedHeapChunk.getEnclosingChunkFromObjectPointer(objectPointer);
@@ -125,40 +145,82 @@ final class AlignedChunkRememberedSet {
         }
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void walkDirtyObjects(AlignedHeader chunk, GreyToBlackObjectVisitor visitor, boolean clean) {
-        Pointer cardTableStart = getCardTableStart(chunk);
-        Pointer fotStart = getFirstObjectTableStart(chunk);
         Pointer objectsStart = AlignedHeapChunk.getObjectsStart(chunk);
         Pointer objectsLimit = HeapChunk.getTopPointer(chunk);
         UnsignedWord memorySize = objectsLimit.subtract(objectsStart);
-        UnsignedWord indexLimit = CardTable.indexLimitForMemorySize(memorySize);
 
-        for (UnsignedWord index = WordFactory.zero(); index.belowThan(indexLimit); index = index.add(1)) {
-            if (CardTable.isDirty(cardTableStart, index)) {
+        Pointer cardTableStart = getCardTableStart(chunk);
+        Pointer cardTableLimit = cardTableStart.add(CardTable.tableSizeForMemorySize(memorySize));
+
+        assert cardTableStart.unsignedRemainder(wordSize()).equal(0);
+        assert getCardTableSize().unsignedRemainder(wordSize()).equal(0);
+
+        Pointer dirtyHeapStart = objectsLimit;
+        Pointer dirtyHeapEnd = objectsLimit;
+        Pointer cardPos = cardTableLimit.subtract(1);
+        Pointer heapPos = CardTable.cardToHeapAddress(cardTableStart, cardPos, objectsStart);
+
+        while (cardPos.aboveOrEqual(cardTableStart)) {
+            if (cardPos.readByte(0) != CardTable.CLEAN_ENTRY) {
                 if (clean) {
-                    CardTable.setClean(cardTableStart, index);
+                    cardPos.writeByte(0, CardTable.CLEAN_ENTRY);
+                }
+                dirtyHeapStart = heapPos;
+            } else {
+                /* Hit a clean card, so process the dirty range. */
+                if (dirtyHeapStart.belowThan(dirtyHeapEnd)) {
+                    walkObjects(chunk, dirtyHeapStart, dirtyHeapEnd, visitor);
                 }
 
-                Pointer ptr = FirstObjectTable.getFirstObjectImprecise(fotStart, objectsStart, objectsLimit, index);
-                Pointer cardLimit = CardTable.indexToMemoryPointer(objectsStart, index.add(1));
-                Pointer walkLimit = PointerUtils.min(cardLimit, objectsLimit);
-                while (ptr.belowThan(walkLimit)) {
-                    Object obj = ptr.toObject();
-                    visitor.visitObjectInline(obj);
-                    ptr = LayoutEncoding.getObjectEndInline(obj);
+                if (PointerUtils.isAMultiple(cardPos, Word.unsigned(wordSize()))) {
+                    /* Fast forward through word-aligned continuous range of clean cards. */
+                    cardPos = cardPos.subtract(wordSize());
+                    while (cardPos.aboveOrEqual(cardTableStart) && ((UnsignedWord) cardPos.readWord(0)).equal(CardTable.CLEAN_WORD)) {
+                        cardPos = cardPos.subtract(wordSize());
+                    }
+                    cardPos = cardPos.add(wordSize());
+                    heapPos = CardTable.cardToHeapAddress(cardTableStart, cardPos, objectsStart);
                 }
+
+                /* Reset the dirty range. */
+                dirtyHeapEnd = heapPos;
+                dirtyHeapStart = heapPos;
             }
+
+            cardPos = cardPos.subtract(1);
+            heapPos = heapPos.subtract(CardTable.BYTES_COVERED_BY_ENTRY);
+        }
+
+        /* Process the remaining dirty range. */
+        if (dirtyHeapStart.belowThan(dirtyHeapEnd)) {
+            walkObjects(chunk, dirtyHeapStart, dirtyHeapEnd, visitor);
+        }
+    }
+
+    @Uninterruptible(reason = "Forced inlining (StoredContinuation objects must not move).")
+    private static void walkObjects(AlignedHeader chunk, Pointer start, Pointer end, GreyToBlackObjectVisitor visitor) {
+        Pointer fotStart = getFirstObjectTableStart(chunk);
+        Pointer objectsStart = AlignedHeapChunk.getObjectsStart(chunk);
+        UnsignedWord index = CardTable.memoryOffsetToIndex(start.subtract(objectsStart));
+        Pointer ptr = FirstObjectTable.getFirstObjectImprecise(fotStart, objectsStart, index);
+        while (ptr.belowThan(end)) {
+            Object obj = ptr.toObject();
+            visitor.visitObjectInline(obj);
+            ptr = LayoutEncoding.getObjectEndInlineInGC(obj);
         }
     }
 
     public static boolean verify(AlignedHeader chunk) {
         boolean success = true;
-        success &= CardTable.verify(getCardTableStart(chunk), AlignedHeapChunk.getObjectsStart(chunk), HeapChunk.getTopPointer(chunk));
+        success &= CardTable.verify(getCardTableStart(chunk), getCardTableEnd(chunk), AlignedHeapChunk.getObjectsStart(chunk), HeapChunk.getTopPointer(chunk));
         success &= FirstObjectTable.verify(getFirstObjectTableStart(chunk), AlignedHeapChunk.getObjectsStart(chunk), HeapChunk.getTopPointer(chunk));
         return success;
     }
 
     /** Return the index of an object within the tables of a chunk. */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static UnsignedWord getObjectIndex(AlignedHeader chunk, Pointer objectPointer) {
         UnsignedWord offset = AlignedHeapChunk.getObjectOffset(chunk, objectPointer);
         return CardTable.memoryOffsetToIndex(offset);
@@ -166,7 +228,7 @@ final class AlignedChunkRememberedSet {
 
     @Fold
     static UnsignedWord getStructSize() {
-        return WordFactory.unsigned(SizeOf.get(AlignedHeader.class));
+        return Word.unsigned(SizeOf.get(AlignedHeader.class));
     }
 
     @Fold
@@ -175,7 +237,7 @@ final class AlignedChunkRememberedSet {
         UnsignedWord structSize = getStructSize();
         UnsignedWord available = HeapParameters.getAlignedHeapChunkSize().subtract(structSize);
         UnsignedWord requiredSize = CardTable.tableSizeForMemorySize(available);
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(requiredSize, alignment);
     }
 
@@ -187,7 +249,7 @@ final class AlignedChunkRememberedSet {
     @Fold
     static UnsignedWord getFirstObjectTableStartOffset() {
         UnsignedWord cardTableLimit = getCardTableLimitOffset();
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(cardTableLimit, alignment);
     }
 
@@ -196,14 +258,14 @@ final class AlignedChunkRememberedSet {
         UnsignedWord fotStart = getFirstObjectTableStartOffset();
         UnsignedWord fotSize = getFirstObjectTableSize();
         UnsignedWord fotLimit = fotStart.add(fotSize);
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(fotLimit, alignment);
     }
 
     @Fold
     static UnsignedWord getCardTableStartOffset() {
         UnsignedWord structSize = getStructSize();
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(structSize, alignment);
     }
 
@@ -212,22 +274,31 @@ final class AlignedChunkRememberedSet {
         UnsignedWord tableStart = getCardTableStartOffset();
         UnsignedWord tableSize = getCardTableSize();
         UnsignedWord tableLimit = tableStart.add(tableSize);
-        UnsignedWord alignment = WordFactory.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
+        UnsignedWord alignment = Word.unsigned(ConfigurationValues.getObjectLayout().getAlignment());
         return UnsignedUtils.roundUp(tableLimit, alignment);
     }
 
-    private static Pointer getCardTableStart(AlignedHeader chunk) {
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    static Pointer getCardTableStart(AlignedHeader chunk) {
         return getCardTableStart(HeapChunk.asPointer(chunk));
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static Pointer getCardTableStart(Pointer chunk) {
         return chunk.add(getCardTableStartOffset());
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    private static Pointer getCardTableEnd(AlignedHeader chunk) {
+        return getCardTableStart(chunk).add(getCardTableSize());
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static Pointer getFirstObjectTableStart(AlignedHeader chunk) {
         return getFirstObjectTableStart(HeapChunk.asPointer(chunk));
     }
 
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     private static Pointer getFirstObjectTableStart(Pointer chunk) {
         return chunk.add(getFirstObjectTableStartOffset());
     }

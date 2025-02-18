@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,33 +25,29 @@ package com.oracle.truffle.espresso.substitutions;
 import java.util.Set;
 
 import com.oracle.truffle.api.CallTarget;
-import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.dsl.Bind;
 import com.oracle.truffle.api.dsl.Cached;
-import com.oracle.truffle.api.dsl.Cached.Shared;
-import com.oracle.truffle.api.dsl.Fallback;
-import com.oracle.truffle.api.dsl.GenerateUncached;
 import com.oracle.truffle.api.dsl.ReportPolymorphism;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.interop.InteropLibrary;
-import com.oracle.truffle.api.interop.UnsupportedMessageException;
-import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.profiles.BranchProfile;
+import com.oracle.truffle.api.interop.UnsupportedTypeException;
+import com.oracle.truffle.api.nodes.Node;
+import com.oracle.truffle.api.profiles.InlinedBranchProfile;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.espresso.EspressoLanguage;
-import com.oracle.truffle.espresso.impl.ArrayKlass;
+import com.oracle.truffle.espresso.impl.EspressoType;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
 import com.oracle.truffle.espresso.impl.PrimitiveKlass;
-import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.meta.Meta;
-import com.oracle.truffle.espresso.nodes.bytecodes.InitCheck;
 import com.oracle.truffle.espresso.nodes.bytecodes.InstanceOf;
-import com.oracle.truffle.espresso.nodes.interop.ToEspressoNode;
+import com.oracle.truffle.espresso.nodes.interop.MethodArgsUtils;
+import com.oracle.truffle.espresso.nodes.interop.ToReference;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
 import com.oracle.truffle.espresso.runtime.EspressoException;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 @EspressoSubstitutions
 public final class Target_com_oracle_truffle_espresso_polyglot_Polyglot {
@@ -73,234 +69,176 @@ public final class Target_com_oracle_truffle_espresso_polyglot_Polyglot {
             return InstanceOf.create(superType, true);
         }
 
-        @Specialization(guards = "targetClass.getMirrorKlass() == cachedTargetKlass", limit = "1")
+        static ToReference createToEspressoNode(EspressoType type, Meta meta) {
+            if (type.getRawType() instanceof PrimitiveKlass primitiveKlass) {
+                Klass boxedKlass = MethodArgsUtils.primitiveTypeToBoxedType(primitiveKlass);
+                assert boxedKlass != null;
+                return ToReference.createToReference(boxedKlass, meta);
+            }
+            return ToReference.createToReference(type, meta);
+        }
+
+        @Specialization(guards = "targetClass.getMirrorKlass() == cachedTargetKlass", limit = "2")
         @JavaType(Object.class)
-        StaticObject doCached(
+        static StaticObject doCached(
                         @JavaType(Class.class) StaticObject targetClass,
                         @JavaType(Object.class) StaticObject value,
-                        @Cached("targetClass.getMirrorKlass()") Klass cachedTargetKlass,
-                        @Cached BranchProfile nullTargetClassProfile,
-                        @Cached BranchProfile reWrappingProfile,
+                        @Bind Node node,
+                        @SuppressWarnings("unused") @Cached("targetClass.getMirrorKlass()") Klass cachedTargetKlass,
+                        @Cached InlinedBranchProfile nullTargetClassProfile,
+                        @Cached InlinedBranchProfile reWrappingProfile,
+                        @Cached InlinedBranchProfile errorProfile,
+                        @Bind("getMeta()") Meta meta,
                         @Cached("createInstanceOf(cachedTargetKlass)") InstanceOf instanceOfTarget,
-                        @Cached CastImpl castImpl) {
+                        @Cached("createToEspressoNode(cachedTargetKlass, meta)") ToReference toEspresso) {
             if (StaticObject.isNull(targetClass)) {
-                nullTargetClassProfile.enter();
-                Meta meta = getMeta();
+                nullTargetClassProfile.enter(node);
                 throw meta.throwException(meta.java_lang_NullPointerException);
             }
             if (StaticObject.isNull(value) || instanceOfTarget.execute(value.getKlass())) {
                 return value;
             }
-            reWrappingProfile.enter();
-            return castImpl.execute(getContext(), cachedTargetKlass, value);
+            reWrappingProfile.enter(node);
+            try {
+                Object interopObject = value.isForeignObject() ? value.rawForeignObject(EspressoLanguage.get(node)) : value;
+                return toEspresso.execute(interopObject);
+            } catch (UnsupportedTypeException e) {
+                errorProfile.enter(node);
+                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, targetClass.getMirrorKlass(meta).getTypeAsString());
+            }
         }
 
         @ReportPolymorphism.Megamorphic
         @Specialization(replaces = "doCached")
         @JavaType(Object.class)
-        StaticObject doGeneric(@JavaType(Class.class) StaticObject targetClass,
+        static StaticObject doGeneric(@JavaType(Class.class) StaticObject targetClass,
                         @JavaType(Object.class) StaticObject value,
+                        @Bind Node node,
                         @Cached InstanceOf.Dynamic instanceOfDynamic,
-                        @Cached CastImpl castImpl) {
+                        @Cached ToReference.DynamicToReference toEspresso) {
+            Meta meta = EspressoContext.get(node).getMeta();
             if (StaticObject.isNull(targetClass)) {
-                Meta meta = getMeta();
                 throw meta.throwException(meta.java_lang_NullPointerException);
             }
-            if (StaticObject.isNull(value) || instanceOfDynamic.execute(value.getKlass(), targetClass.getMirrorKlass(getMeta()))) {
+            if (StaticObject.isNull(value) || instanceOfDynamic.execute(value.getKlass(), targetClass.getMirrorKlass(meta))) {
                 return value;
             }
-            return castImpl.execute(getContext(), targetClass.getMirrorKlass(getMeta()), value);
-        }
-    }
-
-    @GenerateUncached
-    abstract static class CastImpl extends SubstitutionNode {
-
-        static final int LIMIT = 3;
-
-        abstract @JavaType(Object.class) StaticObject execute(EspressoContext context, Klass targetKlass, @JavaType(Object.class) StaticObject value);
-
-        static boolean isNull(StaticObject object) {
-            return StaticObject.isNull(object);
-        }
-
-        static boolean isStringKlass(EspressoContext context, Klass targetKlass) {
-            return targetKlass == context.getMeta().java_lang_String;
-        }
-
-        static boolean isForeignException(EspressoContext context, Klass targetKlass) {
-            Meta.PolyglotSupport polyglot = context.getMeta().polyglot;
-            return polyglot != null /* polyglot support is enabled */
-                            && targetKlass == polyglot.ForeignException;
-        }
-
-        @Specialization(guards = "value.isEspressoObject()")
-        @JavaType(Object.class)
-        StaticObject doEspresso(
-                        EspressoContext context,
-                        Klass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Cached InstanceOf.Dynamic instanceOfDynamic,
-                        @Cached BranchProfile exceptionProfile) {
-            if (isNull(value) || instanceOfDynamic.execute(value.getKlass(), targetKlass)) {
-                return value;
-            }
-            exceptionProfile.enter();
-            Meta meta = context.getMeta();
-            throw meta.throwException(meta.java_lang_ClassCastException);
-        }
-
-        @Specialization(guards = "value.isForeignObject()")
-        @JavaType(Object.class)
-        StaticObject doPrimitive(
-                        EspressoContext context,
-                        PrimitiveKlass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Shared("value") @CachedLibrary(limit = "LIMIT") InteropLibrary interop,
-                        @Cached BranchProfile exceptionProfile) {
-            Meta meta = context.getMeta();
+            Klass mirrorKlass = targetClass.getMirrorKlass(meta);
             try {
-                return castToBoxed(targetKlass, value.rawForeignObject(getLanguage()), interop, meta, exceptionProfile);
-            } catch (UnsupportedMessageException e) {
-                exceptionProfile.enter();
-                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException,
-                                "Couldn't read %s value from foreign object", targetKlass.getType());
-            }
-        }
-
-        @Specialization(guards = "value.isForeignObject()")
-        @JavaType(Object.class)
-        StaticObject doArray(
-                        EspressoContext context,
-                        ArrayKlass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Shared("value") @CachedLibrary(limit = "LIMIT") InteropLibrary interop,
-                        @Cached BranchProfile exceptionProfile) {
-            Meta meta = context.getMeta();
-            Object foreignObject = value.rawForeignObject(getLanguage());
-
-            // Array-like foreign objects can be wrapped as *[].
-            // Buffer-like foreign objects can be wrapped (only) as byte[].
-            if (interop.hasArrayElements(foreignObject) || (targetKlass == meta._byte_array && interop.hasBufferElements(foreignObject))) {
-                return StaticObject.createForeign(meta.getLanguage(), targetKlass, foreignObject, interop);
-            }
-
-            exceptionProfile.enter();
-            throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "Cannot cast non-array value to an array type");
-        }
-
-        @Specialization(guards = {
-                        "isStringKlass(context, targetKlass)",
-                        "value.isForeignObject()"
-        })
-        @JavaType(Object.class)
-        StaticObject doString(
-                        EspressoContext context,
-                        @SuppressWarnings("unused") ObjectKlass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Shared("value") @CachedLibrary(limit = "LIMIT") InteropLibrary interop,
-                        @Cached BranchProfile exceptionProfile) {
-            Meta meta = context.getMeta();
-            try {
-                return meta.toGuestString(interop.asString(value.rawForeignObject(getLanguage())));
-            } catch (UnsupportedMessageException e) {
-                exceptionProfile.enter();
-                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "Cannot cast a non-string foreign object to String");
-            }
-        }
-
-        @Specialization(guards = {
-                        "isForeignException(context, targetKlass)",
-                        "value.isForeignObject()"
-        })
-        @JavaType(Object.class)
-        StaticObject doForeignException(
-                        EspressoContext context,
-                        @SuppressWarnings("unused") ObjectKlass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Shared("value") @CachedLibrary(limit = "LIMIT") InteropLibrary interop,
-                        @Cached BranchProfile exceptionProfile,
-                        @Cached InitCheck initCheck) {
-            Meta meta = context.getMeta();
-            // Casting to ForeignException skip the field checks.
-            Object foreignObject = value.rawForeignObject(getLanguage());
-            if (interop.isException(foreignObject)) {
-                initCheck.execute(targetKlass);
-                return StaticObject.createForeignException(context, foreignObject, interop);
-            }
-            exceptionProfile.enter();
-            throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "Cannot cast a non-exception foreign object to ForeignException");
-        }
-
-        @Fallback
-        @JavaType(Object.class)
-        StaticObject doDataClassOrThrow(
-                        EspressoContext context,
-                        Klass targetKlass,
-                        @JavaType(Object.class) StaticObject value,
-                        @Shared("value") @CachedLibrary(limit = "LIMIT") InteropLibrary interop,
-                        @Cached BranchProfile exceptionProfile,
-                        @Cached InitCheck initCheck) {
-            Meta meta = context.getMeta();
-            if (targetKlass.isAbstract()) {
-                exceptionProfile.enter();
-                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "Invalid cast to non-array abstract class");
-            }
-            assert targetKlass instanceof ObjectKlass;
-            assert value.isForeignObject();
-            ObjectKlass targetObjectKlass = (ObjectKlass) targetKlass;
-            try {
-                Object foreignObject = value.rawForeignObject(getLanguage());
-                ToEspressoNode.checkHasAllFieldsOrThrow(foreignObject, targetObjectKlass, interop, meta);
-                initCheck.execute(targetObjectKlass);
-                return StaticObject.createForeign(meta.getLanguage(), targetKlass, foreignObject, interop);
-            } catch (ClassCastException e) {
-                exceptionProfile.enter();
-                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, e.getMessage());
-            }
-        }
-    }
-
-    private static StaticObject castToBoxed(Klass targetKlass, Object foreignValue, InteropLibrary interopLibrary, Meta meta, BranchProfile exceptionProfile) throws UnsupportedMessageException {
-        assert targetKlass.isPrimitive();
-        switch (targetKlass.getJavaKind()) {
-            case Boolean:
-                boolean boolValue = interopLibrary.asBoolean(foreignValue);
-                return meta.boxBoolean(boolValue);
-            case Char:
-                String value = interopLibrary.asString(foreignValue);
-                if (value.length() != 1) {
-                    exceptionProfile.enter();
-                    throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException,
-                                    "Cannot cast string %s to char", value);
+                if (mirrorKlass instanceof PrimitiveKlass primitiveKlass) {
+                    mirrorKlass = MethodArgsUtils.primitiveTypeToBoxedType(primitiveKlass);
+                    assert mirrorKlass != null;
                 }
-                return meta.boxCharacter(value.charAt(0));
-            case Byte:
-                byte byteValue = interopLibrary.asByte(foreignValue);
-                return meta.boxByte(byteValue);
-            case Short:
-                short shortValue = interopLibrary.asShort(foreignValue);
-                return meta.boxShort(shortValue);
-            case Int:
-                int intValue = interopLibrary.asInt(foreignValue);
-                return meta.boxInteger(intValue);
-            case Long:
-                long longValue = interopLibrary.asLong(foreignValue);
-                return meta.boxLong(longValue);
-            case Float:
-                float floatValue = interopLibrary.asFloat(foreignValue);
-                return meta.boxFloat(floatValue);
-            case Double:
-                double doubleValue = interopLibrary.asDouble(foreignValue);
-                return meta.boxDouble(doubleValue);
-            case Void:
-                exceptionProfile.enter();
-                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "Cannot cast to void");
+                Object interopObject = value.isForeignObject() ? value.rawForeignObject(EspressoLanguage.get(node)) : value;
+                return toEspresso.execute(interopObject, mirrorKlass);
+            } catch (UnsupportedTypeException e) {
+                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, targetClass.getMirrorKlass(meta).getTypeAsString());
+            }
         }
-        CompilerDirectives.transferToInterpreterAndInvalidate();
-        throw EspressoError.shouldNotReachHere("Unexpected primitive klass: " + targetKlass);
     }
 
+    @Substitution
+    abstract static class CastWithGenerics extends SubstitutionNode {
+
+        static EspressoType getEspressoType(StaticObject targetType, Meta meta) {
+            if (StaticObject.isNull(targetType)) {
+                throw meta.throwException(meta.java_lang_NullPointerException);
+            }
+            return (EspressoType) meta.polyglot.HIDDEN_TypeLiteral_internalType.getHiddenObject(targetType);
+        }
+
+        static ToReference createToEspressoNode(EspressoType type, Meta meta) {
+            return ToReference.createToReference(type, meta);
+        }
+
+        protected static InstanceOf createInstanceOf(EspressoType superType) {
+            return InstanceOf.create(superType.getRawType(), true);
+        }
+
+        abstract @JavaType(Object.class) StaticObject execute(
+                        @JavaType(Object.class) StaticObject value,
+                        @JavaType(internalName = "Lcom/oracle/truffle/espresso/polyglot/TypeLiteral;") StaticObject targetType);
+
+        @Specialization(guards = "getEspressoType(targetType, context.getMeta()) == cachedTargetType", limit = "2")
+        @JavaType(Object.class)
+        static StaticObject doCached(
+                        @JavaType(Object.class) StaticObject value,
+                        @JavaType(internalName = "Lcom/oracle/truffle/espresso/polyglot/TypeLiteral;") StaticObject targetType,
+                        @Bind Node node,
+                        @SuppressWarnings("unused") @Bind("get(node)") EspressoContext context,
+                        @Cached InlinedBranchProfile nullTargetClassProfile,
+                        @Cached InlinedBranchProfile reWrappingProfile,
+                        @Cached InlinedBranchProfile errorProfile,
+                        @SuppressWarnings("unused") @Cached("getEspressoType(targetType, context.getMeta())") EspressoType cachedTargetType,
+                        @Cached("createInstanceOf(cachedTargetType.getRawType())") InstanceOf instanceOfTarget,
+                        @Cached("createToEspressoNode(cachedTargetType, context.getMeta())") ToReference toEspressoNode) {
+            Meta meta = context.getMeta();
+            if (StaticObject.isNull(targetType)) {
+                nullTargetClassProfile.enter(node);
+                throw meta.throwException(meta.java_lang_NullPointerException);
+            }
+            if (StaticObject.isNull(value) || (!value.isForeignObject() && instanceOfTarget.execute(value.getKlass()))) {
+                return value;
+            }
+            reWrappingProfile.enter(node);
+            try {
+                if (value.isForeignObject()) {
+                    return toEspressoNode.execute(value.rawForeignObject(EspressoLanguage.get(node)));
+                } else {
+                    // we know it's not instance of the target type, so throw CCE
+                    errorProfile.enter(node);
+                    throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, targetType);
+                }
+            } catch (UnsupportedTypeException e) {
+                if (value.isForeignObject() && cachedTargetType.getRawType().isAbstract() && !cachedTargetType.getRawType().isArray()) {
+                    // allow foreign objects of assignable type to be returned, but only after
+                    // trying to convert to a guest value with ToEspresso
+                    if (instanceOfTarget.execute(value.getKlass())) {
+                        return value;
+                    }
+                }
+                errorProfile.enter(node);
+                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, targetType);
+            }
+        }
+
+        @ReportPolymorphism.Megamorphic
+        @Specialization(replaces = "doCached")
+        @JavaType(Object.class)
+        static StaticObject doGeneric(
+                        @JavaType(Object.class) StaticObject value,
+                        @JavaType(internalName = "Lcom/oracle/truffle/espresso/polyglot/TypeLiteral;") StaticObject targetType,
+                        @Bind Node node,
+                        @Cached InstanceOf.Dynamic instanceOfDynamic,
+                        @Cached ToReference.DynamicToReference toEspressoNode) {
+            Meta meta = EspressoContext.get(node).getMeta();
+            if (StaticObject.isNull(targetType)) {
+                throw meta.throwException(meta.java_lang_NullPointerException);
+            }
+            if (StaticObject.isNull(value)) {
+                return value;
+            }
+            EspressoType type = getEspressoType(targetType, meta);
+            if (value.isForeignObject()) {
+                try {
+                    return toEspressoNode.execute(value.rawForeignObject(EspressoLanguage.get(node)), type);
+                } catch (UnsupportedTypeException e) {
+                    if (value.isForeignObject() && type.getRawType().isAbstract() && !type.getRawType().isArray()) {
+                        // allow foreign objects of assignable type to be returned, but only after
+                        // trying to convert to a guest value with ToEspresso
+                        if (instanceOfDynamic.execute(value.getKlass(), type.getRawType())) {
+                            return value;
+                        }
+                    }
+                    throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, type);
+                }
+            } else if (instanceOfDynamic.execute(value.getKlass(), type.getRawType())) {
+                return value;
+            } else {
+                throw meta.throwExceptionWithMessage(meta.java_lang_ClassCastException, "%s cannot be cast to %s", value, type);
+            }
+        }
+    }
     // endregion Polyglot#cast
 
     @TruffleBoundary
@@ -381,7 +319,7 @@ public final class Target_com_oracle_truffle_espresso_polyglot_Polyglot {
         }
     }
 
-    protected static StaticObject createForeignObject(Object object, Meta meta, InteropLibrary interopLibrary) {
+    private static StaticObject createForeignObject(Object object, Meta meta, InteropLibrary interopLibrary) {
         return StaticObject.createForeign(meta.getLanguage(), meta.java_lang_Object, object, interopLibrary);
     }
 }

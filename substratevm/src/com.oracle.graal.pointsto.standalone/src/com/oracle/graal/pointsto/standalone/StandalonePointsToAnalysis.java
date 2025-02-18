@@ -28,34 +28,36 @@ package com.oracle.graal.pointsto.standalone;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ForkJoinPool;
 
-import org.graalvm.compiler.options.OptionValues;
-
+import com.oracle.graal.pointsto.ClassInclusionPolicy;
 import com.oracle.graal.pointsto.PointsToAnalysis;
 import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatures;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
-import com.oracle.graal.pointsto.meta.HostedProviders;
 import com.oracle.graal.pointsto.util.TimerCollection;
 
-public class StandalonePointsToAnalysis extends PointsToAnalysis {
-    private Set<AnalysisMethod> addedClinits = ConcurrentHashMap.newKeySet();
+import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.options.OptionValues;
+import jdk.graal.compiler.word.WordTypes;
+import jdk.vm.ci.meta.ConstantReflectionProvider;
 
-    public StandalonePointsToAnalysis(OptionValues options, AnalysisUniverse universe, HostedProviders providers, HostVM hostVM, ForkJoinPool executorService, Runnable heartbeatCallback,
-                    TimerCollection timerCollection) {
-        super(options, universe, providers, hostVM, executorService, heartbeatCallback, new UnsupportedFeatures(), timerCollection, true);
+public class StandalonePointsToAnalysis extends PointsToAnalysis {
+    private final Set<AnalysisMethod> addedClinits = ConcurrentHashMap.newKeySet();
+
+    public StandalonePointsToAnalysis(OptionValues options, AnalysisUniverse universe, HostVM hostVM, AnalysisMetaAccess metaAccess, SnippetReflectionProvider snippetReflectionProvider,
+                    ConstantReflectionProvider constantReflectionProvider, WordTypes wordTypes, DebugContext debugContext, TimerCollection timerCollection, ClassInclusionPolicy classInclusionPolicy) {
+        super(options, universe, hostVM, metaAccess, snippetReflectionProvider, constantReflectionProvider, wordTypes, new UnsupportedFeatures(), debugContext, timerCollection, classInclusionPolicy);
     }
 
     @Override
     public void cleanupAfterAnalysis() {
         super.cleanupAfterAnalysis();
         // No need to keep method graphs for standalone analysis.
-        universe.getMethods().forEach(m -> {
-            m.setAnalyzedGraph(null);
-        });
+        universe.getMethods().forEach(AnalysisMethod::clearAnalyzedGraph);
         universe.getMethods().clear();
         universe.getFields().clear();
         addedClinits.clear();
@@ -67,10 +69,10 @@ public class StandalonePointsToAnalysis extends PointsToAnalysis {
     }
 
     @Override
-    public void onTypeInitialized(AnalysisType type) {
+    public void onTypeReachable(AnalysisType type) {
         AnalysisMethod clinitMethod = type.getClassInitializer();
         if (clinitMethod != null && !addedClinits.contains(clinitMethod)) {
-            addRootMethod(clinitMethod, true).registerAsImplementationInvoked(type);
+            addRootMethod(clinitMethod, true, "Class initializer added onTypeReachable, in " + StandalonePointsToAnalysis.class);
             addedClinits.add(clinitMethod);
         }
     }

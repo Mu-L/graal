@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,19 +25,15 @@
 package com.oracle.svm.core.jdk;
 
 import java.io.File;
-import java.io.InputStream;
 import java.net.URL;
 import java.security.ProtectionDomain;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Set;
-import java.util.Vector;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
-
-import jdk.internal.loader.ClassLoaderValue;
-import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
@@ -49,14 +45,14 @@ import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.hub.PredefinedClassesSupport;
-import com.oracle.svm.core.util.LazyFinalReference;
+import com.oracle.svm.core.hub.RuntimeClassLoading;
+import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.VMError;
 
-@TargetClass(className = "jdk.internal.loader.Resource")
-@SuppressWarnings("unused")
-final class Target_jdk_internal_loader_Resource {
-
-}
+import jdk.graal.compiler.java.LambdaUtils;
+import jdk.graal.compiler.util.Digest;
+import jdk.internal.loader.ClassLoaderValue;
+import jdk.internal.loader.NativeLibrary;
 
 @TargetClass(ClassLoader.class)
 @SuppressWarnings("static-method")
@@ -72,17 +68,10 @@ public final class Target_java_lang_ClassLoader {
      * invoked by the VM to record every loaded class with this loader".
      */
     @Alias @RecomputeFieldValue(kind = Kind.Reset)//
-    private Vector<Class<?>> classes;
+    private ArrayList<Class<?>> classes;
 
     @Alias @RecomputeFieldValue(kind = Kind.NewInstanceWhenNotNull, declClass = ConcurrentHashMap.class)//
     private ConcurrentHashMap<String, Object> parallelLockMap;
-
-    /**
-     * Recompute ClassLoader.packages; See {@link ClassLoaderSupport} for explanation on why this
-     * information must be reset.
-     */
-    @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = PackageFieldTransformer.class)//
-    private ConcurrentHashMap<String, Package> packages;
 
     @Alias //
     private static ClassLoader scl;
@@ -94,38 +83,32 @@ public final class Target_java_lang_ClassLoader {
     }
 
     @Delete
-    private static native void initSystemClassLoader();
+    private static native ClassLoader initSystemClassLoader();
 
-    @Substitute
-    private URL getResource(String name) {
-        return ResourcesHelper.nameToResourceURL(name);
-    }
+    @Alias
+    public native Enumeration<URL> findResources(String name);
 
     @Substitute
     private Enumeration<URL> getResources(String name) {
-        return ResourcesHelper.nameToResourceEnumerationURLs(name);
-    }
-
-    @Substitute
-    public InputStream getResourceAsStream(String name) {
-        return Resources.createInputStream(name);
-    }
-
-    @Substitute
-    public static InputStream getSystemResourceAsStream(String name) {
-        return Resources.createInputStream(name);
+        /* Every class loader sees every resource, so we still need this substitution (GR-19998). */
+        Enumeration<URL> urls = ResourcesHelper.nameToResourceEnumerationURLs(name);
+        return urls.hasMoreElements() ? urls : findResources(name);
     }
 
     @Substitute
     @SuppressWarnings("unused")
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    /* Substitution for JDK 17 and later is in Target_java_lang_ClassLoader_JDK17OrLater. */
-    static void loadLibrary(Class<?> fromClass, String name, boolean isAbsolute) {
-        if (isAbsolute) {
-            NativeLibrarySupport.singleton().loadLibraryAbsolute(new File(name));
-        } else {
-            NativeLibrarySupport.singleton().loadLibraryRelative(name);
-        }
+    static NativeLibrary loadLibrary(Class<?> fromClass, String name) {
+        NativeLibrarySupport.singleton().loadLibraryRelative(name);
+        // We don't use the JDK's NativeLibraries or NativeLibrary implementations
+        return null;
+    }
+
+    @Substitute
+    @SuppressWarnings("unused")
+    static NativeLibrary loadLibrary(Class<?> fromClass, File file) {
+        NativeLibrarySupport.singleton().loadLibraryAbsolute(file);
+        // We don't use the JDK's NativeLibraries or NativeLibrary implementations
+        return null;
     }
 
     @Substitute
@@ -162,17 +145,13 @@ public final class Target_java_lang_ClassLoader {
         return findClass(name);
     }
 
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    native Class<?> findBootstrapClassOrNull(String name);
-
     // JDK-8265605
     @Delete
-    @TargetElement(onlyWith = JDK17OrLater.class, name = "findBootstrapClassOrNull")
-    static native Class<?> findBootstrapClassOrNullJDK17OrLater(String name);
+    static native Class<?> findBootstrapClassOrNull(String name);
 
     @Substitute
     @SuppressWarnings("unused")
+    @TargetElement(onlyWith = JDK21OrEarlier.class)
     static void checkClassLoaderPermission(ClassLoader cl, Class<?> caller) {
     }
 
@@ -204,12 +183,10 @@ public final class Target_java_lang_ClassLoader {
      * This substitution is a temporary workaround for GR-33896 until GR-36494 is merged.
      */
     @Substitute //
-    @TargetElement(onlyWith = JDK17OrLater.class) //
     @SuppressWarnings({"unused"}) //
     ConcurrentHashMap<?, ?> createOrGetClassLoaderValueMap() {
         ConcurrentHashMap<?, ?> result = classLoaderValueMap;
         if (result == null) {
-            // Checkstyle: allow synchronization
             synchronized (this) {
                 result = classLoaderValueMap;
                 if (result == null) {
@@ -223,11 +200,6 @@ public final class Target_java_lang_ClassLoader {
     @Alias
     native Stream<Package> packages();
 
-    @SuppressWarnings("static-method")
-    @Substitute
-    public Target_java_lang_Module getUnnamedModule() {
-        return ClassLoaderUtil.unnamedModuleReference.get();
-    }
     /*
      * The assertion status of classes is fixed at image build time because it is baked into the AOT
      * compiled code. All methods that modify the assertion status are substituted to throw an
@@ -273,45 +245,52 @@ public final class Target_java_lang_ClassLoader {
     @Delete
     private static native void registerNatives();
 
-    @Delete
-    private static native long findNative(ClassLoader loader, String entryName);
+    /**
+     * Ignores {@code loader}, like {@link Target_java_lang_ClassLoader#loadLibrary} does.
+     */
+    @Substitute
+    @TargetElement(onlyWith = JDK21OrEarlier.class)
+    private static long findNative(@SuppressWarnings("unused") ClassLoader loader, String entryName) {
+        return NativeLibrarySupport.singleton().findSymbol(entryName).rawValue();
+    }
 
     @Substitute
     @SuppressWarnings({"unused", "static-method"})
     Class<?> defineClass(byte[] b, int off, int len) throws ClassFormatError {
-        return PredefinedClassesSupport.loadClass(SubstrateUtil.cast(this, ClassLoader.class), null, b, off, len, null);
+        return defineClass(null, b, off, len);
     }
 
     @Substitute
     @SuppressWarnings({"unused", "static-method"})
     Class<?> defineClass(String name, byte[] b, int off, int len) throws ClassFormatError {
-        return PredefinedClassesSupport.loadClass(SubstrateUtil.cast(this, ClassLoader.class), name, b, off, len, null);
+        return defineClass(name, b, off, len, null);
     }
 
     @Substitute
     @SuppressWarnings({"unused", "static-method"})
     private Class<?> defineClass(String name, byte[] b, int off, int len, ProtectionDomain protectionDomain) {
-        return PredefinedClassesSupport.loadClass(SubstrateUtil.cast(this, ClassLoader.class), name, b, off, len, protectionDomain);
+        return ClassLoaderHelper.defineClass(SubstrateUtil.cast(this, ClassLoader.class), name, b, off, len, protectionDomain);
     }
 
     @Substitute
     @SuppressWarnings({"unused", "static-method"})
     private Class<?> defineClass(String name, java.nio.ByteBuffer b, ProtectionDomain protectionDomain) {
-        if (!PredefinedClassesSupport.hasBytecodeClasses()) {
-            throw PredefinedClassesSupport.throwNoBytecodeClasses();
+        // only bother extracting the bytes if it has a chance to work
+        if (PredefinedClassesSupport.hasBytecodeClasses() || RuntimeClassLoading.isSupported()) {
+            byte[] array;
+            int off;
+            int len = b.remaining();
+            if (b.hasArray()) {
+                array = b.array();
+                off = b.position() + b.arrayOffset();
+            } else {
+                array = new byte[len];
+                b.get(array);
+                off = 0;
+            }
+            return ClassLoaderHelper.defineClass(SubstrateUtil.cast(this, ClassLoader.class), name, array, off, len, null);
         }
-        byte[] array;
-        int off;
-        int len = b.remaining();
-        if (b.hasArray()) {
-            array = b.array();
-            off = b.position() + b.arrayOffset();
-        } else {
-            array = new byte[len];
-            b.get(array);
-            off = 0;
-        }
-        return PredefinedClassesSupport.loadClass(SubstrateUtil.cast(this, ClassLoader.class), name, array, off, len, null);
+        throw PredefinedClassesSupport.throwNoBytecodeClasses(name);
     }
 
     @Substitute
@@ -319,125 +298,50 @@ public final class Target_java_lang_ClassLoader {
         // All classes are already linked at runtime.
     }
 
-    /**
-     * TODO: This substitution should be reverted to a @Delete annotation once GR-38801 is fixed.
-     */
-    @Substitute
+    @Delete
     @SuppressWarnings("unused")
-    private static Class<?> defineClass1(ClassLoader loader, String name, byte[] b, int off, int len, ProtectionDomain pd, String source) {
-        throw VMError.unsupportedFeature("Defining classes at runtime is not supported.");
-    }
+    private static native Class<?> defineClass1(ClassLoader loader, String name, byte[] b, int off, int len, ProtectionDomain pd, String source);
 
     @Delete
     private static native Class<?> defineClass2(ClassLoader loader, String name, java.nio.ByteBuffer b, int off, int len, ProtectionDomain pd, String source);
 
     @Substitute
-    @TargetElement(onlyWith = JDK17OrLater.class)
     @SuppressWarnings("unused")
     private static Class<?> defineClass0(ClassLoader loader, Class<?> lookup, String name, byte[] b, int off, int len, ProtectionDomain pd, boolean initialize, int flags, Object classData) {
-        throw VMError.unsupportedFeature("Defining hidden classes at runtime is not supported.");
+        String actualName = name;
+        if (LambdaUtils.isLambdaClassName(name)) {
+            actualName += Digest.digest(b);
+        }
+        return PredefinedClassesSupport.loadClass(loader, actualName.replace('/', '.'), b, off, b.length, null);
     }
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native Class<?> findBootstrapClass(String name);
 
     // JDK-8265605
     @Delete
-    @TargetElement(onlyWith = JDK17OrLater.class, name = "findBootstrapClass")
-    private static native Class<?> findBootstrapClassJDK17OrLater(String name);
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private static native String findBuiltinLib(String name);
+    private static native Class<?> findBootstrapClass(String name);
 
     @Delete
     private static native Target_java_lang_AssertionStatusDirectives retrieveDirectives();
-
-    /*
-     * Ensure that fields and methods that hold state of the image generator are not reachable when
-     * all fields or methods of the class are registered for reflection.
-     */
-
-    @Delete //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private static Set<String> loadedLibraryNames;
-    @Delete //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private static Map<String, Target_java_lang_ClassLoader_NativeLibrary> systemNativeLibraries;
-    @Delete //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private Map<String, Target_java_lang_ClassLoader_NativeLibrary> nativeLibraries;
-    // Checkstyle: stop
-    @Delete //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private static String[] usr_paths;
-    @Delete //
-    @TargetElement(onlyWith = JDK11OrEarlier.class) //
-    private static String[] sys_paths;
-    // Checkstyle: resume
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private native Map<String, Target_java_lang_ClassLoader_NativeLibrary> nativeLibraries();
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private static native Map<String, Target_java_lang_ClassLoader_NativeLibrary> systemNativeLibraries();
-
-    @Delete
-    @TargetElement(onlyWith = JDK11OrEarlier.class)
-    private static native boolean loadLibrary0(Class<?> fromClass, File file);
 }
 
-@TargetClass(value = ClassLoader.class, innerClass = "NativeLibrary", onlyWith = JDK11OrEarlier.class)
-final class Target_java_lang_ClassLoader_NativeLibrary {
+final class ClassLoaderHelper {
+    private static final String ERROR_MSG = SubstrateOptionsParser.commandArgument(RuntimeClassLoading.Options.SupportRuntimeClassLoading, "+") + " is not yet supported.";
 
-    /*
-     * We are defensive and also handle private native methods by marking them as deleted. If they
-     * are reachable, the user is certainly doing something wrong. But we do not want to fail with a
-     * linking error.
-     */
-
-    @Delete
-    @TargetElement(onlyWith = Load0With2Args.class)
-    private native boolean load0(String name, boolean isBuiltin);
-
-    @Delete
-    @TargetElement(onlyWith = Load0With3Args.class)
-    private native boolean load0(String name, boolean isBuiltin, boolean throwExceptionIfFail);
-
-    @Delete
-    private native long findEntry(String name);
-
-    @Delete
-    private static native void unload(String name, boolean isBuiltin, long handle);
+    public static Class<?> defineClass(ClassLoader loader, String name, byte[] b, int off, int len, ProtectionDomain protectionDomain) {
+        if (PredefinedClassesSupport.hasBytecodeClasses()) {
+            return PredefinedClassesSupport.loadClass(loader, name, b, off, len, protectionDomain);
+        }
+        throw VMError.unimplemented(ERROR_MSG);
+    }
 }
 
 @TargetClass(className = "java.lang.AssertionStatusDirectives") //
 final class Target_java_lang_AssertionStatusDirectives {
 }
 
-class PackageFieldTransformer implements FieldValueTransformer {
-    @Override
-    public Object transform(Object receiver, Object originalValue) {
-        assert receiver instanceof ClassLoader;
+@TargetClass(className = "java.lang.ClassLoader", innerClass = "ParallelLoaders")
+final class Target_java_lang_ClassLoader_ParallelLoaders {
 
-        /* JDK9+ stores packages in a ConcurrentHashMap, while 8 and before use a HashMap. */
-        boolean useConcurrentHashMap = originalValue instanceof ConcurrentHashMap;
-
-        /* Retrieving initial package state for this class loader. */
-        ConcurrentHashMap<String, Package> packages = ClassLoaderSupport.getRegisteredPackages((ClassLoader) receiver);
-        if (packages == null) {
-            /* No package state available - have to create clean state. */
-            return useConcurrentHashMap ? new ConcurrentHashMap<String, Package>() : new HashMap<String, Package>();
-        } else {
-            return useConcurrentHashMap ? packages : new HashMap<>(packages);
-        }
-    }
-}
-
-final class ClassLoaderUtil {
-
-    public static final LazyFinalReference<Target_java_lang_Module> unnamedModuleReference = new LazyFinalReference<>(Target_java_lang_Module::new);
+    @Alias //
+    @RecomputeFieldValue(kind = RecomputeFieldValue.Kind.FromAlias) //
+    private static Set<Class<? extends ClassLoader>> loaderTypes = Collections.newSetFromMap(new WeakHashMap<>());
 }

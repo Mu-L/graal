@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -67,6 +67,7 @@ import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.source.SourceSection;
 
 final class InstrumentAccessor extends Accessor {
 
@@ -147,6 +148,13 @@ final class InstrumentAccessor extends Accessor {
         public OptionDescriptors describeContextOptions(Object instrumentationHandler, Object key, String requiredGroup) {
             InstrumentClientInstrumenter instrumenter = (InstrumentClientInstrumenter) ((InstrumentationHandler) instrumentationHandler).instrumenterMap.get(key);
             OptionDescriptors descriptors = instrumenter.instrument.getContextOptionDescriptors();
+            return validateOptions(requiredGroup, instrumenter, descriptors);
+        }
+
+        @Override
+        public OptionDescriptors describeSourceOptions(Object instrumentationHandler, Object key, String requiredGroup) {
+            InstrumentClientInstrumenter instrumenter = (InstrumentClientInstrumenter) ((InstrumentationHandler) instrumentationHandler).instrumenterMap.get(key);
+            OptionDescriptors descriptors = instrumenter.instrument.getSourceOptionDescriptors();
             return validateOptions(requiredGroup, instrumenter, descriptors);
         }
 
@@ -301,9 +309,9 @@ final class InstrumentAccessor extends Accessor {
         }
 
         @Override
-        public org.graalvm.polyglot.SourceSection createSourceSection(Object instrumentEnv, org.graalvm.polyglot.Source source, com.oracle.truffle.api.source.SourceSection ss) {
+        public Object createPolyglotSourceSection(Object instrumentEnv, Object polyglotSource, SourceSection ss) {
             TruffleInstrument.Env env = (TruffleInstrument.Env) instrumentEnv;
-            return engineAccess().createSourceSection(env.getPolyglotInstrument(), source, ss);
+            return engineAccess().createPolyglotSourceSection(env.getPolyglotInstrument(), polyglotSource, ss);
         }
 
         @Override

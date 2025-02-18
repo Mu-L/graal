@@ -31,7 +31,7 @@ import com.oracle.truffle.api.nodes.NodeInfo;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.espresso.nodes.EspressoNode;
 import com.oracle.truffle.espresso.nodes.quick.interop.ForeignArrayUtils;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 /**
  * CASTORE bytecode with interop extensions.
@@ -57,7 +57,7 @@ public abstract class CharArrayStore extends EspressoNode {
     public abstract void execute(StaticObject receiver, int index, char value);
 
     @Specialization
-    void executeWithNullCheck(StaticObject array, int index, char value,
+    void doWithNullCheck(StaticObject array, int index, char value,
                     @Cached NullCheck nullCheck,
                     @Cached CharArrayStore.WithoutNullCheck charArrayStore) {
         charArrayStore.execute(nullCheck.execute(array), index, value);

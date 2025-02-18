@@ -25,39 +25,49 @@
 
 package com.oracle.svm.core.posix;
 
-import org.graalvm.nativeimage.IsolateThread;
+import static com.oracle.svm.core.posix.PosixSubstrateSigprofHandler.Options.SignalHandlerBasedExecutionSampler;
+
 import org.graalvm.nativeimage.Platform;
-import org.graalvm.nativeimage.Platforms;
-import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CEntryPointLiteral;
-import org.graalvm.nativeimage.c.struct.SizeOf;
-import org.graalvm.nativeimage.c.type.VoidPointer;
-import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
+import org.graalvm.nativeimage.c.function.CodePointer;
+import org.graalvm.word.Pointer;
 
+import com.oracle.svm.core.RegisterDumper;
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.c.function.CEntryPointOptions;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.headers.LibC;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
-import com.oracle.svm.core.posix.headers.Pthread;
+import com.oracle.svm.core.option.HostedOptionKey;
+import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.posix.headers.Signal;
-import com.oracle.svm.core.posix.headers.Time;
 import com.oracle.svm.core.sampler.SubstrateSigprofHandler;
+import com.oracle.svm.core.util.UserError;
 
-@AutomaticallyRegisteredImageSingleton(SubstrateSigprofHandler.class)
-public class PosixSubstrateSigprofHandler extends SubstrateSigprofHandler {
+import jdk.graal.compiler.options.Option;
 
-    public static final long INTERVAL_S = 0;
-    public static final long INTERVAL_uS = 20_000;
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public PosixSubstrateSigprofHandler() {
-    }
-
-    /** The address of the signal handler for signals handled by Java code, below. */
+/**
+ * <p>
+ * This class serves as the core for POSIX-based SIGPROF signal handlers.
+ * </p>
+ *
+ * <p>
+ * POSIX supports two types of timers: the global timer and per-thread timer. Both timers can
+ * interrupt threads that are blocked. This may result in situations where the VM operation changes
+ * unexpectedly while a thread executes signal handler code:
+ * <ul>
+ * <li>Thread A requests a safepoint.
+ * <li>Thread B is blocked because of the safepoint but the VM did not start executing the VM
+ * operation yet (i.e., there is no VM operation in progress).
+ * <li>Thread B receives a SIGPROF signal and starts executing the signal handler.
+ * <li>The VM reaches a safepoint and thread A starts executing the VM operation.
+ * <li>Thread B continues executing the signal handler while the VM operation is now suddenly in
+ * progress.
+ * </ul>
+ * </p>
+ */
+public abstract class PosixSubstrateSigprofHandler extends SubstrateSigprofHandler {
     private static final CEntryPointLiteral<Signal.AdvancedSignalDispatcher> advancedSignalDispatcher = CEntryPointLiteral.create(PosixSubstrateSigprofHandler.class,
                     "dispatch", int.class, Signal.siginfo_t.class, Signal.ucontext_t.class);
 
@@ -67,70 +77,47 @@ public class PosixSubstrateSigprofHandler extends SubstrateSigprofHandler {
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate in sigprof signal handler.")
     @Uninterruptible(reason = "Signal handler may only execute uninterruptible code.")
     private static void dispatch(@SuppressWarnings("unused") int signalNumber, @SuppressWarnings("unused") Signal.siginfo_t sigInfo, Signal.ucontext_t uContext) {
-        if (tryEnterIsolate()) {
-            doUninterruptibleStackWalk(uContext);
+        /* We need to keep the code in this method to a minimum to avoid races. */
+        int savedErrno = LibC.errno();
+        try {
+            if (tryEnterIsolate()) {
+                CodePointer ip = (CodePointer) RegisterDumper.singleton().getIP(uContext);
+                Pointer sp = (Pointer) RegisterDumper.singleton().getSP(uContext);
+                tryUninterruptibleStackWalk(ip, sp, true);
+            }
+        } finally {
+            LibC.setErrno(savedErrno);
         }
     }
 
-    private static void registerSigprofSignal() {
-        int structSigActionSize = SizeOf.get(Signal.sigaction.class);
-        Signal.sigaction structSigAction = UnsafeStackValue.get(structSigActionSize);
-        LibC.memset(structSigAction, WordFactory.signed(0), WordFactory.unsigned(structSigActionSize));
-
-        /* Register sa_sigaction signal handler */
-        structSigAction.sa_flags(Signal.SA_SIGINFO() | Signal.SA_NODEFER() | Signal.SA_RESTART());
-        structSigAction.sa_sigaction(advancedSignalDispatcher.getFunctionPointer());
-        Signal.sigaction(Signal.SignalEnum.SIGPROF.getCValue(), structSigAction, WordFactory.nullPointer());
-    }
-
-    private static int callSetitimer() {
-        /* Call setitimer to start profiling. */
-        Time.itimerval newValue = UnsafeStackValue.get(Time.itimerval.class);
-        Time.itimerval oldValue = UnsafeStackValue.get(Time.itimerval.class);
-
-        newValue.it_value().set_tv_sec(INTERVAL_S);
-        newValue.it_value().set_tv_usec(INTERVAL_uS);
-        newValue.it_interval().set_tv_sec(INTERVAL_S);
-        newValue.it_interval().set_tv_usec(INTERVAL_uS);
-
-        return Time.NoTransitions.setitimer(Time.TimerTypeEnum.ITIMER_PROF, newValue, oldValue);
-    }
-
     @Override
-    protected void install0() {
-        registerSigprofSignal();
-        PosixUtils.checkStatusIs0(callSetitimer(), "setitimer(which, newValue, oldValue): wrong arguments.");
+    protected void installSignalHandler() {
+        PosixSignalHandlerSupport.installNativeSignalHandler(Signal.SignalEnum.SIGPROF, advancedSignalDispatcher.getFunctionPointer(), Signal.SA_RESTART(),
+                        SubstrateOptions.EnableSignalHandling.getValue());
     }
 
-    @Override
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    protected UnsignedWord createThreadLocalKey() {
-        Pthread.pthread_key_tPointer key = StackValue.get(Pthread.pthread_key_tPointer.class);
-        PosixUtils.checkStatusIs0(Pthread.pthread_key_create(key, WordFactory.nullPointer()), "pthread_key_create(key, keyDestructor): failed.");
-        return key.read();
+    static boolean isSignalHandlerBasedExecutionSamplerEnabled() {
+        if (SignalHandlerBasedExecutionSampler.hasBeenSet()) {
+            return SignalHandlerBasedExecutionSampler.getValue();
+        } else {
+            return isPlatformSupported();
+        }
     }
 
-    @Override
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    protected void deleteThreadLocalKey(UnsignedWord key) {
-        int resultCode = Pthread.pthread_key_delete((Pthread.pthread_key_t) key);
-        PosixUtils.checkStatusIs0(resultCode, "pthread_key_delete(key): failed.");
+    private static boolean isPlatformSupported() {
+        return (Platform.includedIn(Platform.LINUX.class) || Platform.includedIn(Platform.DARWIN.class)) && SubstrateOptions.EnableSignalHandling.getValue();
     }
 
-    @Override
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    protected void setThreadLocalKeyValue(UnsignedWord key, IsolateThread value) {
-        int resultCode = Pthread.pthread_setspecific((Pthread.pthread_key_t) key, (VoidPointer) value);
-        PosixUtils.checkStatusIs0(resultCode, "pthread_setspecific(key, value): wrong arguments.");
+    private static void validateSamplerOption(HostedOptionKey<Boolean> isSamplerEnabled) {
+        if (isSamplerEnabled.getValue()) {
+            UserError.guarantee(isPlatformSupported(),
+                            "The %s cannot be used to profile on this platform.",
+                            SubstrateOptionsParser.commandArgument(isSamplerEnabled, "+"));
+        }
     }
 
-    @Override
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    protected IsolateThread getThreadLocalKeyValue(UnsignedWord key) {
-        /*
-         * Although this method is not async-signal-safe in general we rely on
-         * implementation-specific behavior here.
-         */
-        return (IsolateThread) Pthread.pthread_getspecific((Pthread.pthread_key_t) key);
+    static class Options {
+        @Option(help = "Determines if JFR uses a signal handler for execution sampling.")//
+        public static final HostedOptionKey<Boolean> SignalHandlerBasedExecutionSampler = new HostedOptionKey<>(null, PosixSubstrateSigprofHandler::validateSamplerOption);
     }
 }

@@ -20,7 +20,6 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.nodes.quick.invoke.inline.bodies;
 
 import static com.oracle.truffle.espresso.nodes.quick.invoke.inline.InlinedMethodNode.isInlineCandidate;
@@ -30,8 +29,9 @@ import java.util.function.Supplier;
 
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.espresso.bytecode.BytecodeStream;
+import com.oracle.truffle.espresso.classfile.bytecode.BytecodeStream;
 import com.oracle.truffle.espresso.impl.Field;
+import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.Method;
 import com.oracle.truffle.espresso.meta.EspressoError;
 import com.oracle.truffle.espresso.nodes.quick.invoke.inline.ConditionalInlinedMethodNode;
@@ -39,6 +39,7 @@ import com.oracle.truffle.espresso.nodes.quick.invoke.inline.GuardedConditionalI
 import com.oracle.truffle.espresso.nodes.quick.invoke.inline.InlinedMethodNode;
 import com.oracle.truffle.espresso.nodes.quick.invoke.inline.InlinedMethodPredicate;
 import com.oracle.truffle.espresso.runtime.EspressoContext;
+import com.oracle.truffle.espresso.shared.resolver.ResolvedCall;
 
 public abstract class InlinedFieldAccessNode extends InlinedMethodNode.BodyNode implements InlinedMethodPredicate {
 
@@ -94,18 +95,18 @@ public abstract class InlinedFieldAccessNode extends InlinedMethodNode.BodyNode 
         this.field = getInlinedField(method, fieldCpi);
     }
 
-    public static InlinedMethodNode createGetter(Method inlinedMethod, int top, int opCode, int curBCI, int statementIndex) {
-        Method.MethodVersion methodVersion = inlinedMethod.getMethodVersion();
+    public static InlinedMethodNode createGetter(ResolvedCall<Klass, Method, Field> resolvedCall, int top, int opCode, int curBCI, int statementIndex) {
+        Method.MethodVersion methodVersion = resolvedCall.getResolvedMethod().getMethodVersion();
         char fieldCpi = InlinedFieldAccessNode.getFieldCpi(false, methodVersion);
         ConditionalInlinedMethodNode.Recipes recipes = new FieldAccessRecipes(() -> new InlinedGetterNode(methodVersion, fieldCpi));
-        return create(methodVersion, top, opCode, curBCI, statementIndex, recipes, fieldCpi);
+        return create(resolvedCall, top, opCode, curBCI, statementIndex, recipes, fieldCpi);
     }
 
-    public static InlinedMethodNode createSetter(Method inlinedMethod, int top, int opCode, int curBCI, int statementIndex) {
-        Method.MethodVersion methodVersion = inlinedMethod.getMethodVersion();
+    public static InlinedMethodNode createSetter(ResolvedCall<Klass, Method, Field> resolvedCall, int top, int opCode, int curBCI, int statementIndex) {
+        Method.MethodVersion methodVersion = resolvedCall.getResolvedMethod().getMethodVersion();
         char fieldCpi = InlinedFieldAccessNode.getFieldCpi(true, methodVersion);
         ConditionalInlinedMethodNode.Recipes recipes = new FieldAccessRecipes(() -> new InlinedSetterNode(methodVersion, fieldCpi));
-        return create(methodVersion, top, opCode, curBCI, statementIndex, recipes, fieldCpi);
+        return create(resolvedCall, top, opCode, curBCI, statementIndex, recipes, fieldCpi);
     }
 
     /**
@@ -122,12 +123,13 @@ public abstract class InlinedFieldAccessNode extends InlinedMethodNode.BodyNode 
      * to a generic invoke if the method is no longer a leaf.</li>
      * </ul>
      */
-    private static InlinedMethodNode create(Method.MethodVersion inlinedMethod, int top, int opCode, int curBCI, int statementIndex,
+    private static InlinedMethodNode create(ResolvedCall<Klass, Method, Field> resolvedCall, int top, int opCode, int curBCI, int statementIndex,
                     ConditionalInlinedMethodNode.Recipes recipes, char fieldCpi) {
-        assert isInlineCandidate(inlinedMethod.getMethod(), opCode);
+        assert isInlineCandidate(resolvedCall);
+        Method.MethodVersion inlinedMethod = resolvedCall.getResolvedMethod().getMethodVersion();
         boolean isDefinitive = isResolutionSuccessAt(inlinedMethod, fieldCpi);
         if (isDefinitive) {
-            if (isUnconditionalInlineCandidate(inlinedMethod.getMethod(), opCode)) {
+            if (isUnconditionalInlineCandidate(resolvedCall)) {
                 return ConditionalInlinedMethodNode.getDefinitiveNode(recipes, inlinedMethod, top, opCode, curBCI, statementIndex);
             } else {
                 return GuardedConditionalInlinedMethodNode.getDefinitiveNode(recipes, InlinedMethodPredicate.LEAF_ASSUMPTION_CHECK,
@@ -135,10 +137,10 @@ public abstract class InlinedFieldAccessNode extends InlinedMethodNode.BodyNode 
             }
         }
         InlinedMethodPredicate condition = (context, version, frame, node) -> isResolutionSuccessAt(version, fieldCpi);
-        if (isUnconditionalInlineCandidate(inlinedMethod.getMethod(), opCode)) {
-            return new ConditionalInlinedMethodNode(inlinedMethod, top, opCode, curBCI, statementIndex, recipes, condition);
+        if (isUnconditionalInlineCandidate(resolvedCall)) {
+            return new ConditionalInlinedMethodNode(resolvedCall, top, opCode, curBCI, statementIndex, recipes, condition);
         } else {
-            return new GuardedConditionalInlinedMethodNode(inlinedMethod, top, opCode, curBCI, statementIndex, recipes, condition, InlinedMethodPredicate.LEAF_ASSUMPTION_CHECK);
+            return new GuardedConditionalInlinedMethodNode(resolvedCall, top, opCode, curBCI, statementIndex, recipes, condition, InlinedMethodPredicate.LEAF_ASSUMPTION_CHECK);
         }
     }
 
@@ -158,18 +160,15 @@ public abstract class InlinedFieldAccessNode extends InlinedMethodNode.BodyNode 
 
     private static char getFieldCpi(boolean isSetter, Method.MethodVersion method) {
         byte desc = 0;
-        desc |= (isSetter ? 0b01 : 0b00);
-        desc |= (method.isStatic() ? 0b10 : 0b00);
-        char bci;
-        // @formatter:off
-        switch (desc) {
-            case INSTANCE_SETTER: bci = INSTANCE_SETTER_BCI; break;
-            case STATIC_SETTER: bci = STATIC_SETTER_BCI; break;
-            case INSTANCE_GETTER: bci = INSTANCE_GETTER_BCI; break;
-            case STATIC_GETTER: bci = STATIC_GETTER_BCI; break;
-            default: throw EspressoError.shouldNotReachHere();
-        }
-        // @formatter:on
+        desc |= (byte) (isSetter ? 0b01 : 0b00);
+        desc |= (byte) (method.isStatic() ? 0b10 : 0b00);
+        char bci = switch (desc) {
+            case INSTANCE_SETTER -> INSTANCE_SETTER_BCI;
+            case STATIC_SETTER -> STATIC_SETTER_BCI;
+            case INSTANCE_GETTER -> INSTANCE_GETTER_BCI;
+            case STATIC_GETTER -> STATIC_GETTER_BCI;
+            default -> throw EspressoError.shouldNotReachHere();
+        };
         return new BytecodeStream(method.getOriginalCode()).readCPI(bci);
     }
 }

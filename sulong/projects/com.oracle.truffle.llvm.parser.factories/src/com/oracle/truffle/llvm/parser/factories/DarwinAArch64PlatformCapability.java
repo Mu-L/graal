@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates.
+ * Copyright (c) 2022, 2023, Oracle and/or its affiliates.
  *
  * All rights reserved.
  *
@@ -29,6 +29,7 @@
  */
 package com.oracle.truffle.llvm.parser.factories;
 
+import com.oracle.truffle.api.InternalResource.OS;
 import com.oracle.truffle.llvm.runtime.memory.LLVMSyscallOperationNode;
 import com.oracle.truffle.llvm.runtime.nodes.asm.syscall.LLVMNativeSyscallNode;
 import com.oracle.truffle.llvm.runtime.nodes.asm.syscall.LLVMSyscallExitNode;
@@ -98,6 +99,12 @@ final class DarwinAArch64PlatformCapability extends BasicAarch64PlatformCapabili
 
     @Override
     public OS getOS() {
-        return OS.Darwin;
+        return OS.DARWIN;
     }
+
+    @Override
+    public int getDoubleLongSize() {
+        return 128;
+    }
+
 }

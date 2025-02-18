@@ -24,6 +24,8 @@
  */
 package com.oracle.svm.hosted.heap;
 
+import java.util.Map;
+
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.graal.pointsto.BigBang;
@@ -31,11 +33,13 @@ import com.oracle.graal.pointsto.ObjectScanner;
 import com.oracle.graal.pointsto.heap.HeapSnapshotVerifier;
 import com.oracle.graal.pointsto.heap.ImageHeap;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
+import com.oracle.graal.pointsto.infrastructure.UniverseMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.util.CompletionExecutor;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.hosted.SVMHost;
 
+import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.JavaConstant;
 
 public class SVMImageHeapVerifier extends HeapSnapshotVerifier {
@@ -44,8 +48,9 @@ public class SVMImageHeapVerifier extends HeapSnapshotVerifier {
     }
 
     @Override
-    public boolean requireAnalysisIteration(CompletionExecutor executor) throws InterruptedException {
-        return super.requireAnalysisIteration(executor) || imageStateModified();
+    public boolean checkHeapSnapshot(UniverseMetaAccess metaAccess, CompletionExecutor executor, String phase, boolean forAnalysis, Map<Constant, Object> embeddedConstants) {
+        boolean skipReachableCheck = forAnalysis && ImageLayerBuildingSupport.buildingExtensionLayer();
+        return super.checkHeapSnapshot(metaAccess, executor, phase, forAnalysis, embeddedConstants, skipReachableCheck) || imageStateModified();
     }
 
     /**
@@ -54,27 +59,25 @@ public class SVMImageHeapVerifier extends HeapSnapshotVerifier {
      * - an image heap map, e.g., via an object replacer like
      * com.oracle.svm.enterprise.core.stringformat.StringFormatFeature.collectZeroDigits(). Signal
      * this by returning true to make sure that
-     * com.oracle.graal.pointsto.heap.ImageHeapMapFeature.duringAnalysis() is run to properly patch
-     * all ImageHeapMaps.
+     * com.oracle.graal.pointsto.heap.ImageHeapCollectionFeature.duringAnalysis() is run to properly
+     * patch all ImageHeapMaps.
      * 
      * - runtime reflection registration.
      * 
      */
     private static boolean imageStateModified() {
-        return ImageSingletons.lookup(ImageHeapMapFeature.class).imageHeapMapNeedsUpdate();
+        return ImageSingletons.lookup(ImageHeapCollectionFeature.class).needsUpdate();
     }
 
     @Override
     protected void scanTypes(ObjectScanner objectScanner) {
         SVMHost svmHost = svmHost();
-        /* First make sure that all DynamicHub fields are initialized and scanned. */
-        bb.getUniverse().getTypes().stream().filter(AnalysisType::isReachable).forEach(bb::initializeMetaData);
-        /* Then verify the snapshots of reachable types, i.e., compare them with hosted values. */
+        /* Verify the snapshots of reachable types, i.e., compare them with hosted values. */
         bb.getUniverse().getTypes().stream().filter(AnalysisType::isReachable).forEach(t -> verifyHub(svmHost, objectScanner, t));
     }
 
-    private static void verifyHub(SVMHost svmHost, ObjectScanner objectScanner, AnalysisType type) {
-        JavaConstant hubConstant = SubstrateObjectConstant.forObject(svmHost.dynamicHub(type));
+    private void verifyHub(SVMHost svmHost, ObjectScanner objectScanner, AnalysisType type) {
+        JavaConstant hubConstant = bb.getSnippetReflectionProvider().forObject(svmHost.dynamicHub(type));
         objectScanner.scanConstant(hubConstant, ObjectScanner.OtherReason.HUB);
     }
 

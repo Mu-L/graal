@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -121,6 +121,60 @@ public class OptionValues {
     }
 
     /**
+     * Constructs option values with the default {@link HotCompilationUnitPolicy} and all options
+     * {@code false}.
+     */
+    public OptionValues() {
+        this(new HotCompilationUnitPolicy(), false, false, false, false, false, false, false, false, false);
+    }
+
+    /**
+     * Returns a builder for {@link OptionValues}.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private final HotCompilationUnitPolicy hotCompilationUnitPolicy;
+        private boolean optimizationContextTreeEnabled;
+        private boolean diffCompilations;
+        private boolean bciLongForm;
+        private boolean alwaysPrintInlinerReasoning;
+
+        private Builder() {
+            this.hotCompilationUnitPolicy = new HotCompilationUnitPolicy();
+        }
+
+        /**
+         * Builds and returns the {@link OptionValues}.
+         */
+        public OptionValues build() {
+            return new OptionValues(hotCompilationUnitPolicy, optimizationContextTreeEnabled, diffCompilations, bciLongForm, false, false, false, false, false, alwaysPrintInlinerReasoning);
+        }
+
+        public Builder withOptimizationContextTreeEnabled(boolean newOptimizationContextTreeEnabled) {
+            this.optimizationContextTreeEnabled = newOptimizationContextTreeEnabled;
+            return this;
+        }
+
+        public Builder withDiffCompilations(boolean newDiffCompilations) {
+            this.diffCompilations = newDiffCompilations;
+            return this;
+        }
+
+        public Builder withBCILongForm(boolean newBciLongForm) {
+            this.bciLongForm = newBciLongForm;
+            return this;
+        }
+
+        public Builder withAlwaysPrintInlinerReasoning(boolean newAlwaysPrintInlinerReasoning) {
+            this.alwaysPrintInlinerReasoning = newAlwaysPrintInlinerReasoning;
+            return this;
+        }
+    }
+
+    /**
      * Returns {@code true} iff {@link OptimizationContextTree an optimization context tree} should
      * be built and displayed instead of a separate inlining and optimization tree.
      */
@@ -145,7 +199,7 @@ public class OptionValues {
     /**
      * Returns whether byte code indices should be printed in the long form.
      */
-    public boolean isBciLongForm() {
+    public boolean isBCILongForm() {
         return bciLongForm;
     }
 

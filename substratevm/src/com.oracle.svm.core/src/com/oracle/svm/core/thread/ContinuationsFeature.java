@@ -25,11 +25,14 @@
 package com.oracle.svm.core.thread;
 
 import java.lang.reflect.Field;
+import java.util.List;
 
-import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
 import org.graalvm.nativeimage.ImageSingletons;
-import org.graalvm.nativeimage.hosted.RuntimeClassInitialization;
+import org.graalvm.nativeimage.hosted.Feature;
+import org.graalvm.nativeimage.impl.RuntimeClassInitializationSupport;
 
+import com.oracle.svm.core.SubstrateControlFlowIntegrity;
+import com.oracle.svm.core.SubstrateControlFlowIntegrityFeature;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.deopt.DeoptimizationSupport;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
@@ -37,63 +40,47 @@ import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.StoredContinuation;
 import com.oracle.svm.core.heap.StoredContinuationAccess;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.util.ReflectionUtil;
 
 @AutomaticallyRegisteredFeature
 public class ContinuationsFeature implements InternalFeature {
-    private boolean finishedRegistration = false;
+    private Boolean supported;
+
+    public static boolean isSupported() {
+        return ImageSingletons.lookup(ContinuationsFeature.class).supported;
+    }
+
+    @Override
+    public List<Class<? extends Feature>> getRequiredFeatures() {
+        return List.of(SubstrateControlFlowIntegrityFeature.class);
+    }
 
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
-        boolean supportLoom = false;
-        if (JavaVersionUtil.JAVA_SPEC >= 19) {
-            boolean haveLoom = false;
-            try {
-                haveLoom = (Boolean) Class.forName("jdk.internal.misc.PreviewFeatures")
-                                .getDeclaredMethod("isEnabled").invoke(null);
-            } catch (ReflectiveOperationException ignored) {
-            }
-            if (!haveLoom) {
-                // Can still get initialized and fail the image build despite substitution, so defer
-                RuntimeClassInitialization.initializeAtRunTime("jdk.internal.vm.Continuation");
-            }
-            // Fail if virtual threads are used and runtime compilation is enabled
-            supportLoom = haveLoom && !DeoptimizationSupport.enabled() && !SubstrateOptions.useLLVMBackend();
-        }
-
-        if (supportLoom) {
-            LoomVirtualThreads vt = new LoomVirtualThreads();
-            ImageSingletons.add(VirtualThreads.class, vt);
-            ImageSingletons.add(LoomVirtualThreads.class, vt); // for simpler check in LoomSupport
-        } else if (SubstrateOptions.SupportContinuations.getValue()) {
-            if (SubstrateOptions.useLLVMBackend()) {
-                throw UserError.abort("Virtual threads are not supported together with the LLVM backend.");
-            } else if (JavaVersionUtil.JAVA_SPEC == 17) {
-                if (DeoptimizationSupport.enabled()) {
-                    throw UserError.abort("Virtual threads are enabled, but are currently not supported together with Truffle JIT compilation.");
+        /* If continuations are not supported, "virtual" threads are bound to platform threads. */
+        if (ContinuationSupport.Options.VMContinuations.getValue()) {
+            boolean hostSupport = jdk.internal.vm.ContinuationSupport.isSupported();
+            if (!hostSupport) {
+                if (ContinuationSupport.Options.VMContinuations.hasBeenSet()) {
+                    throw UserError.abort("Continuation support has been explicitly enabled with option %s but is not available in the host VM", ContinuationSupport.Options.VMContinuations.getName());
                 }
-                ImageSingletons.add(VirtualThreads.class, new SubstrateVirtualThreads());
-            } else {
-                /*
-                 * GR-37518: on 11, ForkJoinPool syncs on a String that doesn't have its own monitor
-                 * field, and unparking a virtual thread in additionalMonitorsLock.unlock causes a
-                 * deadlock between carrier thread and virtual thread. 17 uses a ReentrantLock.
-                 *
-                 * We intentionally do not advertise non-Loom continuation support on 17.
-                 */
-                throw UserError.abort("Virtual threads are supported only on JDK 19 with preview features enabled (--enable-preview).");
+                RuntimeClassInitializationSupport rci = ImageSingletons.lookup(RuntimeClassInitializationSupport.class);
+                rci.initializeAtRunTime("jdk.internal.vm.Continuation", "Host continuations are not supported");
             }
+            supported = hostSupport && !DeoptimizationSupport.enabled() && !SubstrateOptions.useLLVMBackend() && SubstrateControlFlowIntegrity.singleton().continuationsSupported();
+            UserError.guarantee(supported || !ContinuationSupport.Options.VMContinuations.hasBeenSet(),
+                            "Continuation support has been explicitly enabled with option %s but is not available " +
+                                            "because of the runtime compilation, LLVM backend, or control flow integrity features.",
+                            ContinuationSupport.Options.VMContinuations.getName());
+        } else {
+            supported = false;
         }
-        finishedRegistration = true;
-    }
-
-    boolean hasFinishedRegistration() {
-        return finishedRegistration;
     }
 
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
-        if (Continuation.isSupported()) {
+        if (isSupported()) {
             if (!ImageSingletons.contains(ContinuationSupport.class)) {
                 ImageSingletons.add(ContinuationSupport.class, new ContinuationSupport());
             }
@@ -104,30 +91,16 @@ public class ContinuationsFeature implements InternalFeature {
             access.registerReachabilityHandler(a -> access.registerAsInHeap(StoredContinuation.class),
                             ReflectionUtil.lookupMethod(StoredContinuationAccess.class, "allocate", int.class));
         } else {
-            access.registerReachabilityHandler(a -> abortIfUnsupported(), StoredContinuationAccess.class);
-            if (JavaVersionUtil.JAVA_SPEC >= 19) {
-                access.registerReachabilityHandler(a -> abortIfUnsupported(),
-                                ReflectionUtil.lookupMethod(Thread.class, "ofVirtual"),
-                                ReflectionUtil.lookupMethod(Thread.class, "startVirtualThread", Runnable.class));
-            }
+            access.registerReachabilityHandler(a -> VMError.shouldNotReachHere("Virtual threads internals are reachable but support is not available or active."), StoredContinuationAccess.class);
         }
     }
 
     @Override
     public void beforeCompilation(BeforeCompilationAccess access) {
-        if (Continuation.isSupported()) {
+        if (isSupported()) {
             Field ipField = ReflectionUtil.lookupField(StoredContinuation.class, "ip");
             long offset = access.objectFieldOffset(ipField);
             ContinuationSupport.singleton().setIPOffset(offset);
-        }
-    }
-
-    static void abortIfUnsupported() {
-        if (!Continuation.isSupported()) {
-            if (DeoptimizationSupport.enabled()) {
-                throw UserError.abort("Virtual threads are used in code, but are currently not supported together with Truffle JIT compilation.");
-            }
-            throw UserError.abort("Virtual threads are used in code, but are not currently available or active. Use JDK 19 with preview features enabled (--enable-preview).");
         }
     }
 }

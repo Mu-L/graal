@@ -20,11 +20,10 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-
 package com.oracle.truffle.espresso.threads;
 
 import com.oracle.truffle.api.ThreadLocalAction;
-import com.oracle.truffle.espresso.runtime.StaticObject;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 
 public final class SuspendLock {
     private final Object handshakeLock = new Object() {

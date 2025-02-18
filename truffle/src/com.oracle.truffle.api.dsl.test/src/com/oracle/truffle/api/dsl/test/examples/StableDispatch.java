@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -62,7 +62,7 @@ public class StableDispatch {
 
     public static class StableDispatchNode extends ExampleNode {
 
-        @Specialization(guards = "function == cachedFunction", assumptions = "cachedFunction.getCallTargetStable()")
+        @Specialization(guards = "function == cachedFunction", assumptions = "cachedFunction.getCallTargetStable()", limit = "3")
         protected static Object directDispatch(SLFunction function, Object[] arguments, //
                         @Cached("function") SLFunction cachedFunction, //
                         @Cached("create(cachedFunction.getCallTarget())") DirectCallNode callNode) {
@@ -71,7 +71,7 @@ public class StableDispatch {
 
         @Specialization(replaces = "directDispatch")
         protected static Object indirectDispatch(SLFunction function, Object[] arguments, //
-                        @Cached("create()") IndirectCallNode callNode) {
+                        @Cached IndirectCallNode callNode) {
             return callNode.call(function.getCallTarget(), arguments);
         }
     }

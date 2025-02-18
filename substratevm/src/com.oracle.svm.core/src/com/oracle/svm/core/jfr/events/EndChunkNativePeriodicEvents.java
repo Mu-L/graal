@@ -30,7 +30,6 @@ import java.util.Properties;
 import org.graalvm.nativeimage.StackValue;
 
 import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.jfr.JfrEvent;
 import com.oracle.svm.core.jfr.JfrEventWriteStatus;
 import com.oracle.svm.core.jfr.JfrNativeEventWriter;
@@ -55,7 +54,6 @@ public class EndChunkNativePeriodicEvents extends Event {
     }
 
     public static void emit() {
-        emitClassLoadingStatistics(Heap.getHeap().getClassCount());
         emitJVMInformation(JVMInformation.getJVMInfo());
         emitOSInformation(formatOSInformation());
         emitInitialEnvironmentVariables(getEnvironmentVariables());
@@ -64,7 +62,7 @@ public class EndChunkNativePeriodicEvents extends Event {
 
     @Uninterruptible(reason = "Accesses a JFR buffer.")
     private static void emitInitialEnvironmentVariables(StringEntry[] envs) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.InitialEnvironmentVariable)) {
+        if (JfrEvent.InitialEnvironmentVariable.shouldEmit()) {
             JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
             JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
             boolean isLarge = SubstrateJVM.get().isLarge(JfrEvent.InitialEnvironmentVariable);
@@ -89,7 +87,7 @@ public class EndChunkNativePeriodicEvents extends Event {
 
     @Uninterruptible(reason = "Accesses a JFR buffer.")
     private static void emitInitialSystemProperties(StringEntry[] systemProperties) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.InitialSystemProperty)) {
+        if (JfrEvent.InitialSystemProperty.shouldEmit()) {
             JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
             JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
             boolean isLarge = SubstrateJVM.get().isLarge(JfrEvent.InitialSystemProperty);
@@ -113,22 +111,8 @@ public class EndChunkNativePeriodicEvents extends Event {
     }
 
     @Uninterruptible(reason = "Accesses a JFR buffer.")
-    private static void emitClassLoadingStatistics(long loadedClassCount) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.ClassLoadingStatistics)) {
-            JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
-            JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
-
-            JfrNativeEventWriter.beginSmallEvent(data, JfrEvent.ClassLoadingStatistics);
-            JfrNativeEventWriter.putLong(data, JfrTicks.elapsedTicks());
-            JfrNativeEventWriter.putLong(data, loadedClassCount);
-            JfrNativeEventWriter.putLong(data, 0); /* unloadedClassCount */
-            JfrNativeEventWriter.endSmallEvent(data);
-        }
-    }
-
-    @Uninterruptible(reason = "Accesses a JFR buffer.")
     private static void emitJVMInformation(JVMInformation jvmInformation) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.JVMInformation)) {
+        if (JfrEvent.JVMInformation.shouldEmit()) {
             JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
             JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
 
@@ -156,7 +140,7 @@ public class EndChunkNativePeriodicEvents extends Event {
 
     @Uninterruptible(reason = "Accesses a JFR buffer.")
     private static void emitOSInformation(String osVersion) {
-        if (SubstrateJVM.isRecording() && SubstrateJVM.get().isEnabled(JfrEvent.OSInformation)) {
+        if (JfrEvent.OSInformation.shouldEmit()) {
             JfrNativeEventWriterData data = StackValue.get(JfrNativeEventWriterData.class);
             JfrNativeEventWriterDataAccess.initializeThreadLocalNativeBuffer(data);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,18 +38,24 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.instrumentation.AllocationReporter;
 import com.oracle.truffle.api.interop.InteropLibrary;
+import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.espresso.EspressoLanguage;
+import com.oracle.truffle.espresso.classfile.JavaKind;
+import com.oracle.truffle.espresso.classfile.tables.EntryTable;
 import com.oracle.truffle.espresso.impl.ArrayKlass;
+import com.oracle.truffle.espresso.impl.ClassRegistries;
 import com.oracle.truffle.espresso.impl.ContextAccessImpl;
 import com.oracle.truffle.espresso.impl.Field;
 import com.oracle.truffle.espresso.impl.Klass;
 import com.oracle.truffle.espresso.impl.LanguageAccess;
 import com.oracle.truffle.espresso.impl.ObjectKlass;
+import com.oracle.truffle.espresso.impl.PackageTable;
 import com.oracle.truffle.espresso.meta.EspressoError;
-import com.oracle.truffle.espresso.meta.JavaKind;
 import com.oracle.truffle.espresso.meta.Meta;
+import com.oracle.truffle.espresso.runtime.staticobject.StaticObject;
 import com.oracle.truffle.espresso.substitutions.JavaType;
+import com.oracle.truffle.espresso.vm.VM;
 
 /**
  * Class responsible for creating guest objects in Espresso. a helper class {@link AllocationChecks}
@@ -105,6 +111,7 @@ public final class GuestAllocator implements LanguageAccess {
      */
     public StaticObject createNew(ObjectKlass klass) {
         assert AllocationChecks.canAllocateNewReference(klass);
+        assert klass != klass.getMeta().java_lang_Class;
         klass.safeInitialize();
         StaticObject newObj = klass.getLinkedKlass().getShape(false).getFactory().create(klass);
         initInstanceFields(newObj, klass);
@@ -274,7 +281,29 @@ public final class GuestAllocator implements LanguageAccess {
         assert meta.polyglot != null;
         assert interopLibrary.isException(foreignObject);
         assert !(foreignObject instanceof StaticObject);
-        return createForeign(getLanguage(), meta.polyglot.ForeignException, foreignObject, interopLibrary);
+
+        StaticObject foreignException = createNew(meta.polyglot.ForeignException);
+        meta.HIDDEN_FRAMES.setHiddenObject(foreignException, VM.StackTrace.FOREIGN_MARKER_STACK_TRACE);
+
+        StaticObject foreignWrapper = createForeign(getLanguage(), meta.java_lang_Object, foreignObject, interopLibrary);
+        meta.java_lang_Throwable_backtrace.setObject(foreignException, foreignWrapper);
+
+        if (meta.getJavaVersion().java9OrLater()) {
+            try {
+                if (interopLibrary.hasExceptionStackTrace(foreignObject)) {
+                    Object exceptionStackTrace = interopLibrary.getExceptionStackTrace(foreignObject);
+                    InteropLibrary uncached = InteropLibrary.getUncached(exceptionStackTrace);
+                    if (uncached.hasArrayElements(exceptionStackTrace)) {
+                        int depth = (int) uncached.getArraySize(exceptionStackTrace);
+                        meta.java_lang_Throwable_depth.setInt(foreignException, depth);
+                    }
+                }
+            } catch (UnsupportedMessageException e) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                throw EspressoError.shouldNotReachHere(e);
+            }
+        }
+        return foreignException;
     }
 
     /**
@@ -289,7 +318,7 @@ public final class GuestAllocator implements LanguageAccess {
         if (interopLibrary.isNull(foreignObject)) {
             return createForeignNull(lang, foreignObject);
         }
-        return createForeign(lang, klass, foreignObject);
+        return doCreateForeign(lang, klass, foreignObject);
     }
 
     /**
@@ -297,7 +326,7 @@ public final class GuestAllocator implements LanguageAccess {
      */
     public static StaticObject createForeignNull(EspressoLanguage lang, Object foreignObject) {
         assert InteropLibrary.getUncached().isNull(foreignObject);
-        return createForeign(lang, null, foreignObject);
+        return doCreateForeign(lang, null, foreignObject);
     }
 
     private static void initInstanceFields(StaticObject obj, ObjectKlass thisKlass) {
@@ -368,8 +397,10 @@ public final class GuestAllocator implements LanguageAccess {
         }
     }
 
-    private static StaticObject createForeign(EspressoLanguage lang, Klass klass, Object foreignObject) {
+    private static StaticObject doCreateForeign(EspressoLanguage lang, Klass klass, Object foreignObject) {
         assert foreignObject != null;
+        assert klass == null || !klass.isAbstract() || klass.isArray();
+        assert klass == null || klass != klass.getMeta().java_lang_Class;
         StaticObject newObj = lang.getForeignShape().getFactory().create(klass, true);
         lang.getForeignProperty().setObject(newObj, foreignObject);
         if (klass != null) {
@@ -378,15 +409,33 @@ public final class GuestAllocator implements LanguageAccess {
         return trackAllocation(klass, newObj, lang, klass);
     }
 
+    @SuppressWarnings("try")
     private static void setModule(StaticObject obj, Klass klass) {
         StaticObject module = klass.module().module();
-        if (StaticObject.isNull(module)) {
-            if (klass.getContext().getRegistries().javaBaseDefined()) {
-                klass.getContext().getMeta().java_lang_Class_module.setObject(obj, klass.getRegistries().getJavaBaseModule().module());
-            } else {
-                klass.getContext().getRegistries().addToFixupList(klass);
+        if (module == null) {
+            // This can happen during initialization, before java.base is defined
+            // This can be concurrent so we check whether java base is indeed defined or not
+            // We use the bootloader's package table lock to deal with races between this code and
+            // VM.defineJavaBaseModule.
+            ClassRegistries registries = klass.getRegistries();
+            PackageTable bootPkgTable = registries.getBootClassRegistry().packages();
+            boolean javaBaseDefined;
+            // Unfortunately read locks cannot be upgraded to write locks so we have to take
+            // the exclusive write lock here.
+            try (EntryTable.BlockLock block = bootPkgTable.write()) {
+                javaBaseDefined = klass.getContext().getRegistries().javaBaseDefined();
+                if (!javaBaseDefined) {
+                    klass.getContext().getRegistries().addToFixupList(klass);
+                }
             }
+            if (javaBaseDefined) {
+                StaticObject javaBase = klass.getRegistries().getJavaBaseModule().module();
+                assert StaticObject.notNull(javaBase);
+                klass.getContext().getMeta().java_lang_Class_module.setObject(obj, javaBase);
+            }
+
         } else {
+            assert StaticObject.notNull(module);
             klass.getContext().getMeta().java_lang_Class_module.setObject(obj, module);
         }
     }

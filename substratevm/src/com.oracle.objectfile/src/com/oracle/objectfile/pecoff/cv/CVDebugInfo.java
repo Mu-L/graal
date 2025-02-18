@@ -28,8 +28,8 @@ package com.oracle.objectfile.pecoff.cv;
 
 import com.oracle.objectfile.debugentry.DebugInfoBase;
 import com.oracle.objectfile.pecoff.PECoffMachine;
-import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.debug.GraalError;
+import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.debug.GraalError;
 
 import java.nio.ByteOrder;
 
@@ -60,7 +60,7 @@ public final class CVDebugInfo extends DebugInfoBase {
             this.threadRegister = RTHREAD_X86;
         } else {
             /* room for future aach64 port */
-            throw GraalError.shouldNotReachHere("Unsupported architecture on Windows");
+            throw GraalError.shouldNotReachHere("Unsupported architecture on Windows"); // ExcludeFromJacocoGeneratedReport
         }
     }
 

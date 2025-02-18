@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -107,6 +107,7 @@ public interface Assumption {
      * @return a boolean value indicating the validity of the assumption
      * @since 0.8 or earlier
      */
+    // @NonIdempotent
     boolean isValid();
 
     /**
@@ -139,6 +140,7 @@ public interface Assumption {
      *
      * @since 19.0
      */
+    // @NonIdempotent
     static boolean isValidAssumption(Assumption assumption) {
         return assumption != null && assumption.isValid();
     }
@@ -152,6 +154,7 @@ public interface Assumption {
      * @since 19.0
      */
     @ExplodeLoop
+    // @NonIdempotent
     static boolean isValidAssumption(Assumption[] assumptions) {
         CompilerAsserts.partialEvaluationConstant(assumptions);
         if (assumptions == null) {

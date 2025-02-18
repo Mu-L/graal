@@ -24,38 +24,43 @@
  */
 package com.oracle.graal.reachability;
 
+import java.lang.reflect.Modifier;
+import java.util.Optional;
+
+import org.graalvm.collections.EconomicSet;
+import org.graalvm.nativeimage.AnnotationAccess;
+
 import com.oracle.graal.pointsto.AbstractAnalysisEngine;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.common.meta.MultiMethod;
+
+import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
+import jdk.graal.compiler.core.common.spi.ForeignCallSignature;
+import jdk.graal.compiler.core.common.spi.ForeignCallsProvider;
+import jdk.graal.compiler.graph.Node;
+import jdk.graal.compiler.nodes.CallTargetNode;
+import jdk.graal.compiler.nodes.ConstantNode;
+import jdk.graal.compiler.nodes.FrameState;
+import jdk.graal.compiler.nodes.Invoke;
+import jdk.graal.compiler.nodes.StructuredGraph;
+import jdk.graal.compiler.nodes.extended.FieldOffsetProvider;
+import jdk.graal.compiler.nodes.extended.ForeignCall;
+import jdk.graal.compiler.nodes.java.InstanceOfNode;
+import jdk.graal.compiler.nodes.java.LoadFieldNode;
+import jdk.graal.compiler.nodes.java.NewArrayNode;
+import jdk.graal.compiler.nodes.java.NewInstanceNode;
+import jdk.graal.compiler.nodes.java.NewMultiArrayNode;
+import jdk.graal.compiler.nodes.java.StoreFieldNode;
+import jdk.graal.compiler.nodes.virtual.VirtualArrayNode;
+import jdk.graal.compiler.nodes.virtual.VirtualInstanceNode;
+import jdk.graal.compiler.replacements.nodes.BinaryMathIntrinsicNode;
+import jdk.graal.compiler.replacements.nodes.MacroInvokable;
+import jdk.graal.compiler.replacements.nodes.UnaryMathIntrinsicNode;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
-import org.graalvm.collections.EconomicSet;
-import org.graalvm.compiler.core.common.spi.ForeignCallDescriptor;
-import org.graalvm.compiler.core.common.spi.ForeignCallSignature;
-import org.graalvm.compiler.graph.Node;
-import org.graalvm.compiler.nodes.CallTargetNode;
-import org.graalvm.compiler.nodes.ConstantNode;
-import org.graalvm.compiler.nodes.FrameState;
-import org.graalvm.compiler.nodes.Invoke;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.extended.ForeignCall;
-import org.graalvm.compiler.nodes.java.InstanceOfNode;
-import org.graalvm.compiler.nodes.java.LoadFieldNode;
-import org.graalvm.compiler.nodes.java.NewArrayNode;
-import org.graalvm.compiler.nodes.java.NewInstanceNode;
-import org.graalvm.compiler.nodes.java.NewMultiArrayNode;
-import org.graalvm.compiler.nodes.java.StoreFieldNode;
-import org.graalvm.compiler.nodes.virtual.VirtualArrayNode;
-import org.graalvm.compiler.nodes.virtual.VirtualInstanceNode;
-import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode;
-import org.graalvm.compiler.replacements.nodes.MacroInvokable;
-import org.graalvm.compiler.replacements.nodes.UnaryMathIntrinsicNode;
-import org.graalvm.nativeimage.AnnotationAccess;
-
-import java.lang.reflect.Modifier;
-import java.util.Optional;
 
 /**
  * Extracts method summaries from methods by parsing their bytecode and walking the structured
@@ -79,7 +84,8 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
         EconomicSet<AnalysisType> instantiatedTypes = EconomicSet.create();
         EconomicSet<AnalysisField> readFields = EconomicSet.create();
         EconomicSet<AnalysisField> writtenFields = EconomicSet.create();
-        EconomicSet<AnalysisMethod> invokedMethods = EconomicSet.create();
+        EconomicSet<AnalysisMethod> virtualInvokedMethods = EconomicSet.create();
+        EconomicSet<AnalysisMethod> specialInvokedMethods = EconomicSet.create();
         EconomicSet<AnalysisMethod> implementationInvokedMethods = EconomicSet.create();
         EconomicSet<JavaConstant> embeddedConstants = EconomicSet.create();
         EconomicSet<AnalysisMethod> foreignCallTargets = EconomicSet.create();
@@ -89,10 +95,10 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
             int parameterCount = method.getSignature().getParameterCount(!isStatic);
             int offset = isStatic ? 0 : 1;
             for (int i = offset; i < parameterCount; i++) {
-                accessedTypes.add((ReachabilityAnalysisType) method.getSignature().getParameterType(i - offset, method.getDeclaringClass()));
+                accessedTypes.add(method.getSignature().getParameterType(i - offset));
             }
 
-            accessedTypes.add((ReachabilityAnalysisType) method.getSignature().getReturnType(method.getDeclaringClass()));
+            accessedTypes.add(method.getSignature().getReturnType());
         }
 
         for (Node n : graph.getNodes()) {
@@ -127,6 +133,8 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
                     continue;
                 }
                 embeddedConstants.add(((JavaConstant) node.getValue()));
+            } else if (n instanceof FieldOffsetProvider node) {
+                ((AnalysisField) node.getField()).registerAsUnsafeAccessed(AbstractAnalysisEngine.sourcePosition(node.asNode()));
             } else if (n instanceof InstanceOfNode) {
                 InstanceOfNode node = (InstanceOfNode) n;
                 accessedTypes.add((ReachabilityAnalysisType) node.type().getType());
@@ -146,10 +154,12 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
                 if (method != null) {
                     method.addInvoke(new ReachabilityInvokeInfo(targetMethod, AbstractAnalysisEngine.sourcePosition(node.asNode()), kind.isDirect()));
                 }
-                if (kind.isDirect()) {
+                if (kind == CallTargetNode.InvokeKind.Static) {
                     implementationInvokedMethods.add(targetMethod);
+                } else if (kind == CallTargetNode.InvokeKind.Special) {
+                    specialInvokedMethods.add(targetMethod);
                 } else {
-                    invokedMethods.add(targetMethod);
+                    virtualInvokedMethods.add(targetMethod);
                 }
             } else if (n instanceof FrameState) {
                 FrameState node = (FrameState) n;
@@ -167,28 +177,39 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
             } else if (n instanceof MacroInvokable) {
                 MacroInvokable node = (MacroInvokable) n;
                 ReachabilityAnalysisMethod targetMethod = (ReachabilityAnalysisMethod) node.getTargetMethod();
-                if (node.getInvokeKind().isDirect()) {
+                CallTargetNode.InvokeKind kind = node.getInvokeKind();
+                if (kind == CallTargetNode.InvokeKind.Static) {
                     implementationInvokedMethods.add(targetMethod);
+                } else if (kind == CallTargetNode.InvokeKind.Special) {
+                    specialInvokedMethods.add(targetMethod);
                 } else {
-                    invokedMethods.add(targetMethod);
+                    virtualInvokedMethods.add(targetMethod);
                 }
             } else if (n instanceof ForeignCall) {
-                handleForeignCall(bb, foreignCallTargets, ((ForeignCall) n).getDescriptor());
+                MultiMethod.MultiMethodKey key = method == null ? MultiMethod.ORIGINAL_METHOD : method.getMultiMethodKey();
+                ForeignCallsProvider foreignCallsProvider = bb.getProviders(key).getForeignCalls();
+                handleForeignCall(bb, foreignCallTargets, ((ForeignCall) n).getDescriptor(), foreignCallsProvider);
             } else if (n instanceof UnaryMathIntrinsicNode) {
                 ForeignCallSignature signature = ((UnaryMathIntrinsicNode) n).getOperation().foreignCallSignature;
-                handleForeignCall(bb, foreignCallTargets, bb.getProviders().getForeignCalls().getDescriptor(signature));
+                MultiMethod.MultiMethodKey key = method == null ? MultiMethod.ORIGINAL_METHOD : method.getMultiMethodKey();
+                ForeignCallsProvider foreignCallsProvider = bb.getProviders(key).getForeignCalls();
+                handleForeignCall(bb, foreignCallTargets, foreignCallsProvider.getDescriptor(signature), foreignCallsProvider);
             } else if (n instanceof BinaryMathIntrinsicNode) {
                 ForeignCallSignature signature = ((BinaryMathIntrinsicNode) n).getOperation().foreignCallSignature;
-                handleForeignCall(bb, foreignCallTargets, bb.getProviders().getForeignCalls().getDescriptor(signature));
+                MultiMethod.MultiMethodKey key = method == null ? MultiMethod.ORIGINAL_METHOD : method.getMultiMethodKey();
+                ForeignCallsProvider foreignCallsProvider = bb.getProviders(key).getForeignCalls();
+                handleForeignCall(bb, foreignCallTargets, foreignCallsProvider.getDescriptor(signature), foreignCallsProvider);
 
             }
         }
 
-        return new MethodSummary(invokedMethods, implementationInvokedMethods, accessedTypes, instantiatedTypes, readFields, writtenFields, embeddedConstants, foreignCallTargets);
+        return new MethodSummary(virtualInvokedMethods, specialInvokedMethods, implementationInvokedMethods, accessedTypes, instantiatedTypes, readFields, writtenFields, embeddedConstants,
+                        foreignCallTargets);
+
     }
 
-    private static void handleForeignCall(ReachabilityAnalysisEngine bb, EconomicSet<AnalysisMethod> foreignCallTargets, ForeignCallDescriptor descriptor) {
-        Optional<AnalysisMethod> targetMethod = bb.getHostVM().handleForeignCall(descriptor, bb.getProviders().getForeignCalls());
+    private static void handleForeignCall(ReachabilityAnalysisEngine bb, EconomicSet<AnalysisMethod> foreignCallTargets, ForeignCallDescriptor descriptor, ForeignCallsProvider foreignCallsProvider) {
+        Optional<AnalysisMethod> targetMethod = bb.getHostVM().handleForeignCall(descriptor, foreignCallsProvider);
         targetMethod.ifPresent(foreignCallTargets::add);
     }
 }

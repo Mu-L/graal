@@ -26,22 +26,30 @@ package com.oracle.svm.core.os;
 
 import java.io.File;
 
-import org.graalvm.compiler.api.replacements.Fold;
+import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.word.Pointer;
-import org.graalvm.word.SignedWord;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
 
 import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.memory.UntrackedNullableNativeMemory;
 import com.oracle.svm.core.os.AbstractRawFileOperationSupport.RawFileOperationSupportHolder;
 
+import jdk.graal.compiler.api.replacements.Fold;
+
 /**
- * Provides an OS-independent abstraction for operations on files. Most of the code is implemented
- * in a way that it can be used from uninterruptible code.
+ * Provides unbuffered, OS-independent operations on files. Most of the code is implemented in a way
+ * that it can be used from uninterruptible code.
  */
 public interface RawFileOperationSupport {
+    @Fold
+    static boolean isPresent() {
+        return ImageSingletons.contains(RawFileOperationSupportHolder.class);
+    }
+
     /**
-     * Returns a {@link RawFileOperationSupport} singleton that uses little endian byte ordering.
+     * Returns a {@link RawFileOperationSupport} singleton that uses little endian byte order.
      */
     @Fold
     static RawFileOperationSupport littleEndian() {
@@ -49,7 +57,7 @@ public interface RawFileOperationSupport {
     }
 
     /**
-     * Returns a {@link RawFileOperationSupport} singleton that uses big endian byte ordering.
+     * Returns a {@link RawFileOperationSupport} singleton that uses big endian byte order.
      */
     @Fold
     static RawFileOperationSupport bigEndian() {
@@ -57,7 +65,7 @@ public interface RawFileOperationSupport {
     }
 
     /**
-     * Returns a {@link RawFileOperationSupport} singleton that uses the native byte ordering of the
+     * Returns a {@link RawFileOperationSupport} singleton that uses the native byte order of the
      * underlying architecture.
      */
     @Fold
@@ -66,20 +74,66 @@ public interface RawFileOperationSupport {
     }
 
     /**
-     * Opens or creates a file with the specified {@link FileAccessMode access mode}.
+     * Tries to allocate a platform-dependent C string for the given path. Note that the returned
+     * value needs to be freed manually once it is no longer needed (see
+     * {@link UntrackedNullableNativeMemory#free}).
      *
-     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
-     *         a value where {@link #isValid} will return false.
+     * @return If the allocation is successful, a non-null value is returned.
      */
-    RawFileDescriptor open(String filename, FileAccessMode mode);
+    CCharPointer allocateCPath(String path);
 
     /**
-     * Opens or creates a file with the specified {@link FileAccessMode access mode}.
+     * Creates a file with the specified {@link FileCreationMode creation} and {@link FileAccessMode
+     * access modes}.
      *
      * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
      *         a value where {@link #isValid} will return false.
      */
-    RawFileDescriptor open(File file, FileAccessMode mode);
+    RawFileDescriptor create(String filename, FileCreationMode creationMode, FileAccessMode accessMode);
+
+    /**
+     * Creates a file with the specified {@link FileCreationMode creation} and {@link FileAccessMode
+     * access modes}.
+     *
+     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
+     *         a value where {@link #isValid} will return false.
+     */
+    RawFileDescriptor create(File file, FileCreationMode creationMode, FileAccessMode accessMode);
+
+    /**
+     * Creates a file with the specified {@link FileCreationMode creation} and {@link FileAccessMode
+     * access modes}.
+     *
+     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
+     *         a value where {@link #isValid} will return false.
+     */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    RawFileDescriptor create(CCharPointer path, FileCreationMode creationMode, FileAccessMode accessMode);
+
+    /**
+     * Opens a file with the specified {@link FileAccessMode access mode}.
+     *
+     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
+     *         a value where {@link #isValid} will return false.
+     */
+    RawFileDescriptor open(String filename, FileAccessMode accessMode);
+
+    /**
+     * Opens a file with the specified {@link FileAccessMode access mode}.
+     *
+     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
+     *         a value where {@link #isValid} will return false.
+     */
+    RawFileDescriptor open(File file, FileAccessMode accessMode);
+
+    /**
+     * Opens a file with the specified {@link FileAccessMode access mode}.
+     *
+     * @return If the operation is successful, it returns the file descriptor. Otherwise, it returns
+     *         a value where {@link #isValid} will return false.
+     */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    RawFileDescriptor open(CCharPointer path, FileAccessMode accessMode);
 
     /**
      * Checks if a file descriptor is valid or if it represents an error value.
@@ -104,7 +158,7 @@ public interface RawFileOperationSupport {
      *         returns a value less than 0.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    SignedWord size(RawFileDescriptor fd);
+    long size(RawFileDescriptor fd);
 
     /**
      * Gets the current file position within a file.
@@ -113,7 +167,7 @@ public interface RawFileOperationSupport {
      *         returns a value less than 0.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    SignedWord position(RawFileDescriptor fd);
+    long position(RawFileDescriptor fd);
 
     /**
      * Sets the current file position within a file.
@@ -121,7 +175,7 @@ public interface RawFileOperationSupport {
      * @return true if the file position was updated to the given value, false otherwise.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    boolean seek(RawFileDescriptor fd, SignedWord position);
+    boolean seek(RawFileDescriptor fd, long position);
 
     /**
      * Writes data to the current file position and advances the file position.
@@ -156,7 +210,7 @@ public interface RawFileOperationSupport {
     boolean writeByte(RawFileDescriptor fd, byte data);
 
     /**
-     * Writes a short value in the specified byte ordering to the current file position and advances
+     * Writes a short value in the specified byte order to the current file position and advances
      * the file position.
      *
      * @return true if the data was written, false otherwise.
@@ -165,8 +219,8 @@ public interface RawFileOperationSupport {
     boolean writeShort(RawFileDescriptor fd, short data);
 
     /**
-     * Writes a char value in the specified byte ordering to the current file position and advances
-     * the file position.
+     * Writes a char value in the specified byte order to the current file position and advances the
+     * file position.
      *
      * @return true if the data was written, false otherwise.
      */
@@ -174,8 +228,8 @@ public interface RawFileOperationSupport {
     boolean writeChar(RawFileDescriptor fd, char data);
 
     /**
-     * Writes an integer value in the specified byte ordering to the current file position and
-     * advances the file position.
+     * Writes an integer value in the specified byte order to the current file position and advances
+     * the file position.
      *
      * @return true if the data was written, false otherwise.
      */
@@ -183,13 +237,31 @@ public interface RawFileOperationSupport {
     boolean writeInt(RawFileDescriptor fd, int data);
 
     /**
-     * Writes a long value in the specified byte ordering to the current file position and advances
-     * the file position.
+     * Writes a long value in the specified byte order to the current file position and advances the
+     * file position.
      *
      * @return true if the data was written, false otherwise.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     boolean writeLong(RawFileDescriptor fd, long data);
+
+    /**
+     * Writes a float value in the specified byte order to the current file position and advances
+     * the file position.
+     *
+     * @return true if the data was written, false otherwise.
+     */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    boolean writeFloat(RawFileDescriptor fd, float data);
+
+    /**
+     * Writes a double value in the specified byte order to the current file position and advances
+     * the file position.
+     *
+     * @return true if the data was written, false otherwise.
+     */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    boolean writeDouble(RawFileDescriptor fd, double data);
 
     /**
      * Reads up to bufferSize bytes of data from to the current file position and advances the file
@@ -199,7 +271,7 @@ public interface RawFileOperationSupport {
      *         returns a negative value.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    SignedWord read(RawFileDescriptor fd, Pointer buffer, UnsignedWord bufferSize);
+    long read(RawFileDescriptor fd, Pointer buffer, UnsignedWord bufferSize);
 
     /**
      * OS-specific signed value that represents a file descriptor. It is OS-specific which values
@@ -209,12 +281,16 @@ public interface RawFileOperationSupport {
     interface RawFileDescriptor extends WordBase {
     }
 
-    /**
-     * The file access modes that can be used when opening/creating a file.
-     */
+    enum FileCreationMode {
+        /** Create the file if it doesn't exist. Fail if it already exists. */
+        CREATE,
+        /** Create the file if it doesn't exist. If it already exists, then truncate the file. */
+        CREATE_OR_REPLACE,
+    }
+
     enum FileAccessMode {
         READ,
         READ_WRITE,
-        WRITE
+        WRITE,
     }
 }

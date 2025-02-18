@@ -73,11 +73,11 @@ public final class TRegexCompiler {
         }
         try {
             RegexObject regex = doCompile(language, source);
-            logCompilationTime(source, timer);
+            logCompilationTime(source, timer, regex);
             Loggers.LOG_COMPILER_FALLBACK.finer(() -> "TRegex compiled: " + source);
             return regex;
         } catch (UnsupportedRegexException bailout) {
-            logCompilationTime(source, timer);
+            logCompilationTime(source, timer, null);
             Loggers.LOG_BAILOUT_MESSAGES.fine(() -> bailout.getReason() + ": " + source);
             throw bailout;
         }
@@ -87,12 +87,16 @@ public final class TRegexCompiler {
     private static RegexObject doCompile(RegexLanguage language, RegexSource source) throws RegexSyntaxException {
         TRegexCompilationRequest compReq = new TRegexCompilationRequest(language, source);
         RegexExecNode execNode = compReq.compile();
-        return new RegexObject(execNode, source, compReq.getFlags(), compReq.getAst().getNumberOfCaptureGroups(), compReq.getNamedCaptureGroups());
+        return new RegexObject(execNode, source, compReq.getAst().getFlavorSpecificFlags(), compReq.getAst().getNumberOfCaptureGroups(), compReq.getNamedCaptureGroups());
     }
 
     @TruffleBoundary
     public static TRegexDFAExecutorNode compileEagerDFAExecutor(RegexLanguage language, RegexSource source) {
-        return new TRegexCompilationRequest(language, source).compileEagerDFAExecutor();
+        TRegexDFAExecutorNode executor = new TRegexCompilationRequest(language, source).compileEagerDFAExecutor();
+        if (executor.getCGTrackingCost() > TRegexOptions.TRegexMaxEagerCGDFACost) {
+            throw new UnsupportedRegexException("Too much additional capture group tracking overhead");
+        }
+        return executor;
     }
 
     @TruffleBoundary
@@ -111,10 +115,11 @@ public final class TRegexCompiler {
     }
 
     @TruffleBoundary
-    private static void logCompilationTime(RegexSource regexSource, DebugUtil.Timer timer) {
+    private static void logCompilationTime(RegexSource regexSource, DebugUtil.Timer timer, RegexObject regex) {
         if (timer != null) {
-            Loggers.LOG_TOTAL_COMPILATION_TIME.log(Level.FINE, "{0}, {1}", new Object[]{
+            Loggers.LOG_TOTAL_COMPILATION_TIME.log(Level.FINE, "Total compilation time: {0}, matcher: {1}, regex: {2}", new Object[]{
                             timer.elapsedToString(),
+                            regex == null ? "bailout" : regex.getLabel(),
                             DebugUtil.jsStringEscape(regexSource.toString())
             });
         }

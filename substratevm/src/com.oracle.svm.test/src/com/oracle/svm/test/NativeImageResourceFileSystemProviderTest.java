@@ -26,14 +26,23 @@
 package com.oracle.svm.test;
 
 import static com.oracle.svm.test.NativeImageResourceUtils.RESOURCE_DIR;
+import static com.oracle.svm.test.NativeImageResourceUtils.RESOURCE_DIR_WITH_SPACE;
+import static com.oracle.svm.test.NativeImageResourceUtils.RESOURCE_EMPTY_DIR;
 import static com.oracle.svm.test.NativeImageResourceUtils.RESOURCE_FILE_1;
 import static com.oracle.svm.test.NativeImageResourceUtils.RESOURCE_FILE_2;
 import static com.oracle.svm.test.NativeImageResourceUtils.ROOT_DIRECTORY;
 import static com.oracle.svm.test.NativeImageResourceUtils.resourceNameToPath;
 import static com.oracle.svm.test.NativeImageResourceUtils.resourceNameToURI;
+import static com.oracle.svm.test.NativeImageResourceUtils.resourceNameToURL;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.URI;
+import java.net.URL;
+import java.net.URLConnection;
 import java.nio.ByteBuffer;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -66,6 +75,7 @@ import org.junit.Test;
 public class NativeImageResourceFileSystemProviderTest {
 
     private static final String NEW_DIRECTORY = RESOURCE_DIR + "/tmp";
+    private static final String NEW_FILE = NEW_DIRECTORY + "/newFile";
 
     private static final int TIME_SPAN = 1_000_000;
 
@@ -161,6 +171,82 @@ public class NativeImageResourceFileSystemProviderTest {
     }
 
     /**
+     * Test native implementations of {@link Path#toUri()} and {@link Path#of(URI)}. Inspired by
+     * issue: <a href="https://github.com/oracle/graal/issues/5720">5720</a>
+     */
+    @Test
+    public void githubIssue5720() {
+        URI uri1 = resourceNameToURI(RESOURCE_FILE_1, true);
+        Assert.assertNotNull(uri1);
+
+        Path path1 = Path.of(uri1);
+        Assert.assertNotNull(path1);
+
+        URI uri2 = path1.toUri();
+        Assert.assertNotNull(uri2);
+
+        Path path2 = Path.of(uri2);
+        Assert.assertNotNull(path2);
+
+        Assert.assertEquals(path1, path2);
+        try {
+            Assert.assertTrue(Files.isSameFile(path1, path2));
+        } catch (IOException e) {
+            Assert.fail("IOException occurred during file system operation.");
+        }
+    }
+
+    /**
+     * Query a resource's last-modified timestamps and content length. Test inspired by issues:
+     * <a href="https://github.com/oracle/graal/issues/2253">2253</a>
+     */
+    @Test
+    public void githubIssue2253() {
+        URL resource = resourceNameToURL(RESOURCE_FILE_1, true);
+        Assert.assertNotNull(resource);
+
+        URLConnection connection = null;
+        try {
+            connection = resource.openConnection();
+        } catch (IOException e) {
+            Assert.fail("URL#openConnection threw an exception: " + e.getMessage());
+        }
+
+        int contentLength = connection.getContentLength();
+        Assert.assertTrue("Non-positive content-length.", contentLength > 0);
+
+        long lastModified = connection.getLastModified();
+        Assert.assertTrue("Non-positive last-modified.", lastModified > 0);
+    }
+
+    /**
+     * Query an empty directory.
+     */
+    @Test
+    public void queryEmptyDir() {
+        Path emptyDirPath = fileSystem.getPath(RESOURCE_EMPTY_DIR);
+        try (Stream<Path> stream = Files.walk(emptyDirPath)) {
+            Assert.assertEquals(1, stream.count());
+        } catch (IOException e) {
+            Assert.fail("IOException occurred during file system walk, starting from the root.");
+        }
+    }
+
+    /**
+     * Query a directory with spaces in its name.
+     */
+    @Test
+    public void queryDirWithSpaces() {
+        Path dirWithSpaces = fileSystem.getPath(RESOURCE_DIR_WITH_SPACE);
+        try (Stream<Path> stream = Files.walk(dirWithSpaces)) {
+            Assert.assertEquals(1, stream.count());
+        } catch (IOException e) {
+            e.printStackTrace();
+            Assert.fail("IOException occurred during file system walk, starting from the root.");
+        }
+    }
+
+    /**
      * Reading from file using {@link java.nio.channels.ByteChannel}.
      */
     @Test
@@ -188,6 +274,7 @@ public class NativeImageResourceFileSystemProviderTest {
     /**
      * Writing into file using {@link java.nio.channels.ByteChannel}.
      */
+    @SuppressWarnings("CallToPrintStackTrace")
     @Test
     public void writingFileByteChannel() {
         Path resourceDirectory = fileSystem.getPath(RESOURCE_DIR);
@@ -207,15 +294,10 @@ public class NativeImageResourceFileSystemProviderTest {
         }
 
         try (SeekableByteChannel channel = Files.newByteChannel(resourceFile1, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
-            ByteBuffer byteBuffer = ByteBuffer.wrap("test string#".getBytes());
-            channel.write(byteBuffer);
-            ByteBuffer byteBuffer2 = ByteBuffer.allocate((int) channel.size());
-            channel.read(byteBuffer2);
-            String content = new String(byteBuffer.array());
-            Assert.assertTrue("Nothing has been writen into file!", content.length() > 0);
-            Assert.assertTrue("Content has been writen into file improperly!", content.startsWith("test string#"));
+            writeInChannelAndCheck(channel);
         } catch (IOException ioException) {
-            Assert.fail("Exception occurs during writing into file!");
+            ioException.printStackTrace();
+            Assert.fail("Exception occurred while writing into the file: " + resourceFile1);
         }
     }
 
@@ -275,13 +357,7 @@ public class NativeImageResourceFileSystemProviderTest {
         }
 
         try (SeekableByteChannel channel = provider.newFileChannel(resourceFile1, readWritePermissions)) {
-            ByteBuffer byteBuffer = ByteBuffer.wrap("test string#".getBytes());
-            channel.write(byteBuffer);
-            ByteBuffer byteBuffer2 = ByteBuffer.allocate((int) channel.size());
-            channel.read(byteBuffer2);
-            String content = new String(byteBuffer.array());
-            Assert.assertTrue("Nothing has been writen into file!", content.length() > 0);
-            Assert.assertTrue("Content has been writen into file improperly!", content.startsWith("test string#"));
+            writeInChannelAndCheck(channel);
         } catch (IOException ioException) {
             Assert.fail("Exception occurs during writing into file!");
         }
@@ -309,30 +385,13 @@ public class NativeImageResourceFileSystemProviderTest {
         Path resourceFile2 = resourceNameToPath(RESOURCE_FILE_2, true);
 
         // 1. Creating new directory.
-        Path newDirectory = fileSystem.getPath(NEW_DIRECTORY);
-        try {
-            Files.createDirectory(newDirectory);
-        } catch (IOException ioException) {
-            Assert.fail("Exception occurs during creating new directory!");
-        }
+        Path newDirectory = createDirectory();
 
         // 2. Copy file to newly create directory.
-        Path destination = fileSystem.getPath(newDirectory.toString(),
-                        resourceFile1.getName(resourceFile1.getNameCount() - 1).toString());
-        try {
-            Files.copy(resourceFile1, destination, StandardCopyOption.REPLACE_EXISTING);
-            try (SeekableByteChannel channel = Files.newByteChannel(resourceFile1, StandardOpenOption.READ)) {
-                ByteBuffer byteBuffer = ByteBuffer.allocate((int) channel.size());
-                channel.read(byteBuffer);
-                String content = new String(byteBuffer.array());
-                Assert.assertTrue("Nothing has been read from new file!", content.length() > 0);
-            }
-        } catch (IOException ioException) {
-            Assert.fail("Exception occurs during copying file into new directory!");
-        }
+        copyFile(resourceFile1, newDirectory);
 
         // 3. Moving file to newly create directory.
-        destination = fileSystem.getPath(newDirectory.toString(),
+        Path destination = fileSystem.getPath(newDirectory.toString(),
                         resourceFile2.getName(resourceFile2.getNameCount() - 1).toString());
         try {
             Files.move(resourceFile2, destination, StandardCopyOption.REPLACE_EXISTING);
@@ -379,6 +438,151 @@ public class NativeImageResourceFileSystemProviderTest {
         } catch (IOException ignored) {
             Assert.fail("Exception occurs during file deletion!");
         }
+    }
+
+    @Test
+    public void writingNewFileFileChannel() {
+        // 1. Creating new directory.
+        createDirectory();
+
+        // 2. Creating and writing in a new file.
+        Path newResource = fileSystem.getPath(NEW_FILE);
+        try (SeekableByteChannel channel = Files.newByteChannel(newResource, StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+            writeInChannelAndCheck(channel);
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+    }
+
+    @Test
+    public void writingCopyFileFileChannel() {
+        Path resourceFile1 = resourceNameToPath(RESOURCE_FILE_1, true);
+
+        // 1. Creating new directory.
+        Path newDir = createDirectory();
+
+        // 2. Copy file to newly create directory.
+        Path destination = copyFile(resourceFile1, newDir);
+
+        // 3. Writing in the copied file.
+        try (SeekableByteChannel channel = Files.newByteChannel(destination, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            writeInChannelAndCheck(channel);
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+    }
+
+    @Test
+    public void writingNewFileByteChannel() {
+        // 1. Creating new directory.
+        createDirectory();
+
+        // 2. Creating and writing in a new file.
+        Path newResource = fileSystem.getPath(NEW_FILE);
+
+        FileSystemProvider provider = fileSystem.provider();
+
+        Set<StandardOpenOption> permissions = new HashSet<>(Collections.emptySet());
+        permissions.add(StandardOpenOption.READ);
+        permissions.add(StandardOpenOption.WRITE);
+        permissions.add(StandardOpenOption.CREATE);
+
+        try (SeekableByteChannel channel = provider.newFileChannel(newResource, permissions)) {
+            writeInChannelAndCheck(channel);
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+    }
+
+    @Test
+    public void writingCopyFileByteChannel() {
+        Path resourceFile1 = resourceNameToPath(RESOURCE_FILE_1, true);
+
+        // 1. Creating new directory.
+        Path newPath = createDirectory();
+
+        // 2. Copy file to newly create directory.
+        Path destination = copyFile(resourceFile1, newPath);
+
+        // 3. Writing in the copied file.
+        FileSystemProvider provider = fileSystem.provider();
+
+        Set<StandardOpenOption> permissions = new HashSet<>(Collections.emptySet());
+        permissions.add(StandardOpenOption.READ);
+        permissions.add(StandardOpenOption.WRITE);
+
+        try (SeekableByteChannel channel = provider.newFileChannel(destination, permissions)) {
+            writeInChannelAndCheck(channel);
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+    }
+
+    @Test
+    public void writingNewFileOutputStream() {
+        // 1. Creating new directory.
+        createDirectory();
+
+        // 2. Creating and writing in a new file.
+        Path newResource = fileSystem.getPath(NEW_FILE);
+        try (OutputStream outputStream = Files.newOutputStream(newResource, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW)) {
+            outputStream.write("test string#".getBytes());
+            outputStream.flush();
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+
+        // 3. Reading in the new file.
+        try (InputStream inputStream = Files.newInputStream(newResource, StandardOpenOption.READ)) {
+            String content = new String(inputStream.readAllBytes());
+            Assert.assertTrue("Nothing has been writen into file!", content.length() > 0);
+            Assert.assertTrue("Content has been writen into file improperly!", content.startsWith("test string#"));
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during writing into file!");
+        }
+    }
+
+    private Path createDirectory() {
+        Path newDirectory = fileSystem.getPath(NEW_DIRECTORY);
+        try {
+            Files.createDirectory(newDirectory);
+        } catch (IOException ioException) {
+            Assert.fail("Exception occurs during creating new directory!");
+        }
+        return newDirectory;
+    }
+
+    private static void writeInChannelAndCheck(SeekableByteChannel channel) throws IOException {
+        ByteBuffer byteBuffer = ByteBuffer.wrap("test string#".getBytes());
+        channel.write(byteBuffer);
+        ByteBuffer byteBuffer2 = ByteBuffer.allocate((int) channel.size());
+        channel.position(0);
+        channel.read(byteBuffer2);
+        String content = new String(byteBuffer2.array());
+        Assert.assertTrue("Nothing has been writen into file!", content.length() > 0);
+        Assert.assertTrue("Content has been writen into file improperly!", content.startsWith("test string#"));
+    }
+
+    private Path copyFile(Path resourceFile1, Path newDirectory) {
+        Path destination = fileSystem.getPath(newDirectory.toString(),
+                        resourceFile1.getName(resourceFile1.getNameCount() - 1).toString());
+        try {
+            Files.copy(resourceFile1, destination, StandardCopyOption.REPLACE_EXISTING);
+            try (SeekableByteChannel channel = Files.newByteChannel(resourceFile1, StandardOpenOption.READ)) {
+                ByteBuffer byteBuffer = ByteBuffer.allocate((int) channel.size());
+                channel.read(byteBuffer);
+                String content = new String(byteBuffer.array());
+                Assert.assertTrue("Nothing has been read from new file!", content.length() > 0);
+            }
+        } catch (IOException ioException) {
+            StringWriter sw = new StringWriter();
+            PrintWriter pw = new PrintWriter(sw);
+            pw.println(ioException.getMessage());
+            ioException.printStackTrace(pw);
+            Assert.fail("Exception occurs during copying file into new directory!\n" + sw);
+            pw.close();
+        }
+        return destination;
     }
 
     /**

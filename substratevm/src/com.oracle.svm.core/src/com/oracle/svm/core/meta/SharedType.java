@@ -24,6 +24,8 @@
  */
 package com.oracle.svm.core.meta;
 
+import org.graalvm.word.WordBase;
+
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.util.VMError;
 
@@ -45,13 +47,21 @@ public interface SharedType extends ResolvedJavaType {
      */
     JavaKind getStorageKind();
 
+    int getTypeID();
+
+    /**
+     * Returns true if this type is part of the word type hierarchy, i.e, implements
+     * {@link WordBase}.
+     */
+    boolean isWordType();
+
     @Override
     default ResolvedJavaMethod resolveMethod(ResolvedJavaMethod method, ResolvedJavaType callerType) {
         /*
          * Not needed on Substrate VM for now, and we do not have the necessary information
          * available to implement it. method.getImplementations() does not contain abstract methods.
          */
-        throw VMError.unimplemented();
+        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,19 +29,22 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-import org.graalvm.nativeimage.PinnedObject;
+import jdk.graal.compiler.word.Word;
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion.CCharPointerHolder;
+import org.graalvm.nativeimage.c.type.CTypeConversion.CCharPointerPointerHolder;
 import org.graalvm.nativeimage.impl.CTypeConversionSupport;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.UnsignedWord;
-import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.jdk.Target_java_nio_DirectByteBuffer;
+import com.oracle.svm.core.handles.PrimitiveArrayView;
+import com.oracle.svm.core.jdk.DirectByteBufferUtil;
 
 @AutomaticallyRegisteredImageSingleton(CTypeConversionSupport.class)
 class CTypeConversionSupportImpl implements CTypeConversionSupport {
@@ -49,7 +52,19 @@ class CTypeConversionSupportImpl implements CTypeConversionSupport {
     static final CCharPointerHolder NULL_HOLDER = new CCharPointerHolder() {
         @Override
         public CCharPointer get() {
-            return WordFactory.nullPointer();
+            return Word.nullPointer();
+        }
+
+        @Override
+        public void close() {
+            /* Nothing to do. */
+        }
+    };
+
+    static final CCharPointerPointerHolder NULL_POINTER_POINTER_HOLDER = new CCharPointerPointerHolder() {
+        @Override
+        public CCharPointerPointer get() {
+            return Word.nullPointer();
         }
 
         @Override
@@ -129,7 +144,7 @@ class CTypeConversionSupportImpl implements CTypeConversionSupport {
             if (capacity != 0) {
                 throw new IllegalArgumentException("Non zero buffer size passed along with nullptr");
             }
-            return WordFactory.unsigned(baseString.length);
+            return Word.unsigned(baseString.length);
 
         } else if (capacity < baseString.length + 1) {
             throw new IllegalArgumentException("Provided buffer is too small to hold 0 terminated java string.");
@@ -142,7 +157,7 @@ class CTypeConversionSupportImpl implements CTypeConversionSupport {
         // write null terminator at end
         buffer.write(baseString.length, (byte) 0);
 
-        return WordFactory.unsigned(baseString.length);
+        return Word.unsigned(baseString.length);
     }
 
     @Override
@@ -151,6 +166,14 @@ class CTypeConversionSupportImpl implements CTypeConversionSupport {
             return NULL_HOLDER;
         }
         return new CCharPointerHolderImpl(javaString);
+    }
+
+    @Override
+    public CCharPointerPointerHolder toCStrings(CharSequence[] javaStrings) {
+        if (javaStrings == null) {
+            return NULL_POINTER_POINTER_HOLDER;
+        }
+        return new CCharPointerPointerHolderImpl(javaStrings);
     }
 
     @Override
@@ -163,24 +186,24 @@ class CTypeConversionSupportImpl implements CTypeConversionSupport {
 
     @Override
     public ByteBuffer asByteBuffer(PointerBase address, int size) {
-        ByteBuffer byteBuffer = SubstrateUtil.cast(new Target_java_nio_DirectByteBuffer(address.rawValue(), size), ByteBuffer.class);
+        ByteBuffer byteBuffer = DirectByteBufferUtil.allocate(address.rawValue(), size);
         return byteBuffer.order(ConfigurationValues.getTarget().arch.getByteOrder());
     }
 }
 
 final class CCharPointerHolderImpl implements CCharPointerHolder {
 
-    private final PinnedObject cstring;
+    private final PrimitiveArrayView cstring;
 
     CCharPointerHolderImpl(CharSequence javaString) {
         byte[] bytes = javaString.toString().getBytes();
         /* Append the terminating 0. */
         bytes = Arrays.copyOf(bytes, bytes.length + 1);
-        cstring = PinnedObject.create(bytes);
+        cstring = PrimitiveArrayView.createForReading(bytes);
     }
 
     CCharPointerHolderImpl(byte[] bytes) {
-        cstring = PinnedObject.create(bytes);
+        cstring = PrimitiveArrayView.createForReading(bytes);
     }
 
     @Override
@@ -191,5 +214,44 @@ final class CCharPointerHolderImpl implements CCharPointerHolder {
     @Override
     public void close() {
         cstring.close();
+    }
+}
+
+final class CCharPointerPointerHolderImpl extends CCharPointerPointerHolder {
+
+    private final CCharPointerHolder[] ccpHolderArray;
+    private final PrimitiveArrayView refCCPArray;
+
+    CCharPointerPointerHolderImpl(CharSequence[] csArray) {
+        CTypeConversionSupport cTypeConversion = ImageSingletons.lookup(CTypeConversionSupport.class);
+        /* An array to hold the pinned null-terminated C strings. */
+        ccpHolderArray = new CCharPointerHolder[csArray.length + 1];
+        /* An array to hold the &char[0] behind the corresponding C string. */
+        final CCharPointer[] ccpArray = new CCharPointer[csArray.length + 1];
+        for (int i = 0; i < csArray.length; i += 1) {
+            /* Null-terminate and pin each of the CharSequences. */
+            ccpHolderArray[i] = cTypeConversion.toCString(csArray[i]);
+            /* Save the CCharPointer of each of the CharSequences. */
+            ccpArray[i] = ccpHolderArray[i].get();
+        }
+        /* Null-terminate the CCharPointer[]. */
+        ccpArray[csArray.length] = Word.nullPointer();
+        /* Pin the CCharPointer[] so I can get the &ccpArray[0]. */
+        refCCPArray = PrimitiveArrayView.createForReading(ccpArray);
+    }
+
+    @Override
+    public CCharPointerPointer get() {
+        return refCCPArray.addressOfArrayElement(0);
+    }
+
+    @Override
+    public void close() {
+        /* Close the pins on each of the pinned C strings. */
+        for (int i = 0; i < ccpHolderArray.length - 1; i += 1) {
+            ccpHolderArray[i].close();
+        }
+        /* Close the pin on the pinned CCharPointer[]. */
+        refCCPArray.close();
     }
 }

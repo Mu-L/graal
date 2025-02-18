@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -50,6 +50,7 @@ import org.junit.Test;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.test.examples.FunctionCallFactory.FunctionCallNodeGen;
 import com.oracle.truffle.api.nodes.DirectCallNode;
@@ -122,6 +123,7 @@ public class FunctionCall {
             return callNode.call(new Object[]{argument});
         }
 
+        @Idempotent
         protected final boolean cacheFunctionTarget(Function function) {
             CompilerAsserts.neverPartOfCompilation("do not cache function target in compiled code");
             if (cachedFunctions != null) {
@@ -151,7 +153,7 @@ public class FunctionCall {
 
         @Specialization(replaces = "directCall")
         protected Object indirectCall(Function function, Object argument,
-                        @Cached("create()") IndirectCallNode callNode) {
+                        @Cached IndirectCallNode callNode) {
             indirectCall++;
             return callNode.call(function.getTarget(), new Object[]{argument});
         }

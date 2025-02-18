@@ -1,84 +1,68 @@
-local composable = (import "common-utils.libsonnet").composable;
+# This file is only shared between the graal and graal-enterprise repositories.
 
-local mx_version = (import "../../common.json").mx_version;
-local common_json = composable(import "../../common.json");
+local common = import "../common.jsonnet";
+local utils = import "common-utils.libsonnet";
 local repo_config = import '../repo-configuration.libsonnet';
-local jdks = common_json.jdks;
-local deps = common_json.deps;
-local downloads = common_json.downloads;
 
-# Finds the first integer in a string and returns it as an integer.
-local find_first_integer(versionString) =
-  local charToInt(c) =
-    std.codepoint(c) - std.codepoint("0");
-  local firstNum(s, i) =
-    assert std.length(s) > i : "No number found in string " + s;
-    local n = charToInt(s[i]);
-    if n >=0 && n < 10 then i else firstNum(s, i + 1);
-  local lastNum(s, i) =
-    if i >= std.length(s) then
-      i
-    else
-      local n = charToInt(s[i]);
-      if n < 0 || n > 9 then i else lastNum(s, i + 1);
-  local versionIndexStart = firstNum(versionString, 0);
-  local versionIndexEnd = lastNum(versionString, versionIndexStart);
-  std.parseInt(versionString[versionIndexStart:versionIndexEnd])
-;
-# jdk_version is an hidden field that can be used to generate job names
-local add_jdk_version(name) =
-  local jdk = jdks[name];
-  // this assumes that the version is the first number in the jdk.version string
-  local version = find_first_integer(jdk.version);
-  // santity check that the parsed version is also included in the name
-  assert std.length(std.findSubstr(std.toString(version), name)) == 1 : "Cannot find version %d in name %s" % [version, name];
-  { jdk_version:: version }
-;
-
-{
-
-  mx:: {
-    packages+: {
-      mx: mx_version
-    }
-  },
-
-  eclipse:: downloads.eclipse,
-  jdt:: downloads.jdt,
-  devkits:: common_json.devkits,
-
-  svm_deps:: common_json.svm.deps + repo_config.native_image.extra_deps,
-
+common + common.frequencies + {
   build_base:: {
     // holds location of CI resources that can easily be overwritten in an overlay
-    ci_resources:: (import "ci/ci_common/ci-resources.libsonnet"),
-  },
-
-  // Job frequencies
-  // ***************
-  on_demand:: {
-    targets+: ["ondemand"],
-  },
-  post_merge:: {
-    targets+: ["post-merge"],
-  },
-  daily:: {
-    targets+: ["daily"],
-  },
-  weekly:: {
-    targets+: ["weekly"],
-  },
-  monthly:: {
-    targets+: ["monthly"],
+    ci_resources:: (import "ci-resources.libsonnet"),
   },
 
   # Add a guard to `build` that prevents it from running in the gate
   # for a PR that only touches *.md files, the docs, are config files for GitHub
-  add_excludes_guard(build):: build + {
-    guard+: {
-      excludes+: ["**.md", "<graal>/**.md", "<graal>/docs/**", "<graal>/.devcontainer/**", "<graal>/.github/**"]
-    }
-  },
+  #
+  # To avoid skipping the deployment of some artifacts, only `gate` jobs and
+  # post-merges that do not have the `deploy` target are considered.
+  add_excludes_guard(build):: (
+    if (std.length(std.find('gate', build.targets)) > 0 || std.length(std.find('deploy', build.targets)) == 0) then {
+      guard: {
+        excludes: ["*.md",
+          "<graal>/*.md",
+          "<graal>/ci/**.md",
+          "<graal>/compiler/**.md",
+          "<graal>/espresso/**.md",
+          "<graal>/regex/**.md",
+          "<graal>/sdk/**.md",
+          "<graal>/substratevm/docs/**", # Substratevm includes substratevm/src/com.oracle.svm.hosted/src/com/oracle/svm/hosted/image/doc-files/PrintImageHeapConnectedComponents.md in the build
+          "<graal>/substratevm/CHANGELOG.md",
+          "<graal>/substratevm/README.md",
+          "<graal>/sulong/docs/**.md",  # Sulong includes its readme in a distribution
+          "<graal>/sulong/CHANGELOG.md",
+          "<graal>/tools/**.md",
+          "<graal>/truffle/**.md",
+          "<graal>/visualizer/**.md",
+          "<graal>/vm/src/**.md", # vm/GRAALVM-README.md is included in a distribution
+          "<graal>/vm/README.md",
+          "<graal>/vm/benchmarks/**.md",
+          "<graal>/vm/docs/**",
+          "<graal>/wasm/**.md",
+          "<graal>/docs/**",
+          "<graal>/.devcontainer/**",
+          "<graal>/.github/**",
+          "<graal>/vm/ce-release-artifacts.json"
+        ]
+      }
+    } else {}
+  ) + build,
+
+  # Add the specified components to the field `components`.
+  with_components(builds, components)::
+    [
+      if std.objectHas(build, "components") then
+        build + { "components" : std.setUnion(components, build.components) }
+      else
+        build + { "components" : components }
+      for build in builds
+    ],
+  # Add the specified components to the field `components`.
+  with_style_component(build)::
+    if std.objectHas(build, "name") && utils.contains(build.name, "-style-") then
+      $.with_components([build], ["style"])[0]
+    else
+      build
+    ,
 
   // Heap settings
   // *************
@@ -111,73 +95,49 @@ local add_jdk_version(name) =
     }
   },
 
-} + {
-  // JDK definitions
-  // ***************
-  // this adds all jdks from common.json
-  [name]: add_jdk_version(name) + { downloads+: { [if std.endsWith(name, "llvm") then "LLVM_JAVA_HOME" else "JAVA_HOME"] : jdks[name] }},
-  for name in std.objectFieldsAll(jdks)
-} + {
+} + common.jdks + {
   # Aliases to edition specific labsjdks
-  labsjdk17::            self["labsjdk-ee-17"],
+  labsjdk17::            self["labsjdk-" + repo_config.graalvm_edition + "-17"],
   labsjdk19::            self["labsjdk-" + repo_config.graalvm_edition + "-19"],
-  labsjdk17Debug::       self["labsjdk-ee-17Debug"],
+  labsjdk17Debug::       self["labsjdk-" + repo_config.graalvm_edition + "-17Debug"],
   labsjdk19Debug::       self["labsjdk-" + repo_config.graalvm_edition + "-19Debug"],
-  labsjdk17LLVM::        self["labsjdk-ee-17-llvm"],
+  labsjdk17LLVM::        self["labsjdk-" + repo_config.graalvm_edition + "-17-llvm"],
   labsjdk19LLVM::        self["labsjdk-" + repo_config.graalvm_edition + "-19-llvm"],
 
-  # Only CE exists for JDK 20 until JDK 20 GA.
-  labsjdk20::            self["labsjdk-ce-20"],
-  labsjdk20Debug::       self["labsjdk-ce-20Debug"],
-  labsjdk20LLVM::        self["labsjdk-ce-20-llvm"],
+  labsjdk20::            self["labsjdk-" + repo_config.graalvm_edition + "-20"],
+  labsjdk20Debug::       self["labsjdk-" + repo_config.graalvm_edition + "-20Debug"],
+  labsjdk20LLVM::        self["labsjdk-" + repo_config.graalvm_edition + "-20-llvm"],
 
+  labsjdk21::            self["labsjdk-" + repo_config.graalvm_edition + "-21"],
+  labsjdk21Debug::       self["labsjdk-" + repo_config.graalvm_edition + "-21Debug"],
+  labsjdk21LLVM::        self["labsjdk-" + repo_config.graalvm_edition + "-21-llvm"],
+
+  labsjdkLatest::            self["labsjdk-" + repo_config.graalvm_edition + "-latest"],
+  labsjdkLatestDebug::       self["labsjdk-" + repo_config.graalvm_edition + "-latestDebug"],
+  labsjdkLatestLLVM::        self["labsjdk-" + repo_config.graalvm_edition + "-latest-llvm"],
 
   // Hardware definitions
   // ********************
-  common:: deps.common + self.mx + {
-    local where = if std.objectHas(self, "name") then " in " + self.name else "",
-    # enforce self.os (useful for generating job names)
-    os:: error "self.os not set" + where,
-    # enforce self.arch (useful for generating job names)
-    arch:: error "self.arch not set" + where,
-    capabilities +: [],
-    catch_files +: common_json.catch_files,
-    logs +: [
+  local graal_common_extras = common.deps.pylint + common.deps.black + {
+    logs+: [
       "*.bgv",
-      "./" + repo_config.compiler.compiler_suite + "/graal_dumps/*/*"
-    ]
+      "*/graal_dumps/*/*",
+    ],
+    timelimit: "30:00",
   },
-
-  ol7:: self.build_base + {
-    local ol7_image = self.ci_resources.infra.docker_image_ol7,
-    docker+: {
-      image: ol7_image,
-      mount_modules: true,
+  local linux_deps_extras = {
+    packages+: {
+      "apache/ant": ">=1.9.4",
     },
   },
 
-  linux::   deps.linux   + self.common + {os::"linux",   capabilities+: [self.os]},
-  darwin::  deps.darwin  + self.common + {os::"darwin",  capabilities+: [self.os]},
-  windows:: deps.windows + self.common + {os::"windows", capabilities+: [self.os]},
-  windows_server_2016:: self.windows + {capabilities+: ["windows_server_2016"]},
-
-  amd64::   { arch::"amd64",   capabilities+: [self.arch]},
-  aarch64:: { arch::"aarch64", capabilities+: [self.arch]},
-
-  linux_amd64::               self.linux               + self.amd64,
-  darwin_amd64::              self.darwin              + self.amd64,
-  darwin_aarch64::            self.darwin              + self.aarch64 + {
-      # only needed until GR-22580 is resolved?
-      python_version: 3,
-  },
-  windows_amd64::             self.windows             + self.amd64,
-  windows_server_2016_amd64:: self.windows_server_2016 + self.amd64,
-  linux_aarch64::             self.linux               + self.aarch64,
-
-  mach5_target:: {targets+: ["mach5"]},
-
-  // Utils
-  disable_proxies:: {
-    setup+: [["unset", "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "ftp_proxy", "no_proxy"]],
-  },
+  linux_amd64: common.linux_amd64 + graal_common_extras + linux_deps_extras,
+  linux_amd64_ol9: common.linux_amd64_ol9 + graal_common_extras + linux_deps_extras,
+  linux_amd64_ubuntu: common.linux_amd64_ubuntu + graal_common_extras,
+  linux_aarch64: linux_deps_extras + common.linux_aarch64 + graal_common_extras,
+  linux_aarch64_ol9: linux_deps_extras + common.linux_aarch64_ol9 + graal_common_extras,
+  darwin_amd64: common.darwin_amd64 + graal_common_extras,
+  darwin_aarch64: common.darwin_aarch64 + graal_common_extras,
+  windows_amd64: common.windows_amd64 + graal_common_extras,
+  windows_server_2016_amd64: common.windows_server_2016_amd64 + graal_common_extras,
 }

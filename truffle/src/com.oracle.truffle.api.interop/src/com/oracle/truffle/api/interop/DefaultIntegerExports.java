@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -40,6 +40,8 @@
  */
 package com.oracle.truffle.api.interop;
 
+import java.math.BigInteger;
+
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.library.ExportLibrary;
@@ -74,7 +76,7 @@ final class DefaultIntegerExports {
     static boolean fitsInFloat(Integer receiver) {
         int i = receiver;
         float f = i;
-        return (int) f == i;
+        return i != Integer.MAX_VALUE && (int) f == i;
     }
 
     @ExportMessage
@@ -101,7 +103,7 @@ final class DefaultIntegerExports {
     static float asFloat(Integer receiver) throws UnsupportedMessageException {
         int i = receiver;
         float f = i;
-        if ((int) f == i) {
+        if (i != Integer.MAX_VALUE && (int) f == i) {
             return f;
         }
         throw UnsupportedMessageException.create();
@@ -120,6 +122,11 @@ final class DefaultIntegerExports {
     }
 
     @ExportMessage
+    static boolean fitsInBigInteger(Integer receiver) {
+        return true;
+    }
+
+    @ExportMessage
     static boolean fitsInDouble(Integer receiver) {
         return true;
     }
@@ -132,6 +139,12 @@ final class DefaultIntegerExports {
     @ExportMessage
     static long asLong(Integer receiver) {
         return receiver;
+    }
+
+    @ExportMessage
+    @TruffleBoundary
+    static BigInteger asBigInteger(Integer receiver) {
+        return BigInteger.valueOf(receiver);
     }
 
     @ExportMessage
